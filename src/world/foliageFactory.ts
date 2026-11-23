@@ -91,6 +91,68 @@ function applyHeightGradient(
   return geo;
 }
 
+const _upVec = new THREE.Vector3(0, 1, 0);
+const _tmpDir = new THREE.Vector3();
+const _tmpQuat = new THREE.Quaternion();
+
+export interface ConnectedTubeSegment {
+  start: THREE.Vector3;
+  end: THREE.Vector3;
+  rBot: number;
+  rTop: number;
+  radialSegs: number;
+  overlapStart?: number;
+  overlapEnd?: number;
+}
+
+export function buildConnectedTube(seg: ConnectedTubeSegment): THREE.BufferGeometry {
+  _tmpDir.subVectors(seg.end, seg.start);
+  const exactLen = _tmpDir.length();
+  const unitDir = exactLen > 1e-5 ? _tmpDir.clone().divideScalar(exactLen) : _upVec.clone();
+  const overlapStart = seg.overlapStart ?? 0.045;
+  const overlapEnd = seg.overlapEnd ?? 0.025;
+  const totalLen = exactLen + overlapStart + overlapEnd;
+  const g = new THREE.CylinderGeometry(seg.rTop, seg.rBot, totalLen, seg.radialSegs, 1);
+  g.translate(0, exactLen * 0.5 + (overlapEnd - overlapStart) * 0.5, 0);
+  _tmpQuat.setFromUnitVectors(_upVec, unitDir);
+  g.applyQuaternion(_tmpQuat);
+  g.translate(seg.start.x, seg.start.y, seg.start.z);
+  return prepGeo(g);
+}
+
+export interface TreeTopologyReport {
+  segments: ConnectedTubeSegment[];
+  trunkEnd: THREE.Vector3;
+  branchCount: number;
+}
+
+export function createBogPineSegments(): TreeTopologyReport {
+  const p0 = new THREE.Vector3(0, -0.06, 0);
+  const p1 = new THREE.Vector3(0.08, 1.05, 0.05);
+  const p2 = new THREE.Vector3(-0.04, 1.94, 0.13);
+  const p3 = new THREE.Vector3(-0.11, 2.62, 0.07);
+
+  const b1Start = p1.clone().lerp(p2, 0.44);
+  const b1End = b1Start.clone().add(new THREE.Vector3(-0.62, 0.62, -0.34));
+  const b2Start = p1.clone().lerp(p2, 0.78);
+  const b2End = b2Start.clone().add(new THREE.Vector3(0.58, 0.66, 0.26));
+  const b3Start = p2.clone().lerp(p3, 0.42);
+  const b3End = b3Start.clone().add(new THREE.Vector3(0.24, 0.56, -0.52));
+
+  return {
+    segments: [
+      { start: p0, end: p1, rBot: 0.135, rTop: 0.095, radialSegs: 6, overlapStart: 0.02, overlapEnd: 0.04 },
+      { start: p1, end: p2, rBot: 0.095, rTop: 0.062, radialSegs: 6, overlapStart: 0.04, overlapEnd: 0.04 },
+      { start: p2, end: p3, rBot: 0.062, rTop: 0.025, radialSegs: 5, overlapStart: 0.04, overlapEnd: 0.02 },
+      { start: b1Start, end: b1End, rBot: 0.052, rTop: 0.018, radialSegs: 5, overlapStart: 0.05, overlapEnd: 0.015 },
+      { start: b2Start, end: b2End, rBot: 0.046, rTop: 0.016, radialSegs: 5, overlapStart: 0.05, overlapEnd: 0.015 },
+      { start: b3Start, end: b3End, rBot: 0.036, rTop: 0.014, radialSegs: 5, overlapStart: 0.045, overlapEnd: 0.015 },
+    ],
+    trunkEnd: p3,
+    branchCount: 3,
+  };
+}
+
 function makeBranchCyl(
   rTop: number,
   rBot: number,
@@ -224,25 +286,40 @@ function makeVolumetricCluster(
 // ============================================================================
 
 function buildBirchGeometries() {
-  const trunkParts: THREE.BufferGeometry[] = [];
-  const segH = 2.15;
+  const spine = [
+    new THREE.Vector3(0, -0.1, 0),
+    new THREE.Vector3(0.08, 2.05, -0.04),
+    new THREE.Vector3(0.24, 4.2, 0.07),
+    new THREE.Vector3(0.16, 6.35, 0.16),
+    new THREE.Vector3(0.28, 8.5, 0.12),
+  ];
   const radii = [0.22, 0.16, 0.12, 0.075, 0.032];
-  const offX = [0, 0.08, 0.24, 0.16, 0.28];
-  const offZ = [0, -0.04, 0.07, 0.16, 0.12];
-  for (let i = 0; i < 4; i++) {
-    const seg = new THREE.CylinderGeometry(radii[i + 1], radii[i], segH + 0.08, 7, 1);
-    seg.translate(0, segH * 0.5, 0);
-    const dx = offX[i + 1] - offX[i];
-    const dz = offZ[i + 1] - offZ[i];
-    seg.rotateZ(-Math.atan2(dx, segH));
-    seg.rotateX(Math.atan2(dz, segH));
-    seg.translate(offX[i], i * segH - 0.1, offZ[i]);
-    trunkParts.push(prepGeo(seg));
+  const trunkParts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < spine.length - 1; i++) {
+    trunkParts.push(
+      buildConnectedTube({
+        start: spine[i],
+        end: spine[i + 1],
+        rBot: radii[i],
+        rTop: radii[i + 1],
+        radialSegs: 7,
+        overlapStart: i === 0 ? 0.02 : 0.05,
+        overlapEnd: 0.04,
+      })
+    );
   }
-  trunkParts.push(makeBranchCyl(0.02, 0.065, 3.0, 5, 0.16, 4.6, 0.08, 0.38, 0.2, 0.52));
-  trunkParts.push(makeBranchCyl(0.02, 0.06, 2.8, 5, 0.18, 5.2, 0.1, -0.42, 1.1, -0.48));
-  trunkParts.push(makeBranchCyl(0.018, 0.055, 2.6, 5, 0.15, 5.9, 0.12, 0.45, -0.8, -0.38));
-  trunkParts.push(makeBranchCyl(0.018, 0.048, 2.3, 5, 0.22, 6.6, 0.12, -0.32, 2.1, 0.44));
+  const b1 = spine[2].clone().lerp(spine[3], 0.2);
+  const b2 = spine[2].clone().lerp(spine[3], 0.48);
+  const b3 = spine[2].clone().lerp(spine[3], 0.8);
+  const b4 = spine[3].clone().lerp(spine[4], 0.14);
+  const branchSpecs: ConnectedTubeSegment[] = [
+    { start: b1, end: b1.clone().add(new THREE.Vector3(-1.35, 2.45, 0.85)), rBot: 0.065, rTop: 0.02, radialSegs: 5, overlapStart: 0.06 },
+    { start: b2, end: b2.clone().add(new THREE.Vector3(1.18, 2.28, -0.78)), rBot: 0.06, rTop: 0.02, radialSegs: 5, overlapStart: 0.06 },
+    { start: b3, end: b3.clone().add(new THREE.Vector3(0.85, 2.15, 0.98)), rBot: 0.055, rTop: 0.018, radialSegs: 5, overlapStart: 0.06 },
+    { start: b4, end: b4.clone().add(new THREE.Vector3(-0.92, 1.9, -0.68)), rBot: 0.048, rTop: 0.018, radialSegs: 5, overlapStart: 0.06 },
+  ];
+  for (const bs of branchSpecs) trunkParts.push(buildConnectedTube(bs));
+
   const trunkLod0 = applyHeightGradient(
     mergeGeometries(trunkParts)!,
     0.2,
@@ -284,11 +361,15 @@ function buildBirchGeometries() {
   const crownLod0 = mergeGeometries(leafParts)!;
 
   // LOD1: crisp low-poly 3D volumetric leaf clusters (only ~84 tris)
+  const lod1Bot = new THREE.Vector3(0, -0.1, 0);
+  const lod1Top = new THREE.Vector3(0.26, 8.5, 0.1);
+  const l1b1 = lod1Bot.clone().lerp(lod1Top, 0.6);
+  const l1b2 = lod1Bot.clone().lerp(lod1Top, 0.64);
   const trunkLod1 = applyHeightGradient(
     mergeGeometries([
-      makeBranchCyl(0.05, 0.21, 8.6, 5, 0, -0.1, 0, 0, 0, -0.03),
-      makeBranchCyl(0.025, 0.06, 2.4, 4, 0.1, 5.1, 0, 0.35, 0.4, 0.45),
-      makeBranchCyl(0.025, 0.06, 2.4, 4, 0.1, 5.4, 0, -0.35, 1.4, -0.42),
+      buildConnectedTube({ start: lod1Bot, end: lod1Top, rBot: 0.21, rTop: 0.05, radialSegs: 5, overlapStart: 0.02 }),
+      buildConnectedTube({ start: l1b1, end: l1b1.clone().add(new THREE.Vector3(-0.95, 2.0, 0.65)), rBot: 0.06, rTop: 0.025, radialSegs: 4, overlapStart: 0.05 }),
+      buildConnectedTube({ start: l1b2, end: l1b2.clone().add(new THREE.Vector3(0.9, 1.95, -0.65)), rBot: 0.06, rTop: 0.025, radialSegs: 4, overlapStart: 0.05 }),
     ])!,
     0.2,
     2.2,
@@ -336,23 +417,40 @@ function buildBirchGeometries() {
 }
 
 function buildPineGeometries() {
-  const trunkParts: THREE.BufferGeometry[] = [];
-  const segH = 3.5;
+  const spine = [
+    new THREE.Vector3(0, -0.12, 0),
+    new THREE.Vector3(0.05, 3.38, 0.04),
+    new THREE.Vector3(0.13, 6.88, -0.04),
+    new THREE.Vector3(0.06, 10.38, -0.09),
+    new THREE.Vector3(-0.02, 13.88, -0.04),
+  ];
   const radii = [0.24, 0.2, 0.16, 0.115, 0.052];
-  const ox = [0, 0.05, 0.13, 0.06, -0.02];
-  const oz = [0, 0.04, -0.04, -0.09, -0.04];
-  for (let i = 0; i < 4; i++) {
-    const seg = new THREE.CylinderGeometry(radii[i + 1], radii[i], segH + 0.08, 7, 1);
-    seg.translate(0, segH * 0.5, 0);
-    seg.rotateZ(-Math.atan2(ox[i + 1] - ox[i], segH));
-    seg.rotateX(Math.atan2(oz[i + 1] - oz[i], segH));
-    seg.translate(ox[i], i * segH - 0.12, oz[i]);
-    trunkParts.push(prepGeo(seg));
+  const trunkParts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < spine.length - 1; i++) {
+    trunkParts.push(
+      buildConnectedTube({
+        start: spine[i],
+        end: spine[i + 1],
+        rBot: radii[i],
+        rTop: radii[i + 1],
+        radialSegs: 7,
+        overlapStart: i === 0 ? 0.02 : 0.05,
+        overlapEnd: 0.04,
+      })
+    );
   }
-  trunkParts.push(makeBranchCyl(0.025, 0.075, 2.7, 5, 0.05, 10.6, -0.06, 0.18, 0.3, 1.06));
-  trunkParts.push(makeBranchCyl(0.025, 0.075, 2.6, 5, 0.03, 11.1, -0.08, -0.22, 1.9, -1.02));
-  trunkParts.push(makeBranchCyl(0.022, 0.068, 2.3, 5, 0.01, 11.9, -0.06, 0.88, 0.9, 0.28));
-  trunkParts.push(makeBranchCyl(0.022, 0.065, 2.2, 5, 0.0, 12.5, -0.05, -0.82, -0.5, -0.25));
+  const pb1 = spine[3].clone().lerp(spine[4], 0.08);
+  const pb2 = spine[3].clone().lerp(spine[4], 0.22);
+  const pb3 = spine[3].clone().lerp(spine[4], 0.45);
+  const pb4 = spine[3].clone().lerp(spine[4], 0.62);
+  for (const seg of [
+    { start: pb1, end: pb1.clone().add(new THREE.Vector3(-2.15, 1.25, 0.55)), rBot: 0.075, rTop: 0.025, radialSegs: 5, overlapStart: 0.06 },
+    { start: pb2, end: pb2.clone().add(new THREE.Vector3(1.95, 1.22, -0.85)), rBot: 0.075, rTop: 0.025, radialSegs: 5, overlapStart: 0.06 },
+    { start: pb3, end: pb3.clone().add(new THREE.Vector3(-0.55, 1.38, 1.7)), rBot: 0.068, rTop: 0.022, radialSegs: 5, overlapStart: 0.06 },
+    { start: pb4, end: pb4.clone().add(new THREE.Vector3(0.75, 1.4, -1.55)), rBot: 0.065, rTop: 0.022, radialSegs: 5, overlapStart: 0.06 },
+  ]) {
+    trunkParts.push(buildConnectedTube(seg));
+  }
   const trunkLod0 = applyHeightGradient(
     mergeGeometries(trunkParts)!,
     2.4,
@@ -434,27 +532,33 @@ function buildPineGeometries() {
 }
 
 function buildBogPineGeometries() {
-  const trunk = mergeGeometries([
-    makeBranchCyl(0.09, 0.14, 1.4, 6, 0, -0.05, 0, 0.14, 0.2, -0.12),
-    makeBranchCyl(0.05, 0.09, 1.5, 6, -0.16, 1.25, 0.18, -0.18, 0.5, 0.22),
-    makeBranchCyl(0.022, 0.052, 1.3, 5, 0.1, 1.75, 0.04, 0.45, 0.8, 0.85),
-    makeBranchCyl(0.02, 0.048, 1.15, 5, 0.05, 2.0, 0.05, -0.35, 2.2, -0.75),
-  ])!;
+  const topo = createBogPineSegments();
+  const trunk = mergeGeometries(topo.segments.map((s) => buildConnectedTube(s)))!;
+
+  // Cluster bog pine needle tufts naturally around upper trunk & bough tips
+  const anchors = [
+    topo.trunkEnd,
+    topo.segments[3].end,
+    topo.segments[4].end,
+    topo.segments[5].end,
+    topo.segments[2].start.clone().lerp(topo.segments[2].end, 0.6),
+  ];
   const needleParts: THREE.BufferGeometry[] = [];
   const rand = seededRand(29);
   const bogDark = new THREE.Color(0x28411f);
   const bogTip = new THREE.Color(0x557536);
-  for (let i = 0; i < 42; i++) {
-    const a = (i / 42) * Math.PI * 8 + rand() * 0.5;
-    const r = 0.25 + rand() * 0.85;
-    const y = 2.0 + rand() * 1.15;
+  for (let i = 0; i < 45; i++) {
+    const anchor = anchors[i % anchors.length];
+    const a = (i / 45) * Math.PI * 10 + rand() * 0.7;
+    const r = 0.08 + rand() * 0.42;
+    const dy = (rand() - 0.3) * 0.36;
     needleParts.push(
       makeSingleNeedleShoot(
-        0.38 + rand() * 0.22,
-        0.26 + rand() * 0.14,
-        Math.cos(a) * r,
-        y,
-        Math.sin(a) * r,
+        0.34 + rand() * 0.2,
+        0.2 + rand() * 0.11,
+        anchor.x + Math.cos(a) * r,
+        anchor.y + dy,
+        anchor.z + Math.sin(a) * r,
         0.72 + (rand() - 0.5) * 0.7,
         a,
         (rand() - 0.5) * 0.4,
@@ -585,16 +689,44 @@ function buildHazelBushGeometries() {
     const a = (i / 6) * Math.PI * 2 + rand() * 0.35;
     const tilt = 0.28 + rand() * 0.32;
     const len = 1.15 + rand() * 0.55;
-    const sx = Math.cos(a) * 0.08;
-    const sz = Math.sin(a) * 0.08;
-    stemParts.push(
-      makeBranchCyl(0.015, 0.038, len, 4, sx, -0.04, sz, Math.sin(a) * tilt, 0, -Math.cos(a) * tilt)
+    const pStart = new THREE.Vector3(Math.cos(a) * 0.08, -0.04, Math.sin(a) * 0.08);
+    const pEnd = pStart.clone().add(
+      new THREE.Vector3(
+        Math.cos(a) * len * Math.sin(tilt),
+        len * Math.cos(tilt),
+        Math.sin(a) * len * Math.sin(tilt)
+      )
     );
-    const midX = sx + Math.cos(a) * len * 0.48 * Math.sin(tilt);
-    const midZ = sz + Math.sin(a) * len * 0.48 * Math.sin(tilt);
-    const midY = len * 0.48 * Math.cos(tilt);
     stemParts.push(
-      makeBranchCyl(0.008, 0.02, 0.65, 4, midX, midY, midZ, (rand() - 0.5) * 0.8, a, (rand() - 0.5) * 0.8)
+      buildConnectedTube({
+        start: pStart,
+        end: pEnd,
+        rBot: 0.038,
+        rTop: 0.015,
+        radialSegs: 4,
+        overlapStart: 0.02,
+        overlapEnd: 0.015,
+      })
+    );
+    const forkStart = pStart.clone().lerp(pEnd, 0.48);
+    const twigAngle = a + (rand() - 0.5) * 1.1;
+    const forkEnd = forkStart.clone().add(
+      new THREE.Vector3(
+        Math.cos(twigAngle) * 0.42,
+        0.48 + rand() * 0.16,
+        Math.sin(twigAngle) * 0.42
+      )
+    );
+    stemParts.push(
+      buildConnectedTube({
+        start: forkStart,
+        end: forkEnd,
+        rBot: 0.02,
+        rTop: 0.008,
+        radialSegs: 4,
+        overlapStart: 0.03,
+        overlapEnd: 0.01,
+      })
     );
   }
 

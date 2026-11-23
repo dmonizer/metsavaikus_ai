@@ -22,6 +22,7 @@ import * as THREE from 'three';
 import { generateWorldBlueprint } from './worldBlueprint';
 import { ComputeEngine } from './wasmCompute';
 import { TerrainChunkManager } from './terrainChunkManager';
+import { buildConnectedTube, createBogPineSegments } from './foliageFactory';
 
 test('World constants scale to 1200x1200m procedural streaming', () => {
   assert.equal(WORLD_SIZE, 1200);
@@ -215,4 +216,46 @@ test('TerrainChunkManager keeps active geometries valid and avoids eviction thra
 
   manager.dispose();
   dummyTex.dispose();
+});
+
+test('Bog pine trunk spine and side branches remain strictly connected with no floating segments', () => {
+  const { segments, branchCount } = createBogPineSegments();
+  const trunkCount = segments.length - branchCount;
+  assert.ok(trunkCount >= 3);
+  assert.equal(branchCount, 3);
+
+  // Trunk spine segments must meet end-to-start with zero air gap
+  for (let i = 0; i < trunkCount - 1; i++) {
+    const gap = segments[i].end.distanceTo(segments[i + 1].start);
+    assert.ok(gap < 1e-6, `Trunk gap at joint ${i}: ${gap}`);
+  }
+
+  // Every branch start must lie directly on one of the parent trunk spine segments
+  const line = new THREE.Line3();
+  const closest = new THREE.Vector3();
+  for (let b = trunkCount; b < segments.length; b++) {
+    const bStart = segments[b].start;
+    let minDist = Infinity;
+    for (let t = 0; t < trunkCount; t++) {
+      line.set(segments[t].start, segments[t].end);
+      line.closestPointToPoint(bStart, true, closest);
+      minDist = Math.min(minDist, closest.distanceTo(bStart));
+    }
+    assert.ok(minDist < 1e-5, `Branch ${b} root detached from trunk by ${minDist}m`);
+  }
+
+  // Ensure every tube builds cleanly with finite vertices enclosing its start and end
+  for (const seg of segments) {
+    const geo = buildConnectedTube(seg);
+    const pos = geo.getAttribute('position');
+    assert.ok(pos && pos.count > 0);
+    geo.computeBoundingBox();
+    const box = geo.boundingBox!;
+    assert.ok(
+      box.distanceToPoint(seg.start) <= seg.rBot + 0.02 &&
+        box.distanceToPoint(seg.end) <= seg.rTop + 0.02,
+      'Tube geometry must cover both endpoints cleanly'
+    );
+    geo.dispose();
+  }
 });
