@@ -1,0 +1,6 @@
+{
+  "name": "Metsavaikus",
+  "description": "Atmospheric Estonian countryside open-world exploration with dynamic LOD terrain, procedural forests, mushroom foraging, and dynamic weather.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,1874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Metsavaikus — Estonian Countryside Open World</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: #0c110e;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      color: #eef3ec;
+    }
+    canvas { display: block; }
+
+    /* Overlay & Menu */
+    #blocker {
+      position: fixed; inset: 0; z-index: 20;
+      background: radial-gradient(circle at center, rgba(16, 26, 20, 0.72), rgba(8, 12, 10, 0.92));
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: 24px; backdrop-filter: blur(6px);
+      transition: opacity 0.35s ease;
+    }
+    #blocker.hidden { opacity: 0; pointer-events: none; }
+    #blocker h1 {
+      font-size: clamp(2.2rem, 5vw, 3.8rem);
+      letter-spacing: 0.14em; text-transform: uppercase;
+      margin: 0 0 8px; font-weight: 300; color: #e2ebd8;
+    }
+    #blocker .subtitle {
+      font-size: 1rem; color: #9cb09a; margin-bottom: 28px; max-width: 560px; line-height: 1.5;
+    }
+    #startBtn {
+      padding: 14px 36px; font-size: 1.05rem; letter-spacing: 0.08em;
+      background: #3d5a45; color: #f4f7f2; border: 1px solid #6c8f73;
+      border-radius: 4px; cursor: pointer; transition: all 0.2s;
+    }
+    #startBtn:hover { background: #4f7358; transform: translateY(-1px); }
+
+    .controls-grid {
+      margin-top: 28px; display: grid; grid-template-columns: repeat(2, minmax(190px, 1fr));
+      gap: 8px 24px; text-align: left; font-size: 0.85rem; color: #b9c7b7;
+      background: rgba(0,0,0,0.35); padding: 16px 22px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .controls-grid b { color: #e7efe5; }
+
+    /* HUD */
+    #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      width: 6px; height: 6px; margin: -3px 0 0 -3px;
+      border-radius: 50%; background: rgba(255,255,255,0.65);
+      box-shadow: 0 0 4px rgba(0,0,0,0.7);
+      transition: transform 0.12s, background 0.12s;
+    }
+    #crosshair.active {
+      transform: scale(1.7); background: #ffdca8;
+    }
+
+    #top-left {
+      position: absolute; top: 18px; left: 20px;
+      background: rgba(12, 18, 14, 0.55); padding: 10px 14px;
+      border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+      backdrop-filter: blur(4px); font-size: 0.85rem; line-height: 1.45;
+    }
+    #biome-name { font-size: 1rem; font-weight: 600; color: #dce8d5; }
+    #time-weather { color: #a7bba6; }
+
+    #top-right {
+      position: absolute; top: 18px; right: 20px; text-align: right;
+      background: rgba(12, 18, 14, 0.55); padding: 10px 14px;
+      border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
+      font-size: 0.78rem; color: #b7c6b5; line-height: 1.5;
+    }
+
+    #interact-prompt {
+      position: absolute; top: 56%; left: 50%; transform: translateX(-50%);
+      background: rgba(10, 15, 12, 0.78); padding: 8px 16px;
+      border-radius: 5px; border: 1px solid rgba(255,255,255,0.15);
+      font-size: 0.9rem; text-align: center; opacity: 0; transition: opacity 0.15s;
+      max-width: 420px;
+    }
+    #interact-prompt.visible { opacity: 1; }
+    #interact-title { font-weight: 600; color: #f3e4c3; margin-bottom: 2px; }
+    #interact-actions { font-size: 0.8rem; color: #c4d1c2; }
+
+    #toast {
+      position: absolute; bottom: 84px; left: 50%; transform: translateX(-50%);
+      background: rgba(12, 18, 14, 0.85); color: #eef2eb;
+      padding: 10px 18px; border-radius: 6px; border-left: 3px solid #96b88e;
+      font-size: 0.9rem; max-width: 520px; text-align: center;
+      opacity: 0; transition: opacity 0.25s;
+    }
+    #toast.visible { opacity: 1; }
+
+    #bottom-left {
+      position: absolute; bottom: 20px; left: 20px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .bar-wrap {
+      width: 180px; height: 7px; background: rgba(0,0,0,0.5);
+      border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.12);
+    }
+    #stamina-bar {
+      width: 100%; height: 100%; background: linear-gradient(90deg, #6b9e78, #b2d49c);
+      transition: width 0.08s linear;
+    }
+    #carry-status {
+      font-size: 0.82rem; color: #f0dfb4; text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+    }
+    #flash-overlay {
+      position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 15;
+    }
+  </style>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="flash-overlay"></div>
+
+  <div id="blocker">
+    <h1>METSAVAIKUS</h1>
+    <div class="subtitle">
+      Explore an atmospheric Estonian countryside: birch &amp; pine forests, mist-covered bogs (<i>raba</i>),
+      a quiet homestead, and an abandoned village. Dynamic weather, day/night cycle, and physical objects.
+    </div>
+    <button id="startBtn">Enter Countryside</button>
+    <div class="controls-grid">
+      <div><b>WASD</b> — Walk</div>
+      <div><b>Shift</b> — Run</div>
+      <div><b>Space</b> — Jump</div>
+      <div><b>C</b> — Crouch</div>
+      <div><b>E</b> — Pick up / Drop / Use</div>
+      <div><b>F</b> — Kick / Push object</div>
+      <div><b>R</b> — Touch / Inspect</div>
+      <div><b>L</b> — Toggle Flashlight</div>
+      <div><b>T</b> — Skip +2 hours</div>
+      <div><b>Y</b> — Cycle Weather</div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div id="crosshair"></div>
+
+    <div id="top-left">
+      <div id="biome-name">Külatee (Country Road)</div>
+      <div id="time-weather">09:15 • Clear</div>
+    </div>
+
+    <div id="top-right">
+      <div>[L] Flashlight &nbsp;|&nbsp; [T] Time +2h &nbsp;|&nbsp; [Y] Weather</div>
+      <div>[E] Pick up / Use &nbsp;|&nbsp; [F] Kick / Push &nbsp;|&nbsp; [R] Touch</div>
+    </div>
+
+    <div id="interact-prompt">
+      <div id="interact-title"></div>
+      <div id="interact-actions"></div>
+    </div>
+
+    <div id="toast"></div>
+
+    <div id="bottom-left">
+      <div id="carry-status"></div>
+      <div class="bar-wrap"><div id="stamina-bar"></div></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // =========================================================================
+    // 1. NOISE & WORLD MATH (Deterministic Estonian Countryside Height & Biomes)
+    // =========================================================================
+    function hash2(x, z) {
+      let n = Math.sin(x * 127.1 + z * 311.7) * 43758.5453123;
+      return n - Math.floor(n);
+    }
+    function smoothNoise(x, z) {
+      const ix = Math.floor(x), iz = Math.floor(z);
+      const fx = x - ix, fz = z - iz;
+      const ux = fx * fx * (3 - 2 * fx);
+      const uz = fz * fz * (3 - 2 * fz);
+      const a = hash2(ix, iz);
+      const b = hash2(ix + 1, iz);
+      const c = hash2(ix, iz + 1);
+      const d = hash2(ix + 1, iz + 1);
+      return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+    }
+    function fbm(x, z, octaves = 4) {
+      let val = 0, amp = 0.5, freq = 1;
+      for (let i = 0; i < octaves; i++) {
+        val += amp * (smoothNoise(x * freq, z * freq) * 2 - 1);
+        freq *= 2.02;
+        amp *= 0.5;
+      }
+      return val;
+    }
+
+    const WORLD_RADIUS = 240;
+    // Key landmarks:
+    // Village 1 (Vana-Kase homestead): around (0, -28)
+    // Abandoned Village (Tühja-Metsa): around (-88, 72)
+    // Swamp / Raba (Soo): centered around (85, 55), radius ~65
+    // Dirt road winds from (0, -150) through (0, 0) curving toward (-88, 72) and branching toward the swamp boardwalk.
+
+    function roadCenterX(z) {
+      return Math.sin(z * 0.025) * 14 - Math.max(0, z) * 0.55;
+    }
+
+    function distToRoad(x, z) {
+      // Main winding country gravel road
+      let minD = Math.abs(x - roadCenterX(z));
+      // Spur path to swamp boardwalk (from z=10, x=-5 to swamp edge x=40, z=45)
+      const ax = -4, az = 8, bx = 46, bz = 44;
+      const abx = bx - ax, abz = bz - az;
+      const t = Math.max(0, Math.min(1, ((x - ax) * abx + (z - az) * abz) / (abx * abx + abz * abz)));
+      const dSpur = Math.hypot(x - (ax + t * abx), z - (az + t * abz));
+      return Math.min(minD, dSpur);
+    }
+
+    function getSwampFactor(x, z) {
+      const d = Math.hypot(x - 92, z - 58);
+      const wobble = fbm(x * 0.03, z * 0.03, 2) * 14;
+      return THREE.MathUtils.clamp(1 - (d + wobble - 36) / 28, 0, 1);
+    }
+
+    function getTerrainHeight(x, z) {
+      const base = fbm(x * 0.008, z * 0.008, 4) * 7.5 + fbm(x * 0.03, z * 0.03, 2) * 1.1;
+      const swamp = getSwampFactor(x, z);
+
+      // Flatten slightly near villages
+      const dV1 = Math.hypot(x - 0, z + 26);
+      const flatV1 = THREE.MathUtils.clamp(1 - (dV1 - 18) / 22, 0, 1);
+      const dV2 = Math.hypot(x + 88, z - 72);
+      const flatV2 = THREE.MathUtils.clamp(1 - (dV2 - 22) / 24, 0, 1);
+
+      let h = base;
+      h = THREE.MathUtils.lerp(h, 1.4, flatV1 * 0.85);
+      h = THREE.MathUtils.lerp(h, 2.2, flatV2 * 0.85);
+
+      // Swamp depression
+      const bogPools = smoothNoise(x * 0.09, z * 0.09);
+      const swampH = -1.65 + bogPools * 0.95; // water sits at -1.2
+      h = THREE.MathUtils.lerp(h, swampH, swamp);
+
+      // Gentle road grading
+      const dRoad = distToRoad(x, z);
+      if (dRoad < 6) {
+        const roadMix = THREE.MathUtils.clamp(1 - (dRoad - 2.4) / 3.6, 0, 1);
+        const smoothRoadH = fbm(x * 0.008, z * 0.008, 2) * 5.0;
+        h = THREE.MathUtils.lerp(h, Math.max(-0.5, smoothRoadH), roadMix * 0.65);
+      }
+
+      // Outer border rise
+      const edge = Math.hypot(x, z);
+      if (edge > WORLD_RADIUS - 30) {
+        h += (edge - (WORLD_RADIUS - 30)) * 0.25;
+      }
+      return h;
+    }
+
+    const SWAMP_WATER_Y = -1.22;
+
+    function getBiomeInfo(x, z) {
+      if (Math.hypot(x - 4, z + 26) < 28) return { id: 'village', label: 'Vana-Kase talu (Homestead)' };
+      if (Math.hypot(x + 88, z - 72) < 34) return { id: 'abandoned', label: 'Tühja-Metsa (Abandoned Village)' };
+      if (getSwampFactor(x, z) > 0.45) return { id: 'swamp', label: 'Kõrgesoo raba (Peat Bog & Swamp)' };
+      if (distToRoad(x, z) < 3.4) return { id: 'road', label: 'Kruusatee (Gravel Country Road)' };
+      return { id: 'forest', label: 'Eesti mets (Mixed Birch & Pine Forest)' };
+    }
+
+    // =========================================================================
+    // 2. PROCEDURAL TEXTURES
+    // =========================================================================
+    function makeCanvasTex(w, h, drawFn, repeatX = 1, repeatY = 1) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      drawFn(ctx, w, h);
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(repeatX, repeatY);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    const birchBarkTex = makeCanvasTex(128, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#e7e4dc';
+      ctx.fillRect(0, 0, w, h);
+      for (let i = 0; i < 90; i++) {
+        ctx.fillStyle = Math.random() > 0.3 ? '#2c2b29' : '#7a756b';
+        const y = Math.random() * h;
+        const x = Math.random() * w;
+        ctx.fillRect(x, y, 6 + Math.random() * 24, 1.5 + Math.random() * 4);
+      }
+      ctx.fillStyle = 'rgba(30,28,25,0.45)';
+      ctx.fillRect(0, h * 0.78, w, h * 0.22);
+    });
+
+    const pineBarkTex = makeCanvasTex(128, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#4e3729';
+      ctx.fillRect(0, 0, w, h);
+      for (let i = 0; i < 160; i++) {
+        ctx.fillStyle = Math.random() > 0.5 ? '#352319' : '#6b4b38';
+        ctx.fillRect(Math.random() * w, Math.random() * h, 3 + Math.random() * 6, 12 + Math.random() * 28);
+      }
+    });
+
+    const ochreWoodTex = makeCanvasTex(256, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#a4783c';
+      ctx.fillRect(0, 0, w, h);
+      for (let y = 0; y < h; y += 16) {
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        ctx.fillRect(0, y, w, 2);
+        ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.05})`;
+        ctx.fillRect(0, y + 2, w, 14);
+      }
+    }, 2, 2);
+
+    const oldWoodTex = makeCanvasTex(256, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#534c44';
+      ctx.fillRect(0, 0, w, h);
+      for (let y = 0; y < h; y += 20) {
+        ctx.fillStyle = '#2d2823';
+        ctx.fillRect(0, y, w, 3);
+        ctx.fillStyle = `rgba(120,130,100,${Math.random() * 0.14})`;
+        ctx.fillRect(Math.random() * w, y + 3, 40, 16);
+      }
+    }, 2, 2);
+
+    const roofTex = makeCanvasTex(256, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#3a342f';
+      ctx.fillRect(0, 0, w, h);
+      for (let y = 0; y < h; y += 16) {
+        for (let x = (y % 32 === 0 ? 0 : 12); x < w; x += 24) {
+          ctx.fillStyle = Math.random() > 0.7 ? '#3d4f33' : (Math.random() > 0.5 ? '#48403a' : '#2e2925');
+          ctx.fillRect(x + 1, y + 1, 22, 14);
+        }
+      }
+    }, 3, 3);
+
+    const groundDetailTex = makeCanvasTex(256, 256, (ctx, w, h) => {
+      ctx.fillStyle = '#888888';
+      ctx.fillRect(0, 0, w, h);
+      for (let i = 0; i < 4500; i++) {
+        const v = 100 + Math.floor(Math.random() * 75);
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(Math.random() * w, Math.random() * h, 2, 2);
+      }
+    }, 48, 48);
+
+    // =========================================================================
+    // 3. PROCEDURAL WEB AUDIO ENGINE
+    // =========================================================================
+    class SoundEngine {
+      constructor() {
+        this.ctx = null;
+        this.windGain = null;
+        this.rainGain = null;
+        this.cricketGain = null;
+        this.initialized = false;
+      }
+
+      init() {
+        if (this.initialized) return;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        this.ctx = new AC();
+        this.initialized = true;
+
+        // White noise buffer for wind & rain
+        const bufSize = this.ctx.sampleRate * 2;
+        const noiseBuf = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
+        const data = noiseBuf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+
+        // Wind
+        const windSrc = this.ctx.createBufferSource();
+        windSrc.buffer = noiseBuf;
+        windSrc.loop = true;
+        const windFilter = this.ctx.createBiquadFilter();
+        windFilter.type = 'lowpass';
+        windFilter.frequency.value = 340;
+        this.windGain = this.ctx.createGain();
+        this.windGain.gain.value = 0.04;
+        windSrc.connect(windFilter).connect(this.windGain).connect(this.ctx.destination);
+        windSrc.start();
+
+        // Rain
+        const rainSrc = this.ctx.createBufferSource();
+        rainSrc.buffer = noiseBuf;
+        rainSrc.loop = true;
+        const rainFilter = this.ctx.createBiquadFilter();
+        rainFilter.type = 'bandpass';
+        rainFilter.frequency.value = 1800;
+        rainFilter.Q.value = 0.6;
+        this.rainGain = this.ctx.createGain();
+        this.rainGain.gain.value = 0.0;
+        rainSrc.connect(rainFilter).connect(this.rainGain).connect(this.ctx.destination);
+        rainSrc.start();
+      }
+
+      updateAmbience(weather, isNight, windStrength) {
+        if (!this.initialized) return;
+        const now = this.ctx.currentTime;
+        const targetWind = 0.03 + windStrength * 0.09;
+        const targetRain = weather === 'rain' ? 0.14 : (weather === 'storm' ? 0.24 : 0.0);
+        this.windGain.gain.setTargetAtTime(targetWind, now, 0.5);
+        this.rainGain.gain.setTargetAtTime(targetRain, now, 0.5);
+      }
+
+      playFootstep(surface) {
+        if (!this.initialized) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const filter = this.ctx.createBiquadFilter();
+
+        if (surface === 'wood') {
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(140 + Math.random() * 25, now);
+          osc.frequency.exponentialRampToValueAtTime(55, now + 0.08);
+          gain.gain.setValueAtTime(0.14, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+          osc.connect(gain).connect(this.ctx.destination);
+          osc.start(now); osc.stop(now + 0.1);
+        } else if (surface === 'water') {
+          // Splashy filtered burst
+          const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.16, this.ctx.sampleRate);
+          const d = buf.getChannelData(0);
+          for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+          const src = this.ctx.createBufferSource();
+          src.buffer = buf;
+          filter.type = 'bandpass';
+          filter.frequency.value = 950 + Math.random() * 350;
+          gain.gain.setValueAtTime(0.16, now);
+          gain.gain.exponentialRampToValueAtTime(0.01, now + 0.16);
+          src.connect(filter).connect(gain).connect(this.ctx.destination);
+          src.start(now);
+        } else {
+          // Gravel or grass crunch
+          const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.08, this.ctx.sampleRate);
+          const d = buf.getChannelData(0);
+          for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+          const src = this.ctx.createBufferSource();
+          src.buffer = buf;
+          filter.type = 'lowpass';
+          filter.frequency.value = surface === 'road' ? 1600 : 650;
+          gain.gain.setValueAtTime(surface === 'road' ? 0.11 : 0.07, now);
+          gain.gain.exponentialRampToValueAtTime(0.005, now + 0.08);
+          src.connect(filter).connect(gain).connect(this.ctx.destination);
+          src.start(now);
+        }
+      }
+
+      playImpact(strength = 1) {
+        if (!this.initialized) return;
+        const now = this.ctx.currentTime;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(115, now);
+        osc.frequency.exponentialRampToValueAtTime(38, now + 0.14);
+        gain.gain.setValueAtTime(Math.min(0.28, 0.12 * strength), now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        osc.connect(gain).connect(this.ctx.destination);
+        osc.start(now); osc.stop(now + 0.16);
+      }
+
+      playThunder() {
+        if (!this.initialized) return;
+        const now = this.ctx.currentTime;
+        const buf = this.ctx.createBuffer(1, this.ctx.sampleRate * 2.5, this.ctx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) {
+          d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 1.4);
+        }
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        const filter = this.ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(190, now);
+        filter.frequency.linearRampToValueAtTime(60, now + 2.4);
+        const gain = this.ctx.createGain();
+        gain.gain.setValueAtTime(0.45, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 2.5);
+        src.connect(filter).connect(gain).connect(this.ctx.destination);
+        src.start(now);
+      }
+    }
+    const sound = new SoundEngine();
+
+    // =========================================================================
+    // 4. THREE.JS SCENE, SKY, LIGHTING & WEATHER SETUP
+    // =========================================================================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x9cb5bd);
+    scene.fog = new THREE.FogExp2(0x9cb5bd, 0.011);
+
+    const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 450);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting
+    const hemiLight = new THREE.HemisphereLight(0xcbe0ee, 0x3b4832, 0.65);
+    scene.add(hemiLight);
+
+    const sunLight = new THREE.DirectionalLight(0xfff1d6, 1.8);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(2048, 2048);
+    sunLight.shadow.camera.near = 5;
+    sunLight.shadow.camera.far = 220;
+    const dShadow = 85;
+    sunLight.shadow.camera.left = -dShadow;
+    sunLight.shadow.camera.right = dShadow;
+    sunLight.shadow.camera.top = dShadow;
+    sunLight.shadow.camera.bottom = -dShadow;
+    sunLight.shadow.bias = -0.0005;
+    scene.add(sunLight);
+    scene.add(sunLight.target);
+
+    // Sun & Moon visual spheres + Stars
+    const sunMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(6, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xfff3c4, fog: false })
+    );
+    scene.add(sunMesh);
+
+    const moonMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(4, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xdbe7ff, fog: false })
+    );
+    scene.add(moonMesh);
+
+    const starGeo = new THREE.BufferGeometry();
+    const starPos = [];
+    for (let i = 0; i < 650; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI * 0.48;
+      const r = 340;
+      starPos.push(r * Math.sin(phi) * Math.cos(theta), r * Math.cos(phi), r * Math.sin(phi) * Math.sin(theta));
+    }
+    starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.2, transparent: true, opacity: 0, fog: false });
+    const stars = new THREE.Points(starGeo, starMat);
+    scene.add(stars);
+
+    // Player Flashlight
+    const flashlight = new THREE.SpotLight(0xfff1cc, 0, 38, Math.PI / 5.5, 0.45, 1.4);
+    flashlight.position.set(0, 0, 0);
+    camera.add(flashlight);
+    camera.add(flashlight.target);
+    flashlight.target.position.set(0, -0.05, -5);
+    scene.add(camera);
+    let flashlightOn = false;
+
+    // =========================================================================
+    // 5. TERRAIN & BOG WATER
+    // =========================================================================
+    const TERRAIN_SIZE = 480;
+    const TERRAIN_SEG = 220;
+    const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, TERRAIN_SEG, TERRAIN_SEG);
+    terrainGeo.rotateX(-Math.PI / 2);
+
+    const posAttr = terrainGeo.attributes.position;
+    const colors = new Float32Array(posAttr.count * 3);
+    const col = new THREE.Color();
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const x = posAttr.getX(i);
+      const z = posAttr.getZ(i);
+      const y = getTerrainHeight(x, z);
+      posAttr.setY(i, y);
+
+      const swamp = getSwampFactor(x, z);
+      const road = distToRoad(x, z);
+      const n = smoothNoise(x * 0.08, z * 0.08);
+
+      if (road < 3.4) {
+        const mix = THREE.MathUtils.clamp((road - 2.0) / 1.4, 0, 1);
+        const gravel = new THREE.Color(0x6d6759).lerp(new THREE.Color(0x565247), n);
+        const grass = new THREE.Color(0x415932);
+        col.copy(gravel).lerp(grass, mix);
+      } else if (swamp > 0.35) {
+        // Rust-red sphagnum moss & dark peat mud
+        const peat = new THREE.Color(0x302920);
+        const sphagnum = new THREE.Color(0x6b582c);
+        const bogGreen = new THREE.Color(0x46522e);
+        col.copy(bogGreen).lerp(sphagnum, n).lerp(peat, y < -1.1 ? 0.85 : 0.15);
+      } else {
+        // Lush forest grass, pine needles, mossy patches
+        const grassA = new THREE.Color(0x3f5b2d);
+        const grassB = new THREE.Color(0x526b36);
+        const needle = new THREE.Color(0x3b3d28);
+        col.copy(grassA).lerp(grassB, n);
+        if (Math.hypot(x + 88, z - 72) < 28) col.lerp(needle, 0.35);
+      }
+
+      colors[i * 3] = col.r;
+      colors[i * 3 + 1] = col.g;
+      colors[i * 3 + 2] = col.b;
+    }
+    terrainGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    terrainGeo.computeVertexNormals();
+
+    const terrainMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      map: groundDetailTex,
+      roughness: 0.95,
+      metalness: 0.0
+    });
+    const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+    terrainMesh.receiveShadow = true;
+    scene.add(terrainMesh);
+
+    // Swamp Bog Water Plane
+    const waterGeo = new THREE.CircleGeometry(72, 48);
+    waterGeo.rotateX(-Math.PI / 2);
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: 0x161b15,
+      roughness: 0.14,
+      metalness: 0.55,
+      transparent: true,
+      opacity: 0.9
+    });
+    const swampWater = new THREE.Mesh(waterGeo, waterMat);
+    swampWater.position.set(92, SWAMP_WATER_Y, 58);
+    swampWater.receiveShadow = true;
+    scene.add(swampWater);
+
+    // =========================================================================
+    // 6. COLLIDERS & INTERACTIVE OBJECT SYSTEM
+    // =========================================================================
+    const circleColliders = []; // { x, z, r }
+    const boxColliders = [];    // { minX, maxX, minZ, maxZ, maxY, ref? }
+    const boardwalkZones = [];  // { minX, maxX, minZ, maxZ, y }
+    const interactiveObjects = []; // Objects with mesh & interaction properties
+    const dynamicObjects = [];     // Physics-enabled items (kick, push, carry, throw)
+
+    function addCircleCollider(x, z, r) {
+      circleColliders.push({ x, z, r });
+    }
+
+    function addBoxCollider(cx, cz, w, d, maxY = 10) {
+      const box = { minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2, maxY, active: true };
+      boxColliders.push(box);
+      return box;
+    }
+
+    // Helper to register an interactive item
+    function registerInteractive(mesh, opts) {
+      const entry = {
+        mesh,
+        name: opts.name || 'Object',
+        desc: opts.desc || '',
+        carryable: !!opts.carryable,
+        kickable: !!opts.kickable,
+        onTouch: opts.onTouch || null,
+        onUse: opts.onUse || null,
+        radius: opts.radius || 0.35,
+        mass: opts.mass || 1.0,
+        vel: new THREE.Vector3(),
+        angVel: new THREE.Vector3(),
+        isDynamic: !!opts.dynamic,
+        resting: false,
+        light: opts.light || null,
+        onGroundYOffset: opts.yOffset ?? (opts.radius || 0.35)
+      };
+      mesh.userData.interactive = entry;
+      mesh.traverse(child => { child.userData.interactive = entry; });
+      interactiveObjects.push(entry);
+      if (entry.isDynamic) dynamicObjects.push(entry);
+      return entry;
+    }
+
+    // =========================================================================
+    // 7. ESTONIAN VILLAGES, HOMESTEAD, BOARDWALK & LANDMARKS
+    // =========================================================================
+    function buildWoodenHouse(x, z, rotY, opts = {}) {
+      const {
+        w = 7.2, d = 5.4, h = 3.0,
+        wallMat = new THREE.MeshStandardMaterial({ map: ochreWoodTex, roughness: 0.88 }),
+        roofMat = new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.92 }),
+        abandoned = false,
+        name = 'Taluhoone'
+      } = opts;
+
+      const y = getTerrainHeight(x, z);
+      const group = new THREE.Group();
+      group.position.set(x, y, z);
+      group.rotation.y = rotY;
+      scene.add(group);
+
+      // Stone foundation
+      const found = new THREE.Mesh(
+        new THREE.BoxGeometry(w + 0.3, 0.5, d + 0.3),
+        new THREE.MeshStandardMaterial({ color: 0x5c5b57, roughness: 0.95 })
+      );
+      found.position.y = 0.15;
+      found.castShadow = true; found.receiveShadow = true;
+      group.add(found);
+
+      // Floor inside
+      const floor = new THREE.Mesh(
+        new THREE.BoxGeometry(w - 0.2, 0.15, d - 0.2),
+        new THREE.MeshStandardMaterial({ color: 0x4d3a2a, roughness: 0.9 })
+      );
+      floor.position.y = 0.36;
+      floor.receiveShadow = true;
+      group.add(floor);
+
+      const wallThick = 0.26;
+      const doorWidth = 1.25;
+
+      // Back wall
+      const backW = new THREE.Mesh(new THREE.BoxGeometry(w, h, wallThick), wallMat);
+      backW.position.set(0, 0.4 + h / 2, -d / 2 + wallThick / 2);
+      backW.castShadow = true; backW.receiveShadow = true;
+      group.add(backW);
+
+      // Left & right walls
+      const leftW = new THREE.Mesh(new THREE.BoxGeometry(wallThick, h, d), wallMat);
+      leftW.position.set(-w / 2 + wallThick / 2, 0.4 + h / 2, 0);
+      leftW.castShadow = true; leftW.receiveShadow = true;
+      group.add(leftW);
+
+      const rightW = new THREE.Mesh(new THREE.BoxGeometry(wallThick, h, d), wallMat);
+      rightW.position.set(w / 2 - wallThick / 2, 0.4 + h / 2, 0);
+      rightW.castShadow = true; rightW.receiveShadow = true;
+      group.add(rightW);
+
+      // Front wall split around doorway
+      const sideSegW = (w - doorWidth) / 2;
+      const frontL = new THREE.Mesh(new THREE.BoxGeometry(sideSegW, h, wallThick), wallMat);
+      frontL.position.set(-w / 2 + sideSegW / 2, 0.4 + h / 2, d / 2 - wallThick / 2);
+      frontL.castShadow = true; frontL.receiveShadow = true;
+      group.add(frontL);
+
+      const frontR = new THREE.Mesh(new THREE.BoxGeometry(sideSegW, h, wallThick), wallMat);
+      frontR.position.set(w / 2 - sideSegW / 2, 0.4 + h / 2, d / 2 - wallThick / 2);
+      frontR.castShadow = true; frontR.receiveShadow = true;
+      group.add(frontR);
+
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorWidth, 0.7, wallThick), wallMat);
+      lintel.position.set(0, 0.4 + h - 0.35, d / 2 - wallThick / 2);
+      lintel.castShadow = true;
+      group.add(lintel);
+
+      // Pitched Roof (two sloped planes + gable triangles)
+      const roofOverhang = 0.5;
+      const roofH = 2.0;
+      const slopeLen = Math.hypot(d / 2 + roofOverhang, roofH);
+      const slopeAngle = Math.atan2(roofH, d / 2 + roofOverhang);
+
+      const roofFront = new THREE.Mesh(new THREE.BoxGeometry(w + roofOverhang * 2, 0.16, slopeLen), roofMat);
+      roofFront.position.set(0, 0.4 + h + roofH / 2 - 0.1, (d / 2 + roofOverhang) / 2);
+      roofFront.rotation.x = slopeAngle;
+      roofFront.castShadow = true; roofFront.receiveShadow = true;
+      group.add(roofFront);
+
+      const roofBack = new THREE.Mesh(new THREE.BoxGeometry(w + roofOverhang * 2, 0.16, slopeLen), roofMat);
+      roofBack.position.set(0, 0.4 + h + roofH / 2 - 0.1, -(d / 2 + roofOverhang) / 2);
+      roofBack.rotation.x = -slopeAngle;
+      roofBack.castShadow = true; roofBack.receiveShadow = true;
+      group.add(roofBack);
+
+      // Gables
+      const gableShape = new THREE.Shape();
+      gableShape.moveTo(-d / 2, 0);
+      gableShape.lineTo(d / 2, 0);
+      gableShape.lineTo(0, roofH);
+      gableShape.closePath();
+      const gableGeo = new THREE.ExtrudeGeometry(gableShape, { depth: 0.2, bevelEnabled: false });
+      gableGeo.rotateY(Math.PI / 2);
+      const gableL = new THREE.Mesh(gableGeo, wallMat);
+      gableL.position.set(-w / 2, 0.4 + h, 0);
+      gableL.castShadow = true;
+      group.add(gableL);
+      const gableR = new THREE.Mesh(gableGeo, wallMat);
+      gableR.position.set(w / 2 - 0.2, 0.4 + h, 0);
+      gableR.castShadow = true;
+      group.add(gableR);
+
+      // Chimney
+      const chimney = new THREE.Mesh(
+        new THREE.BoxGeometry(0.65, 1.6, 0.65),
+        new THREE.MeshStandardMaterial({ color: 0x6b3a2e, roughness: 0.9 })
+      );
+      chimney.position.set(-w * 0.2, 0.4 + h + roofH - 0.2, -0.4);
+      chimney.castShadow = true;
+      group.add(chimney);
+
+      // Windows (warm glow inside if not abandoned)
+      const winMat = new THREE.MeshStandardMaterial({
+        color: abandoned ? 0x161a18 : 0x2e3b42,
+        emissive: abandoned ? 0x000000 : 0xffb35c,
+        emissiveIntensity: abandoned ? 0 : 0.35,
+        roughness: 0.2
+      });
+      const win1 = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.0, 0.32), winMat);
+      win1.position.set(-w * 0.28, 0.4 + 1.5, d / 2 - wallThick / 2);
+      group.add(win1);
+      const win2 = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.0, 0.32), winMat);
+      win2.position.set(w * 0.28, 0.4 + 1.5, d / 2 - wallThick / 2);
+      group.add(win2);
+
+      // Interactive Door
+      const doorPivot = new THREE.Group();
+      doorPivot.position.set(-doorWidth / 2, 0.4, d / 2 - wallThick / 2);
+      const doorMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(doorWidth - 0.04, h - 0.72, 0.1),
+        new THREE.MeshStandardMaterial({ color: abandoned ? 0x3b352f : 0x5c3e26, roughness: 0.85 })
+      );
+      doorMesh.position.set(doorWidth / 2, (h - 0.72) / 2, 0);
+      doorMesh.castShadow = true;
+      doorPivot.add(doorMesh);
+      group.add(doorPivot);
+
+      let doorOpen = abandoned && Math.random() > 0.5;
+      doorPivot.rotation.y = doorOpen ? -Math.PI * 0.58 : 0;
+
+      // World-space wall colliders (only accurate for 0 or 90 deg rotations, or general rotated AABB approx; let's support 0, PI/2, PI, -PI/2 cleanly)
+      // Transform local box corners to world AABB
+      function addLocalCollider(lx, lz, lw, ld) {
+        const c = Math.cos(rotY), s = Math.sin(rotY);
+        const wx = x + lx * c + lz * s;
+        const wz = z - lx * s + lz * c;
+        const ww = Math.abs(lw * c) + Math.abs(ld * s);
+        const wd = Math.abs(lw * s) + Math.abs(ld * c);
+        return addBoxCollider(wx, wz, ww, wd, y + h);
+      }
+      addLocalCollider(0, -d / 2 + wallThick / 2, w, wallThick);
+      addLocalCollider(-w / 2 + wallThick / 2, 0, wallThick, d);
+      addLocalCollider(w / 2 - wallThick / 2, 0, wallThick, d);
+      addLocalCollider(-w / 2 + sideSegW / 2, d / 2 - wallThick / 2, sideSegW, wallThick);
+      addLocalCollider(w / 2 - sideSegW / 2, d / 2 - wallThick / 2, sideSegW, wallThick);
+      const doorCollider = addLocalCollider(0, d / 2 - wallThick / 2, doorWidth, wallThick);
+      doorCollider.active = !doorOpen;
+
+      registerInteractive(doorMesh, {
+        name: abandoned ? 'Old Cabin Door' : `${name} Door`,
+        desc: abandoned ? 'Warped timber creaks on rusted hinges.' : 'Heavy pine door smelling of woodsmoke.',
+        onUse: () => {
+          doorOpen = !doorOpen;
+          doorCollider.active = !doorOpen;
+          doorPivot.rotation.y = doorOpen ? -Math.PI * 0.58 : 0;
+          sound.playImpact(0.7);
+          showToast(doorOpen ? 'Door opened.' : 'Door closed.');
+        },
+        onTouch: () => showToast(abandoned ? 'The weathered wood is damp and splintering.' : 'Solid hand-planed Estonian pine.')
+      });
+
+      // Small wooden table inside
+      const table = new THREE.Mesh(
+        new THREE.BoxGeometry(1.4, 0.78, 0.85),
+        new THREE.MeshStandardMaterial({ color: abandoned ? 0x453e37 : 0x6e4e32, roughness: 0.9 })
+      );
+      table.position.set(0, 0.4 + 0.39, -0.5);
+      table.castShadow = true; table.receiveShadow = true;
+      group.add(table);
+
+      return { group, y };
+    }
+
+    // --- Village 1: Vana-Kase Homestead (active rustic farm) ---
+    buildWoodenHouse(5, -28, 0.0, { name: 'Vana-Kase Farmhouse' });
+    buildWoodenHouse(-8, -22, Math.PI / 2, {
+      w: 6.2, d: 4.5, h: 2.7,
+      wallMat: new THREE.MeshStandardMaterial({ map: oldWoodTex, roughness: 0.92 }),
+      name: 'Log Barn (Ait)'
+    });
+
+    // Stone Well (Kaev)
+    {
+      const wx = -2, wz = -18;
+      const wy = getTerrainHeight(wx, wz);
+      const wellGroup = new THREE.Group();
+      wellGroup.position.set(wx, wy, wz);
+      const stoneCyl = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.95, 1.05, 1.0, 12),
+        new THREE.MeshStandardMaterial({ color: 0x6e6c67, roughness: 0.95 })
+      );
+      stoneCyl.position.y = 0.5;
+      stoneCyl.castShadow = true; stoneCyl.receiveShadow = true;
+      wellGroup.add(stoneCyl);
+
+      const postMat = new THREE.MeshStandardMaterial({ color: 0x4c3726, roughness: 0.9 });
+      [-0.85, 0.85].forEach(px => {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.0, 0.14), postMat);
+        post.position.set(px, 1.5, 0);
+        post.castShadow = true;
+        wellGroup.add(post);
+      });
+      const wellRoof = new THREE.Mesh(
+        new THREE.ConeGeometry(1.35, 0.9, 4),
+        new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.9 })
+      );
+      wellRoof.position.y = 2.85; wellRoof.rotation.y = Math.PI / 4;
+      wellRoof.castShadow = true;
+      wellGroup.add(wellRoof);
+      scene.add(wellGroup);
+      addCircleCollider(wx, wz, 1.1);
+
+      registerInteractive(stoneCyl, {
+        name: 'Stone Water Well (Kaev)',
+        desc: 'Cold groundwater glimmers deep below.',
+        onUse: () => { sound.playFootstep('water'); showToast('You draw a splash of icy Estonian spring water.'); },
+        onTouch: () => showToast('Cool, moss-covered granite fieldstones.')
+      });
+    }
+
+    // Campfire Pit at Homestead (Interactive: light / extinguish)
+    let fireLit = true;
+    const fireLight = new THREE.PointLight(0xff7d2b, 2.8, 22, 1.6);
+    const fireFlames = new THREE.Mesh(
+      new THREE.ConeGeometry(0.35, 0.85, 7),
+      new THREE.MeshBasicMaterial({ color: 0xff8c24 })
+    );
+    {
+      const fx = 2.5, fz = -17.5;
+      const fy = getTerrainHeight(fx, fz);
+      const pit = new THREE.Group();
+      pit.position.set(fx, fy, fz);
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2;
+        const st = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(0.22, 0),
+          new THREE.MeshStandardMaterial({ color: 0x555450, roughness: 0.95 })
+        );
+        st.position.set(Math.cos(a) * 0.72, 0.12, Math.sin(a) * 0.72);
+        st.castShadow = true;
+        pit.add(st);
+      }
+      const logs = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.1, 0.1, 0.9, 6),
+        new THREE.MeshStandardMaterial({ color: 0x2b1d14, roughness: 0.95 })
+      );
+      logs.rotation.z = Math.PI / 2; logs.position.y = 0.14;
+      pit.add(logs);
+      fireFlames.position.y = 0.45;
+      pit.add(fireFlames);
+      fireLight.position.y = 0.8;
+      pit.add(fireLight);
+      scene.add(pit);
+
+      registerInteractive(logs, {
+        name: 'Campfire (Lõke)',
+        desc: 'Crackling alder logs.',
+        onUse: () => {
+          fireLit = !fireLit;
+          fireFlames.visible = fireLit;
+          fireLight.intensity = fireLit ? 2.8 : 0;
+          sound.playImpact(0.5);
+          showToast(fireLit ? 'You stoke the campfire back to life.' : 'You bank the embers.');
+        },
+        onTouch: () => showToast(fireLit ? 'Warmth radiates from the birch embers!' : 'Cold ash and charred wood.')
+      });
+    }
+
+    // Wooden Signpost on the main road
+    function createSignpost(x, z, rotY, title, message) {
+      const y = getTerrainHeight(x, z);
+      const g = new THREE.Group();
+      g.position.set(x, y, z);
+      g.rotation.y = rotY;
+      const post = new THREE.Mesh(
+        new THREE.BoxGeometry(0.14, 1.8, 0.14),
+        new THREE.MeshStandardMaterial({ color: 0x4b3b2c, roughness: 0.9 })
+      );
+      post.position.y = 0.9; post.castShadow = true;
+      const board = new THREE.Mesh(
+        new THREE.BoxGeometry(1.15, 0.42, 0.08),
+        new THREE.MeshStandardMaterial({ color: 0x7c6244, roughness: 0.88 })
+      );
+      board.position.y = 1.55; board.castShadow = true;
+      g.add(post, board);
+      scene.add(g);
+      addCircleCollider(x, z, 0.2);
+
+      registerInteractive(board, {
+        name: title,
+        desc: 'Weathered wooden trail marker.',
+        onUse: () => showToast(message),
+        onTouch: () => showToast(message)
+      });
+    }
+    createSignpost(-3.8, -6, 0.3, 'Signpost (Teeviit)', '← Tühja-Metsa (1.2 km)   |   → Kõrgesoo Raba (Boardwalk)');
+    createSignpost(43, 42, -0.7, 'Bog Trailhead (Rabarada)', '"KÕRGESOO RABA — Keep to the wooden boardwalk (laudtee)."');
+
+    // --- Village 2: Tühja-Metsa (Abandoned Village) ---
+    const oldWallMat = new THREE.MeshStandardMaterial({ map: oldWoodTex, roughness: 0.96 });
+    buildWoodenHouse(-84, 70, 0.0, { abandoned: true, wallMat: oldWallMat, name: 'Abandoned Cottage' });
+    buildWoodenHouse(-96, 80, Math.PI, { abandoned: true, w: 6.4, d: 5.0, wallMat: oldWallMat, name: 'Derelict Barn' });
+    buildWoodenHouse(-74, 84, -Math.PI / 2, { abandoned: true, w: 5.5, d: 4.2, h: 2.6, wallMat: oldWallMat, name: 'Ruined Sauna' });
+
+    // --- Swamp Boardwalk (Laudtee) across Kõrgesoo Raba ---
+    {
+      const startX = 46, startZ = 44;
+      const endX = 128, endZ = 74;
+      const steps = 42;
+      const plankMat = new THREE.MeshStandardMaterial({ color: 0x6b5a45, roughness: 0.92 });
+      const dx = (endX - startX) / steps;
+      const dz = (endZ - startZ) / steps;
+      const angle = Math.atan2(dx, dz);
+
+      for (let i = 0; i < steps; i++) {
+        const px = startX + dx * (i + 0.5);
+        const pz = startZ + dz * (i + 0.5);
+        const groundY = getTerrainHeight(px, pz);
+        const deckY = Math.max(SWAMP_WATER_Y + 0.32, groundY + 0.16);
+        const segLen = Math.hypot(dx, dz) + 0.08;
+
+        const plank = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.1, segLen), plankMat);
+        plank.position.set(px, deckY, pz);
+        plank.rotation.y = angle;
+        plank.receiveShadow = true; plank.castShadow = true;
+        scene.add(plank);
+
+        boardwalkZones.push({
+          minX: px - 0.85, maxX: px + 0.85,
+          minZ: pz - 0.85, maxZ: pz + 0.85,
+          y: deckY + 0.05
+        });
+      }
+
+      // Observation platform in the bog
+      const ox = 129, oz = 74.5;
+      const oy = SWAMP_WATER_Y + 0.45;
+      const plat = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.14, 4.2), plankMat);
+      plat.position.set(ox, oy, oz);
+      plat.receiveShadow = true;
+      scene.add(plat);
+      boardwalkZones.push({ minX: ox - 2.1, maxX: ox + 2.1, minZ: oz - 2.1, maxZ: oz + 2.1, y: oy + 0.07 });
+    }
+
+    // =========================================================================
+    // 8. INTERACTIVE PHYSICS OBJECTS (Crates, Barrels, Lanterns, Logs, Stones, Mushrooms)
+    // =========================================================================
+    function spawnCrate(x, z, size = 0.72) {
+      const y = getTerrainHeight(x, z) + size / 2;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(size, size, size),
+        new THREE.MeshStandardMaterial({ map: oldWoodTex, roughness: 0.9 })
+      );
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      scene.add(mesh);
+      registerInteractive(mesh, {
+        name: 'Wooden Crate',
+        desc: 'Heavy weathered shipping crate.',
+        carryable: true, kickable: true, dynamic: true,
+        radius: size * 0.55, mass: 1.8, yOffset: size * 0.5
+      });
+    }
+
+    function spawnBarrel(x, z) {
+      const h = 0.95, r = 0.34;
+      const y = getTerrainHeight(x, z) + h / 2;
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(r, r, h, 14),
+        new THREE.MeshStandardMaterial({ color: 0x5c372a, roughness: 0.65, metalness: 0.4 })
+      );
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      scene.add(mesh);
+      registerInteractive(mesh, {
+        name: 'Rusted Oil Drum',
+        desc: 'Empty Soviet-era metal barrel.',
+        carryable: false, kickable: true, dynamic: true,
+        radius: 0.42, mass: 2.5, yOffset: h / 2
+      });
+    }
+
+    function spawnLantern(x, z) {
+      const y = getTerrainHeight(x, z) + 0.22;
+      const group = new THREE.Group();
+      group.position.set(x, y, z);
+      const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.11, 0.13, 0.32, 8),
+        new THREE.MeshStandardMaterial({ color: 0xffd27d, emissive: 0xff9d2e, emissiveIntensity: 1.4, roughness: 0.3 })
+      );
+      const cap = new THREE.Mesh(
+        new THREE.ConeGeometry(0.16, 0.12, 8),
+        new THREE.MeshStandardMaterial({ color: 0x262928, metalness: 0.6, roughness: 0.4 })
+      );
+      cap.position.y = 0.2;
+      const pt = new THREE.PointLight(0xffaa44, 1.8, 16, 1.5);
+      pt.position.y = 0.05;
+      group.add(body, cap, pt);
+      scene.add(group);
+
+      let lit = true;
+      registerInteractive(group, {
+        name: 'Storm Lantern (Tormilatern)',
+        desc: 'Warm kerosene glow cuts through the Estonian mist.',
+        carryable: true, kickable: true, dynamic: true,
+        radius: 0.22, mass: 0.7, yOffset: 0.18, light: pt,
+        onTouch: () => {
+          lit = !lit;
+          pt.intensity = lit ? 1.8 : 0;
+          body.material.emissiveIntensity = lit ? 1.4 : 0;
+          showToast(lit ? 'Lantern lit.' : 'Lantern dimmed.');
+        }
+      });
+    }
+
+    function spawnFirewoodLog(x, z) {
+      const y = getTerrainHeight(x, z) + 0.12;
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.11, 0.12, 0.65, 8),
+        new THREE.MeshStandardMaterial({ map: birchBarkTex, roughness: 0.9 })
+      );
+      mesh.rotation.z = Math.PI / 2;
+      mesh.rotation.y = Math.random() * Math.PI;
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      scene.add(mesh);
+      registerInteractive(mesh, {
+        name: 'Birch Firewood (Kasehalg)',
+        desc: 'Split birch log ready for the stove.',
+        carryable: true, kickable: true, dynamic: true,
+        radius: 0.2, mass: 0.9, yOffset: 0.12
+      });
+    }
+
+    function spawnStone(x, z) {
+      const r = 0.18 + Math.random() * 0.12;
+      const y = getTerrainHeight(x, z) + r;
+      const mesh = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(r, 0),
+        new THREE.MeshStandardMaterial({ color: 0x737069, roughness: 0.92 })
+      );
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      scene.add(mesh);
+      registerInteractive(mesh, {
+        name: 'Glacial Fieldstone (Raie-kivi)',
+        desc: 'Smooth granite left by Ice Age glaciers.',
+        carryable: true, kickable: true, dynamic: true,
+        radius: r, mass: 1.2, yOffset: r
+      });
+    }
+
+    function spawnMushroom(x, z) {
+      const y = getTerrainHeight(x, z);
+      const g = new THREE.Group();
+      g.position.set(x, y, z);
+      const stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.03, 0.04, 0.14, 6),
+        new THREE.MeshStandardMaterial({ color: 0xebd9b7, roughness: 0.8 })
+      );
+      stem.position.y = 0.07;
+      const cap = new THREE.Mesh(
+        new THREE.SphereGeometry(0.11, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        new THREE.MeshStandardMaterial({ color: Math.random() > 0.4 ? 0xe59d2c : 0x8f4324, roughness: 0.6 })
+      );
+      cap.position.y = 0.13;
+      g.add(stem, cap);
+      scene.add(g);
+      registerInteractive(g, {
+        name: 'Chanterelle (Kukeseen)',
+        desc: 'Golden wild forest mushroom.',
+        carryable: true, kickable: true, dynamic: true,
+        radius: 0.15, mass: 0.2, yOffset: 0.02,
+        onTouch: () => showToast('Earthy forest scent. Estonians love foraging kukeseened!')
+      });
+    }
+
+    // Populate interactive items in villages and forest
+    spawnLantern(1.8, -16.8);
+    spawnLantern(-82, 74);
+    spawnLantern(47, 44.5);
+
+    spawnCrate(1.2, -23.5);
+    spawnCrate(0.4, -23.2, 0.6);
+    spawnCrate(-86, 73.5);
+    spawnCrate(-85.1, 74.1, 0.58);
+    spawnCrate(-93, 76);
+
+    spawnBarrel(-5.5, -24.5);
+    spawnBarrel(-89.5, 73);
+    spawnBarrel(-91, 74.2);
+
+    for (let i = 0; i < 8; i++) {
+      spawnFirewoodLog(3.8 + (Math.random() - 0.5) * 1.6, -21 + (Math.random() - 0.5) * 1.6);
+    }
+    for (let i = 0; i < 14; i++) {
+      spawnStone((Math.random() - 0.5) * 120, (Math.random() - 0.5) * 120);
+    }
+    for (let i = 0; i < 24; i++) {
+      const mx = (Math.random() - 0.5) * 180;
+      const mz = (Math.random() - 0.5) * 180;
+      if (getSwampFactor(mx, mz) < 0.3 && distToRoad(mx, mz) > 4) spawnMushroom(mx, mz);
+    }
+
+    // =========================================================================
+    // 9. ESTONIAN FORESTS (Birch, Pine/Spruce & Swamp Reeds via InstancedMesh)
+    // =========================================================================
+    const treePositions = [];
+    const pinePositions = [];
+    const bogPinePositions = [];
+
+    for (let i = 0; i < 680; i++) {
+      const tx = (Math.random() - 0.5) * 390;
+      const tz = (Math.random() - 0.5) * 390;
+      if (Math.hypot(tx, tz) > WORLD_RADIUS - 15) continue;
+      if (distToRoad(tx, tz) < 5.2) continue;
+      if (Math.hypot(tx - 1, tz + 24) < 18) continue;   // Vana-Kase clearing
+      if (Math.hypot(tx + 86, tz - 76) < 23) continue; // Tühja-Metsa clearing
+
+      const swamp = getSwampFactor(tx, tz);
+      const y = getTerrainHeight(tx, tz);
+      if (swamp > 0.4) {
+        if (y > SWAMP_WATER_Y + 0.1 && Math.random() < 0.4) {
+          bogPinePositions.push({ x: tx, y, z: tz, s: 0.45 + Math.random() * 0.4 });
+        }
+        continue;
+      }
+
+      if (Math.random() < 0.45) {
+        treePositions.push({ x: tx, y, z: tz, s: 0.8 + Math.random() * 0.55 });
+      } else {
+        pinePositions.push({ x: tx, y, z: tz, s: 0.85 + Math.random() * 0.7 });
+      }
+    }
+
+    // Birch Trees (Instanced)
+    {
+      const count = treePositions.length;
+      const trunkGeo = new THREE.CylinderGeometry(0.14, 0.24, 7.5, 7);
+      trunkGeo.translate(0, 3.75, 0);
+      const trunkMat = new THREE.MeshStandardMaterial({ map: birchBarkTex, roughness: 0.88 });
+      const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
+      trunks.castShadow = true; trunks.receiveShadow = true;
+
+      const crownGeo = new THREE.DodecahedronGeometry(2.3, 1);
+      crownGeo.translate(0, 7.2, 0);
+      const crownMat = new THREE.MeshStandardMaterial({ color: 0x567a34, roughness: 0.9 });
+      const crowns = new THREE.InstancedMesh(crownGeo, crownMat, count);
+      crowns.castShadow = true; crowns.receiveShadow = true;
+
+      const dummy = new THREE.Object3D();
+      treePositions.forEach((p, i) => {
+        dummy.position.set(p.x, p.y - 0.15, p.z);
+        dummy.scale.set(p.s, p.s * (0.9 + Math.random() * 0.2), p.s);
+        dummy.rotation.y = Math.random() * Math.PI * 2;
+        dummy.updateMatrix();
+        trunks.setMatrixAt(i, dummy.matrix);
+        crowns.setMatrixAt(i, dummy.matrix);
+        addCircleCollider(p.x, p.z, 0.28 * p.s);
+      });
+      scene.add(trunks, crowns);
+    }
+
+    // Estonian Spruce / Pine Trees (Instanced)
+    {
+      const allPines = [...pinePositions, ...bogPinePositions];
+      const count = allPines.length;
+      const trunkGeo = new THREE.CylinderGeometry(0.14, 0.26, 5.5, 7);
+      trunkGeo.translate(0, 2.75, 0);
+      const trunkMat = new THREE.MeshStandardMaterial({ map: pineBarkTex, roughness: 0.92 });
+      const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
+      trunks.castShadow = true;
+
+      const cone1Geo = new THREE.ConeGeometry(2.1, 4.6, 8);
+      cone1Geo.translate(0, 5.0, 0);
+      const cone2Geo = new THREE.ConeGeometry(1.5, 3.8, 8);
+      cone2Geo.translate(0, 7.2, 0);
+      const foliageMat = new THREE.MeshStandardMaterial({ color: 0x243b24, roughness: 0.92 });
+      const cones1 = new THREE.InstancedMesh(cone1Geo, foliageMat, count);
+      const cones2 = new THREE.InstancedMesh(cone2Geo, foliageMat, count);
+      cones1.castShadow = true; cones2.castShadow = true;
+      cones1.receiveShadow = true; cones2.receiveShadow = true;
+
+      const dummy = new THREE.Object3D();
+      allPines.forEach((p, i) => {
+        dummy.position.set(p.x, p.y - 0.15, p.z);
+        dummy.scale.set(p.s, p.s * (0.95 + Math.random() * 0.25), p.s);
+        dummy.rotation.y = Math.random() * Math.PI * 2;
+        dummy.updateMatrix();
+        trunks.setMatrixAt(i, dummy.matrix);
+        cones1.setMatrixAt(i, dummy.matrix);
+        cones2.setMatrixAt(i, dummy.matrix);
+        addCircleCollider(p.x, p.z, 0.3 * p.s);
+      });
+      scene.add(trunks, cones1, cones2);
+    }
+
+    // Grass & Swamp Reeds (Instanced)
+    {
+      const reedCount = 1600;
+      const bladeGeo = new THREE.ConeGeometry(0.06, 0.85, 4);
+      bladeGeo.translate(0, 0.42, 0);
+      const bladeMat = new THREE.MeshStandardMaterial({ color: 0x5c6935, roughness: 0.9 });
+      const blades = new THREE.InstancedMesh(bladeGeo, bladeMat, reedCount);
+      const dummy = new THREE.Object3D();
+      const c = new THREE.Color();
+      let idx = 0;
+
+      for (let i = 0; i < 3200 && idx < reedCount; i++) {
+        const gx = (Math.random() - 0.5) * 260;
+        const gz = (Math.random() - 0.5) * 260;
+        if (distToRoad(gx, gz) < 3.6) continue;
+        const gy = getTerrainHeight(gx, gz);
+        if (gy < SWAMP_WATER_Y - 0.15) continue;
+
+        const swamp = getSwampFactor(gx, gz);
+        dummy.position.set(gx, gy - 0.05, gz);
+        const hScale = swamp > 0.4 ? 1.4 + Math.random() * 0.8 : 0.65 + Math.random() * 0.5;
+        dummy.scale.set(1, hScale, 1);
+        dummy.rotation.set((Math.random() - 0.5) * 0.25, Math.random() * Math.PI, (Math.random() - 0.5) * 0.25);
+        dummy.updateMatrix();
+        blades.setMatrixAt(idx, dummy.matrix);
+
+        if (swamp > 0.4) c.setHex(0x8a7d44);
+        else c.setHex(Math.random() > 0.5 ? 0x4b6930 : 0x627838);
+        blades.setColorAt(idx, c);
+        idx++;
+      }
+      blades.count = idx;
+      blades.instanceMatrix.needsUpdate = true;
+      if (blades.instanceColor) blades.instanceColor.needsUpdate = true;
+      scene.add(blades);
+    }
+
+    // =========================================================================
+    // 10. RAIN & MIST / FIREFLIES PARTICLES
+    // =========================================================================
+    const RAIN_COUNT = 2200;
+    const rainGeo = new THREE.BufferGeometry();
+    const rainPositions = new Float32Array(RAIN_COUNT * 3);
+    for (let i = 0; i < RAIN_COUNT; i++) {
+      rainPositions[i * 3] = (Math.random() - 0.5) * 60;
+      rainPositions[i * 3 + 1] = Math.random() * 28;
+      rainPositions[i * 3 + 2] = (Math.random() - 0.5) * 60;
+    }
+    rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3));
+    const rainMat = new THREE.PointsMaterial({
+      color: 0xc2d5e0, size: 0.16, transparent: true, opacity: 0.0
+    });
+    const rainSystem = new THREE.Points(rainGeo, rainMat);
+    scene.add(rainSystem);
+
+    // Night fireflies in forest/swamp
+    const FIREFLY_COUNT = 160;
+    const ffGeo = new THREE.BufferGeometry();
+    const ffPos = new Float32Array(FIREFLY_COUNT * 3);
+    for (let i = 0; i < FIREFLY_COUNT; i++) {
+      const fx = (Math.random() - 0.5) * 220;
+      const fz = (Math.random() - 0.5) * 220;
+      ffPos[i * 3] = fx;
+      ffPos[i * 3 + 1] = getTerrainHeight(fx, fz) + 0.8 + Math.random() * 1.8;
+      ffPos[i * 3 + 2] = fz;
+    }
+    ffGeo.setAttribute('position', new THREE.BufferAttribute(ffPos, 3));
+    const ffMat = new THREE.PointsMaterial({ color: 0xd9ff73, size: 0.18, transparent: true, opacity: 0 });
+    const fireflies = new THREE.Points(ffGeo, ffMat);
+    scene.add(fireflies);
+
+    // =========================================================================
+    // 11. TIME OF DAY & WEATHER ENGINE
+    // =========================================================================
+    let timeOfDay = 9.25; // Hours (0..24) - Starts at crisp morning 09:15
+    const TIME_SPEED = 0.06; // ~6.6 real minutes per full 24h cycle
+
+    const weathers = ['clear', 'mist', 'rain', 'storm'];
+    const weatherNames = {
+      clear: 'Clear',
+      mist: 'Overcast & Bog Mist',
+      rain: 'Rain',
+      storm: 'Thunderstorm'
+    };
+    let weatherIdx = 0;
+    let weatherTimer = 95;
+    let lightningFlash = 0;
+
+    function updateTimeAndWeather(dt, playerPos) {
+      timeOfDay = (timeOfDay + dt * TIME_SPEED) % 24;
+
+      // Auto weather transition
+      weatherTimer -= dt;
+      if (weatherTimer <= 0) {
+        weatherIdx = (weatherIdx + 1 + Math.floor(Math.random() * 2)) % weathers.length;
+        weatherTimer = 60 + Math.random() * 75;
+      }
+      const weather = weathers[weatherIdx];
+
+      // Sun angle: 6:00 sunrise (0), 12:00 zenith (PI/2), 18:00 sunset (PI)
+      const sunAngle = ((timeOfDay - 6) / 24) * Math.PI * 2;
+      const sunY = Math.sin(sunAngle);
+      const sunX = Math.cos(sunAngle);
+
+      const sunDist = 160;
+      sunLight.position.set(
+        playerPos.x + sunX * sunDist,
+        Math.max(8, sunY * sunDist),
+        playerPos.z + 55
+      );
+      sunLight.target.position.copy(playerPos);
+      sunLight.target.updateMatrixWorld();
+
+      sunMesh.position.set(playerPos.x + sunX * 300, sunY * 300, playerPos.z + 95);
+      sunMesh.visible = sunY > -0.1;
+
+      moonMesh.position.set(playerPos.x - sunX * 300, -sunY * 300, playerPos.z - 95);
+      moonMesh.visible = sunY < 0.15;
+
+      // Day / Dusk / Night sky & light interpolation
+      const dayFactor = THREE.MathUtils.clamp((sunY + 0.12) / 0.45, 0, 1);
+      const goldenFactor = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.08) / 0.22, 0, 1);
+
+      const daySky = new THREE.Color(weather === 'clear' ? 0x9ec0d4 : 0x7b8b91);
+      const goldenSky = new THREE.Color(0xc98b63);
+      const nightSky = new THREE.Color(0x091018);
+
+      const skyCol = nightSky.clone().lerp(daySky, dayFactor).lerp(goldenSky, goldenFactor * (weather === 'clear' ? 0.55 : 0.2));
+      if (weather === 'storm') skyCol.multiplyScalar(0.55);
+
+      scene.background.copy(skyCol);
+      scene.fog.color.copy(skyCol);
+
+      // Fog density increases in mist, storm, and near the swamp
+      const swampHere = getSwampFactor(playerPos.x, playerPos.z);
+      let targetFog = 0.006 + swampHere * 0.012;
+      if (weather === 'mist') targetFog += 0.017;
+      else if (weather === 'rain') targetFog += 0.01;
+      else if (weather === 'storm') targetFog += 0.016;
+      scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, targetFog, dt * 1.2);
+
+      // Sun & Hemisphere intensity
+      const weatherDim = weather === 'clear' ? 1.0 : (weather === 'mist' ? 0.55 : (weather === 'rain' ? 0.42 : 0.28));
+      sunLight.intensity = THREE.MathUtils.lerp(0.14, 2.0 * weatherDim, dayFactor);
+      sunLight.color.setHex(0xfff1d6).lerp(new THREE.Color(0xff9c59), goldenFactor * 0.65);
+      if (dayFactor < 0.15) sunLight.color.setHex(0x7899cc); // moonlight
+
+      hemiLight.intensity = THREE.MathUtils.lerp(0.22, 0.72 * weatherDim, dayFactor);
+      starMat.opacity = THREE.MathUtils.clamp((1 - dayFactor * 2.2) * (weather === 'clear' ? 0.85 : 0.1), 0, 0.85);
+      ffMat.opacity = THREE.MathUtils.clamp(1 - dayFactor * 2.5, 0, 0.85);
+
+      // Rain & Lightning
+      const raining = weather === 'rain' || weather === 'storm';
+      rainMat.opacity = THREE.MathUtils.lerp(rainMat.opacity, weather === 'storm' ? 0.65 : (weather === 'rain' ? 0.45 : 0), dt * 2.0);
+      if (raining || rainMat.opacity > 0.02) {
+        rainSystem.position.set(playerPos.x, 0, playerPos.z);
+        const rArr = rainGeo.attributes.position.array;
+        const speed = weather === 'storm' ? 32 : 24;
+        for (let i = 0; i < RAIN_COUNT; i++) {
+          rArr[i * 3 + 1] -= speed * dt;
+          rArr[i * 3] -= (weather === 'storm' ? 6 : 1.5) * dt;
+          if (rArr[i * 3 + 1] < 0) {
+            rArr[i * 3 + 1] = 26 + Math.random() * 4;
+            rArr[i * 3] = (Math.random() - 0.5) * 60;
+          }
+        }
+        rainGeo.attributes.position.needsUpdate = true;
+      }
+
+      if (weather === 'storm' && Math.random() < dt * 0.12) {
+        lightningFlash = 0.85;
+        sound.playThunder();
+      }
+      if (lightningFlash > 0) {
+        lightningFlash = Math.max(0, lightningFlash - dt * 3.2);
+        document.getElementById('flash-overlay').style.opacity = lightningFlash * 0.55;
+      }
+
+      // Campfire & night lights pulse
+      if (fireLit) {
+        fireLight.intensity = 2.5 + Math.sin(performance.now() * 0.015) * 0.5;
+        fireFlames.scale.y = 0.85 + Math.sin(performance.now() * 0.02) * 0.2;
+      }
+
+      const windStr = weather === 'storm' ? 1.0 : (weather === 'rain' ? 0.6 : 0.25);
+      sound.updateAmbience(weather, dayFactor < 0.2, windStr);
+
+      // Update HUD Clock & Biome
+      const hrs = Math.floor(timeOfDay);
+      const mins = Math.floor((timeOfDay - hrs) * 60);
+      const hh = String(hrs).padStart(2, '0');
+      const mm = String(mins).padStart(2, '0');
+      document.getElementById('time-weather').textContent = `${hh}:${mm} • ${weatherNames[weather]}`;
+      document.getElementById('biome-name').textContent = getBiomeInfo(playerPos.x, playerPos.z).label;
+    }
+
+    // =========================================================================
+    // 12. FIRST-PERSON PLAYER CONTROLLER & PHYSICS
+    // =========================================================================
+    const player = {
+      pos: new THREE.Vector3(0, getTerrainHeight(0, 6), 6),
+      vel: new THREE.Vector3(),
+      yaw: 0,
+      pitch: 0,
+      eyeHeight: 1.7,
+      crouchEyeHeight: 1.05,
+      currentEye: 1.7,
+      onGround: true,
+      stamina: 100,
+      carrying: null,
+      stepTimer: 0,
+      bobPhase: 0
+    };
+
+    const keys = {};
+    let isLocked = false;
+    const blocker = document.getElementById('blocker');
+    const startBtn = document.getElementById('startBtn');
+
+    startBtn.addEventListener('click', () => {
+      sound.init();
+      renderer.domElement.requestPointerLock();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+      isLocked = document.pointerLockElement === renderer.domElement;
+      blocker.classList.toggle('hidden', isLocked);
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isLocked) return;
+      const sens = 0.0021;
+      player.yaw -= e.movementX * sens;
+      player.pitch = THREE.MathUtils.clamp(player.pitch - e.movementY * sens, -Math.PI * 0.48, Math.PI * 0.48);
+    });
+
+    let toastTimer = null;
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('visible');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('visible'), 3200);
+    }
+
+    // Raycaster for Interaction
+    const raycaster = new THREE.Raycaster();
+    raycaster.far = 3.6;
+    let hoveredObj = null;
+
+    function getLookDir() {
+      const dir = new THREE.Vector3(0, 0, -1);
+      dir.applyEuler(new THREE.Euler(player.pitch, player.yaw, 0, 'YXZ'));
+      return dir;
+    }
+
+    function dropCarried(throwImpulse = 0) {
+      if (!player.carrying) return;
+      const item = player.carrying;
+      player.carrying = null;
+      item.resting = false;
+      const dir = getLookDir();
+      item.mesh.position.copy(camera.position).addScaledVector(dir, 1.05);
+      item.vel.copy(player.vel).addScaledVector(dir, throwImpulse);
+      item.vel.y += throwImpulse * 0.25;
+      document.getElementById('carry-status').textContent = '';
+    }
+
+    document.addEventListener('keydown', (e) => {
+      const code = e.code;
+      keys[code] = true;
+      if (!isLocked) return;
+
+      if (code === 'KeyL') {
+        flashlightOn = !flashlightOn;
+        flashlight.intensity = flashlightOn ? 3.5 : 0;
+        sound.playImpact(0.3);
+      }
+      if (code === 'KeyT') {
+        timeOfDay = (timeOfDay + 2) % 24;
+        showToast('Time advanced +2 hours.');
+      }
+      if (code === 'KeyY') {
+        weatherIdx = (weatherIdx + 1) % weathers.length;
+        weatherTimer = 80;
+        showToast(`Weather changed to ${weatherNames[weathers[weatherIdx]]}.`);
+      }
+
+      // E: Pick up / Drop / Use
+      if (code === 'KeyE') {
+        if (player.carrying) {
+          dropCarried(1.5);
+          sound.playImpact(0.4);
+          return;
+        }
+        if (hoveredObj) {
+          if (hoveredObj.carryable) {
+            player.carrying = hoveredObj;
+            document.getElementById('carry-status').textContent = `Carrying: ${hoveredObj.name} ([E] Drop, [F] Throw)`;
+            sound.playImpact(0.35);
+          } else if (hoveredObj.onUse) {
+            hoveredObj.onUse();
+          }
+        }
+      }
+
+      // F: Kick / Push / Throw
+      if (code === 'KeyF') {
+        if (player.carrying) {
+          dropCarried(11.5);
+          sound.playImpact(1.1);
+          return;
+        }
+        if (hoveredObj && hoveredObj.kickable) {
+          const dir = getLookDir();
+          dir.y = 0.28;
+          dir.normalize();
+          const force = 9.5 / Math.sqrt(hoveredObj.mass);
+          hoveredObj.vel.addScaledVector(dir, force);
+          hoveredObj.angVel.set((Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9);
+          hoveredObj.resting = false;
+          sound.playImpact(1.2);
+        } else if (hoveredObj) {
+          sound.playImpact(0.8);
+          showToast(`You push against the ${hoveredObj.name}, but it won't budge.`);
+        }
+      }
+
+      // R: Touch / Inspect
+      if (code === 'KeyR' && hoveredObj) {
+        if (hoveredObj.onTouch) hoveredObj.onTouch();
+        else showToast(`${hoveredObj.name}: ${hoveredObj.desc}`);
+      }
+    });
+
+    document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    function getSurfaceHeightAt(x, z) {
+      let h = getTerrainHeight(x, z);
+      for (const b of boardwalkZones) {
+        if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) {
+          if (b.y > h) h = b.y;
+        }
+      }
+      return h;
+    }
+
+    function isOnBoardwalk(x, z) {
+      for (const b of boardwalkZones) {
+        if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) return true;
+      }
+      return false;
+    }
+
+    function resolvePlayerCollisions(pos) {
+      const pR = 0.42;
+      // Trees & round props
+      for (let i = 0; i < circleColliders.length; i++) {
+        const c = circleColliders[i];
+        const dx = pos.x - c.x;
+        const dz = pos.z - c.z;
+        const minD = pR + c.r;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < minD * minD && d2 > 0.0001) {
+          const d = Math.sqrt(d2);
+          pos.x = c.x + (dx / d) * minD;
+          pos.z = c.z + (dz / d) * minD;
+        }
+      }
+      // Building walls & doors
+      for (let i = 0; i < boxColliders.length; i++) {
+        const b = boxColliders[i];
+        if (!b.active) continue;
+        const nearX = THREE.MathUtils.clamp(pos.x, b.minX, b.maxX);
+        const nearZ = THREE.MathUtils.clamp(pos.z, b.minZ, b.maxZ);
+        const dx = pos.x - nearX;
+        const dz = pos.z - nearZ;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < pR * pR) {
+          if (d2 > 0.00001) {
+            const d = Math.sqrt(d2);
+            pos.x = nearX + (dx / d) * pR;
+            pos.z = nearZ + (dz / d) * pR;
+          } else {
+            pos.x = b.minX - pR;
+          }
+        }
+      }
+      // World boundary
+      const edgeD = Math.hypot(pos.x, pos.z);
+      if (edgeD > WORLD_RADIUS - 12) {
+        pos.x *= (WORLD_RADIUS - 12) / edgeD;
+        pos.z *= (WORLD_RADIUS - 12) / edgeD;
+      }
+    }
+
+    function updatePlayer(dt) {
+      const crouching = !!keys['KeyC'];
+      const wantRun = (keys['ShiftLeft'] || keys['ShiftRight']) && !crouching && player.stamina > 3;
+
+      const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+      const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+      const move = new THREE.Vector3();
+
+      if (keys['KeyW']) move.add(fwd);
+      if (keys['KeyS']) move.sub(fwd);
+      if (keys['KeyD']) move.add(right);
+      if (keys['KeyA']) move.sub(right);
+
+      const moving = move.lengthSq() > 0.01;
+      if (moving) move.normalize();
+
+      const groundY = getSurfaceHeightAt(player.pos.x, player.pos.z);
+      const inSwampWater = groundY < SWAMP_WATER_Y + 0.04 && !isOnBoardwalk(player.pos.x, player.pos.z);
+
+      let speed = crouching ? 2.5 : (wantRun && moving ? 8.2 : 4.6);
+      if (inSwampWater) speed *= 0.58; // Wading slows you down
+
+      if (wantRun && moving) {
+        player.stamina = Math.max(0, player.stamina - 24 * dt);
+      } else {
+        player.stamina = Math.min(100, player.stamina + 16 * dt);
+      }
+      document.getElementById('stamina-bar').style.width = `${player.stamina}%`;
+
+      player.pos.addScaledVector(move, speed * dt);
+      resolvePlayerCollisions(player.pos);
+
+      // Vertical & Gravity
+      if (keys['Space'] && player.onGround && !crouching) {
+        player.vel.y = 5.6;
+        player.onGround = false;
+      }
+      player.vel.y -= 16.5 * dt;
+      player.pos.y += player.vel.y * dt;
+
+      const newGroundY = getSurfaceHeightAt(player.pos.x, player.pos.z);
+      const minFloorY = Math.max(newGroundY, SWAMP_WATER_Y - 0.38); // Don't sink endlessly in bog
+      if (player.pos.y <= minFloorY) {
+        player.pos.y = minFloorY;
+        player.vel.y = 0;
+        player.onGround = true;
+      } else {
+        player.onGround = false;
+      }
+
+      // Eye height, head-bob & footsteps
+      const targetEye = crouching ? player.crouchEyeHeight : player.eyeHeight;
+      player.currentEye = THREE.MathUtils.lerp(player.currentEye, targetEye, dt * 10);
+
+      let bobY = 0;
+      if (moving && player.onGround) {
+        const freq = wantRun ? 13 : 8.5;
+        player.bobPhase += dt * freq;
+        bobY = Math.sin(player.bobPhase) * (wantRun ? 0.065 : 0.038);
+        player.stepTimer += dt * (wantRun ? 2.4 : 1.55);
+        if (player.stepTimer >= 1) {
+          player.stepTimer = 0;
+          let surf = 'grass';
+          if (isOnBoardwalk(player.pos.x, player.pos.z)) surf = 'wood';
+          else if (inSwampWater) surf = 'water';
+          else if (distToRoad(player.pos.x, player.pos.z) < 3.3) surf = 'road';
+          sound.playFootstep(surf);
+        }
+      }
+
+      camera.position.set(player.pos.x, player.pos.y + player.currentEye + bobY, player.pos.z);
+      camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+
+      // Hold carried object smoothly in front of player
+      if (player.carrying) {
+        const holdPos = camera.position.clone()
+          .addScaledVector(getLookDir(), 1.15)
+          .add(new THREE.Vector3(0, -0.22, 0));
+        player.carrying.mesh.position.lerp(holdPos, Math.min(1, dt * 16));
+      }
+    }
+
+    function updateDynamicObjects(dt) {
+      for (const obj of dynamicObjects) {
+        if (obj === player.carrying || obj.resting) continue;
+
+        obj.vel.y -= 15.0 * dt;
+        obj.mesh.position.addScaledVector(obj.vel, dt);
+        obj.mesh.rotation.x += obj.angVel.x * dt;
+        obj.mesh.rotation.y += obj.angVel.y * dt;
+        obj.mesh.rotation.z += obj.angVel.z * dt;
+
+        const floorY = Math.max(getSurfaceHeightAt(obj.mesh.position.x, obj.mesh.position.z), SWAMP_WATER_Y - 0.15) + obj.onGroundYOffset;
+        if (obj.mesh.position.y <= floorY) {
+          if (obj.vel.y < -2.2) sound.playImpact(Math.min(1.0, Math.abs(obj.vel.y) / 8));
+          obj.mesh.position.y = floorY;
+          obj.vel.y = Math.abs(obj.vel.y) > 1.8 ? -obj.vel.y * 0.3 : 0;
+          obj.vel.x *= Math.pow(0.05, dt);
+          obj.vel.z *= Math.pow(0.05, dt);
+          obj.angVel.multiplyScalar(Math.pow(0.08, dt));
+
+          if (obj.vel.lengthSq() < 0.01 && obj.angVel.lengthSq() < 0.02) {
+            obj.vel.set(0, 0, 0);
+            obj.angVel.set(0, 0, 0);
+            obj.resting = true;
+          }
+        }
+      }
+    }
+
+    function updateInteractionHover() {
+      const crosshair = document.getElementById('crosshair');
+      const prompt = document.getElementById('interact-prompt');
+      const titleEl = document.getElementById('interact-title');
+      const actEl = document.getElementById('interact-actions');
+
+      if (!isLocked || player.carrying) {
+        hoveredObj = null;
+        crosshair.classList.remove('active');
+        prompt.classList.remove('visible');
+        return;
+      }
+
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      const hits = raycaster.intersectObjects(interactiveObjects.map(o => o.mesh), true);
+      hoveredObj = hits.length > 0 ? hits[0].object.userData.interactive : null;
+
+      if (hoveredObj) {
+        crosshair.classList.add('active');
+        titleEl.textContent = hoveredObj.name;
+        const acts = [];
+        if (hoveredObj.carryable) acts.push('[E] Pick up');
+        else if (hoveredObj.onUse) acts.push('[E] Use');
+        if (hoveredObj.kickable) acts.push('[F] Kick / Push');
+        acts.push('[R] Touch / Inspect');
+        actEl.textContent = acts.join('  •  ');
+        prompt.classList.add('visible');
+      } else {
+        crosshair.classList.remove('active');
+        prompt.classList.remove('visible');
+      }
+    }
+
+    // =========================================================================
+    // 13. MAIN LOOP & RESIZE
+    // =========================================================================
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    let lastTime = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.05, (now - lastTime) / 1000);
+      lastTime = now;
+
+      if (isLocked) {
+        updatePlayer(dt);
+      } else {
+        camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+      }
+
+      updateDynamicObjects(dt);
+      updateInteractionHover();
+      updateTimeAndWeather(dt, player.pos);
+
+      renderer.render(scene, camera);
+    }
+
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
