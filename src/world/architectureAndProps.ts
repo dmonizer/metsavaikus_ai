@@ -2262,13 +2262,23 @@ export function buildArchitectureAndProps(
         fireFlames.scale.y = 0.85 + Math.sin(elapsed * 20.0) * 0.2;
       }
 
-      // Distance-cull bog water & mist when player is far outside the peat bog basin
+      // Distance + frustum cull bog water & mist so they never shade off-screen from village/forest
       const bogDx = camX - bp.bogCenterX;
       const bogDz = camZ - bp.bogCenterZ;
-      const bogVisLimit = waterRadius + maxRenderDist + 24;
-      const nearBog = bogDx * bogDx + bogDz * bogDz <= bogVisLimit * bogVisLimit;
+      const bogDistSq = bogDx * bogDx + bogDz * bogDz;
+      const bogVisLimit = waterRadius + maxRenderDist + 16;
+      let nearBog = bogDistSq <= bogVisLimit * bogVisLimit;
+      if (nearBog && frustumPlanes && bogDistSq > (waterRadius + 10) * (waterRadius + 10)) {
+        nearBog = sphereIntersectsFrustum(
+          frustumPlanes,
+          bp.bogCenterX,
+          SWAMP_WATER_Y,
+          bp.bogCenterZ,
+          waterRadius + 6
+        );
+      }
       swampWater.visible = nearBog;
-      mistInst.visible = nearBog && bogDx * bogDx + bogDz * bogDz <= (bp.bogRadius + 95) * (bp.bogRadius + 95);
+      mistInst.visible = nearBog && bogDistSq <= (bp.bogRadius + 75) * (bp.bogRadius + 75);
 
       // Sync Fresnel reflective bog water & day/night cottage window glow with live sky state
       if (nearBog) {

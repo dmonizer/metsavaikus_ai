@@ -4,6 +4,7 @@ import {
   addMushroomToBasket,
   buildInteractionPrompt,
   canClearHeightCollider,
+  computeAdaptiveDprSteps,
   createEmptyBasket,
   formatFpsLabel,
   getWeatherWindProfile,
@@ -93,11 +94,38 @@ test('Carryable crates expose Pick up and Kick/Push when empty-handed', () => {
   assert.equal(buildInteractionPrompt({ name: 'Crate', desc: '' }, true), null);
 });
 
-test('FPS EMA smoothing and label formatting', () => {
+test('FPS EMA uses harmonic frame-time mean and resists stutter + catch-up inflation', () => {
   const s1 = smoothFps(60, 1 / 30);
   assert.ok(s1 > 50 && s1 < 60);
   assert.equal(formatFpsLabel(59.6), '60 FPS');
   assert.equal(formatFpsLabel(0), '1 FPS');
+
+  // Alternating 100ms stutter + 4ms rAF catch-up has true throughput ~19.2 FPS (2 frames / 104ms),
+  // NOT an inflated 75-130 FPS arithmetic mean!
+  let ema = 60;
+  for (let i = 0; i < 40; i++) {
+    ema = smoothFps(ema, i % 2 === 0 ? 0.1 : 0.004);
+  }
+  assert.ok(ema > 16 && ema < 23, `Expected true harmonic EMA ~19.2 FPS, got ${ema.toFixed(1)}`);
+});
+
+test('computeAdaptiveDprSteps enforces integrated GPU pixel budget while keeping discrete GPUs crisp', () => {
+  // Mesa Intel UHD 630 at 2155x1287@1.00x (2.77M px) should start ~0.64x (~1.15M px) and descend to 0.48x
+  const uhdSteps = computeAdaptiveDprSteps(2155, 1287, 1, false, true);
+  assert.ok(uhdSteps[0] <= 0.66 && uhdSteps[0] >= 0.62, `Expected ~0.64x start DPR, got ${uhdSteps[0]}`);
+  const startPixels = 2155 * uhdSteps[0] * (1287 * uhdSteps[0]);
+  assert.ok(startPixels <= 1_250_000, `Expected <=1.25M pixels, got ${Math.round(startPixels)}`);
+  assert.equal(uhdSteps[uhdSteps.length - 1], 0.48);
+  for (let i = 1; i < uhdSteps.length; i++) {
+    assert.ok(uhdSteps[i] < uhdSteps[i - 1], 'DPR steps must be strictly descending');
+  }
+
+  // Discrete GPU at 1440x900@2.0x stays crisp at 1.15x
+  const discreteSteps = computeAdaptiveDprSteps(1440, 900, 2, false, false);
+  assert.equal(discreteSteps[0], 1.15);
+
+  // Software GL stays fixed at [1]
+  assert.deepEqual(computeAdaptiveDprSteps(1440, 900, 2, true, true), [1]);
 });
 
 test('Weather wind profile scales from mist to storm', () => {
@@ -450,13 +478,28 @@ test('FpsDropLogger classifies GPU backpressure, thermal throttles, bog overlays
     'GPU_FILLRATE_BOG_OR_OVERLAYS'
   );
 
+  assert.equal(
+    classifyBottleneck(
+      makePerfSample({
+        rawDtMs: 1640,
+        tickCpuMs: 1400,
+        renderMs: 1390,
+        externalWaitMs: 240,
+        programs: 70,
+        programsDelta: 27,
+      })
+    ),
+    'SHADER_COMPILE_STALL'
+  );
+
   const logger = new FpsDropLogger(0, { sink: () => {} });
   const snap = logger.dumpText(
     makePerfSample({
       nowMs: 12000,
       gpuRenderer: 'ANGLE (Intel Iris Xe)',
-      pixelRatio: 1.15,
-      backbufferPx: [1656, 1035],
+      lowPowerGpu: true,
+      pixelRatio: 0.64,
+      backbufferPx: [1379, 824],
       antialias: false,
       shadowUpdates: 2,
       fogCullDist: 151.8,
@@ -467,7 +510,8 @@ test('FpsDropLogger classifies GPU backpressure, thermal throttles, bog overlays
   );
   assert.ok(snap.includes('[METSAVAIKUS_PERF:SNAPSHOT]'));
   assert.ok(snap.includes('"gpu":"ANGLE (Intel Iris Xe)"'));
-  assert.ok(snap.includes('"res":"1656x1035@1.15x"'));
+  assert.ok(snap.includes('"lowPower":true'));
+  assert.ok(snap.includes('"res":"1379x824@0.64x"'));
   assert.ok(snap.includes('"aa":false'));
   assert.ok(snap.includes('"cull":"3200/4400(73%)"'));
   assert.ok(snap.includes('"fogCullM":151.8'));

@@ -56,6 +56,8 @@ export interface FramePerfSample {
   culledInstances?: number;
   candidateInstances?: number;
   overlays?: string;
+  lowPowerGpu?: boolean;
+  programsDelta?: number;
 }
 
 export interface PerfReportEntry {
@@ -92,6 +94,7 @@ export interface PerfReportEntry {
   };
   renderer: {
     gpu: string;
+    lowPower: boolean;
     res: string;
     aa: boolean;
     calls: number;
@@ -144,6 +147,9 @@ interface RecentEvent {
 const r1 = (n: number): number => Math.round(n * 10) / 10;
 
 export function classifyBottleneck(s: FramePerfSample): string {
+  if ((s.programsDelta ?? 0) >= 3 && s.rawDtMs >= 100) {
+    return 'SHADER_COMPILE_STALL';
+  }
   const cpuShare = s.rawDtMs > 0 ? s.tickCpuMs / s.rawDtMs : 0;
   const nonRenderCpuMs =
     s.terrainMs + s.vegMs + s.skyMs + s.propsMs + s.playerMs + s.minimapMs;
@@ -371,6 +377,7 @@ export class FpsDropLogger {
       },
       renderer: {
         gpu: s.gpuRenderer || (s.isSoftwareGl ? 'SoftwareGL' : 'unknown'),
+        lowPower: s.lowPowerGpu ?? false,
         res: `${bb[0]}x${bb[1]}@${dpr.toFixed(2)}x`,
         aa: s.antialias ?? false,
         calls: s.calls,

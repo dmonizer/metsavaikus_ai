@@ -148,13 +148,49 @@ export function buildInteractionPrompt(
 
 export function smoothFps(prevEma: number, frameDeltaSec: number): number {
   if (frameDeltaSec <= 0.0001) return prevEma;
-  const instant = Math.min(240, 1 / frameDeltaSec);
-  if (prevEma <= 0) return instant;
-  return prevEma * 0.88 + instant * 0.12;
+  const clampedDt = Math.min(0.5, Math.max(1 / 240, frameDeltaSec));
+  if (prevEma <= 0) return 1 / clampedDt;
+  const prevDt = 1 / Math.max(1, prevEma);
+  const nextDt = prevDt * 0.88 + clampedDt * 0.12;
+  return 1 / nextDt;
 }
 
 export function formatFpsLabel(fps: number): string {
   return `${Math.max(1, Math.round(fps))} FPS`;
+}
+
+/**
+ * Computes discrete DRS pixel-ratio steps bounded by a GPU pixel budget so
+ * integrated GPUs (e.g. Intel UHD 630 on a 2155x1287 viewport) don't choke
+ * shading 2.8M pixels at 1.0x DPR while discrete GPUs stay crisp.
+ */
+export function computeAdaptiveDprSteps(
+  viewportW: number,
+  viewportH: number,
+  deviceDpr: number,
+  isSoftwareGl: boolean,
+  isLowPowerGpu: boolean
+): number[] {
+  if (isSoftwareGl) return [1];
+  const pixelsAt1x = Math.max(1, viewportW * viewportH);
+  const hardMaxDpr = Math.min(deviceDpr || 1, isLowPowerGpu ? 0.9 : 1.15);
+  const pixelBudget = isLowPowerGpu ? 1_150_000 : 2_300_000;
+  const budgetDpr = Math.sqrt(pixelBudget / pixelsAt1x);
+  const startDpr = Math.max(0.5, Math.min(hardMaxDpr, Math.round(budgetDpr * 100) / 100));
+  const floorDpr = isLowPowerGpu ? 0.48 : 0.62;
+
+  const steps: number[] = [startDpr];
+  const multipliers = [0.86, 0.74, 0.64];
+  for (const m of multipliers) {
+    const candidate = Math.max(floorDpr, Math.round(startDpr * m * 100) / 100);
+    if (candidate < steps[steps.length - 1] - 0.03) {
+      steps.push(candidate);
+    }
+  }
+  if (steps[steps.length - 1] > floorDpr + 0.03) {
+    steps.push(floorDpr);
+  }
+  return steps;
 }
 
 export interface WeatherWindProfile {

@@ -590,9 +590,14 @@ export class WeatherAndSkySystem {
   private readonly tmpHemiSky = new THREE.Color();
   private readonly tmpHemiGround = new THREE.Color();
 
-  constructor(scene: THREE.Scene, isSoftwareGl: boolean, pixelRatio: number) {
+  constructor(
+    scene: THREE.Scene,
+    isSoftwareGl: boolean,
+    pixelRatio: number,
+    isLowPowerGpu = false
+  ) {
     this.isSoftwareGl = isSoftwareGl;
-    const shadowRes = 1024;
+    const shadowRes = isLowPowerGpu ? 768 : 1024;
     this.shadowTexelSize = (this.shadowExtent * 2) / shadowRes;
 
     scene.background = new THREE.Color(0xb9d1df);
@@ -660,7 +665,7 @@ export class WeatherAndSkySystem {
   }
 
   get isSunCastingShadow(): boolean {
-    return this.sunLight.castShadow;
+    return !this.isSoftwareGl && this.sunLight.shadow.intensity > 0.02;
   }
 
   get isSunbeamsVisible(): boolean {
@@ -842,8 +847,13 @@ export class WeatherAndSkySystem {
     const weatherDim =
       weather === 'clear' ? 1.0 : weather === 'mist' ? 0.64 : weather === 'rain' ? 0.45 : 0.32;
     this.sunLight.intensity = THREE.MathUtils.lerp(0.12, 3.15 * weatherDim, dayFactor);
-    // Overcast rain/storm clouds diffuse sunlight; skip expensive shadow pass in overcast & deep dusk
-    this.sunLight.castShadow = !this.isSoftwareGl && !overcast && dayFactor > 0.2;
+    // Fade shadow.intensity uniform instead of toggling castShadow — avoids 27-shader GLSL recompilation freeze on weather change!
+    const targetShadowIntensity = !this.isSoftwareGl && !overcast && dayFactor > 0.2 ? 1.0 : 0.0;
+    this.sunLight.shadow.intensity = THREE.MathUtils.lerp(
+      this.sunLight.shadow.intensity,
+      targetShadowIntensity,
+      Math.min(1, dt * 3.0)
+    );
 
     if (dayFactor < 0.15) {
       this.curSunCol.setHex(0x6a8cc4);

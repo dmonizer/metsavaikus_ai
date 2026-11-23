@@ -2528,6 +2528,21 @@ export class WorldVegetationSystem {
               colArr[dstC + 2] = srcC[cOff + 2];
               count++;
             }
+          } else if (ring >= 2) {
+            // Outer ring (24-40m): 50% LOD thinning merges seamlessly into photographic meadow ground with half the overdraw!
+            const srcM = slab.matrices;
+            const srcC = slab.colors;
+            for (let i = 0; i < slab.count && count < GRASS_BLADE_CAP; i += 2) {
+              const mOff = i * 16;
+              const dstM = count * 16;
+              for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
+              const cOff = i * 3;
+              const dstC = count * 3;
+              colArr[dstC] = srcC[cOff];
+              colArr[dstC + 1] = srcC[cOff + 1];
+              colArr[dstC + 2] = srcC[cOff + 2];
+              count++;
+            }
           } else {
             const take = slab.count <= avail ? slab.count : avail;
             matArr.set(

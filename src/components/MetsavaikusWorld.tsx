@@ -41,6 +41,7 @@ function createOutdoorEnvScene(): THREE.Scene {
 import {
   buildInteractionPrompt,
   canClearHeightCollider,
+  computeAdaptiveDprSteps,
   formatFpsLabel,
   InteractionPromptData,
   MUSHROOM_SPECIES_INFO,
@@ -122,22 +123,33 @@ interface MetsavaikusWorldProps {
   basket: MushroomBasket;
 }
 
-function detectGpuInfo(): { isSoftwareGl: boolean; gpuRenderer: string } {
+function detectGpuInfo(): {
+  isSoftwareGl: boolean;
+  isLowPowerGpu: boolean;
+  gpuRenderer: string;
+} {
   try {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-    if (!gl) return { isSoftwareGl: true, gpuRenderer: 'NoWebGL' };
+    if (!gl) return { isSoftwareGl: true, isLowPowerGpu: true, gpuRenderer: 'NoWebGL' };
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
     const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
     const raw = String(gl.getParameter(param) || 'unknown').trim();
     gl.getExtension('WEBGL_lose_context')?.loseContext();
     const gpuRenderer = raw.length > 72 ? `${raw.slice(0, 69)}...` : raw;
+    const isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(raw);
+    const isLowPowerGpu =
+      isSoftwareGl ||
+      /Intel.*(UHD|HD Graphics|GT1|GT2|Bay Trail|Cherry|Jasper|Gemini|CFL|KBL|SKL|WHL|CML)|Mesa Intel.*(UHD|HD )/i.test(
+        raw
+      );
     return {
-      isSoftwareGl: /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(raw),
+      isSoftwareGl,
+      isLowPowerGpu,
       gpuRenderer,
     };
   } catch {
-    return { isSoftwareGl: false, gpuRenderer: 'unknown' };
+    return { isSoftwareGl: false, isLowPowerGpu: false, gpuRenderer: 'unknown' };
   }
 }
 
@@ -176,10 +188,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let frameId = 0;
     let isTimeoutFrame = false;
 
-    const { isSoftwareGl, gpuRenderer } = detectGpuInfo();
-    const maxDpr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.15);
-    const dprSteps = [1.15, 1.0, 0.85, 0.72].filter((v) => v <= maxDpr + 0.001);
-    if (dprSteps.length === 0 || dprSteps[0] < maxDpr) dprSteps.unshift(maxDpr);
+    const { isSoftwareGl, isLowPowerGpu, gpuRenderer } = detectGpuInfo();
+    let dprSteps = computeAdaptiveDprSteps(
+      window.innerWidth,
+      window.innerHeight,
+      window.devicePixelRatio || 1,
+      isSoftwareGl,
+      isLowPowerGpu
+    );
     let dprStepIdx = 0;
     let currentDpr = dprSteps[0];
     let drsCheckTimer = 0;
@@ -233,7 +249,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     scene.add(camera);
 
     const sound = new SoundEngine();
-    const weatherSky = new WeatherAndSkySystem(scene, isSoftwareGl, currentDpr);
+    const weatherSky = new WeatherAndSkySystem(scene, isSoftwareGl, currentDpr, isLowPowerGpu);
     let lastShadowX = 9999;
     let lastShadowZ = 9999;
     let lastShadowSunY = -99;
@@ -616,8 +632,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
-      const nextMax = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.15);
-      currentDpr = Math.min(currentDpr, nextMax);
+      dprSteps = computeAdaptiveDprSteps(
+        w,
+        h,
+        window.devicePixelRatio || 1,
+        isSoftwareGl,
+        isLowPowerGpu
+      );
+      dprStepIdx = Math.min(dprStepIdx, dprSteps.length - 1);
+      currentDpr = dprSteps[dprStepIdx];
       renderer.setPixelRatio(currentDpr);
       weatherSky.setPixelRatio(currentDpr);
     };
@@ -914,9 +937,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       culledInstances: 0,
       candidateInstances: 0,
       overlays: 'none',
+      lowPowerGpu: isLowPowerGpu,
+      programsDelta: 0,
     };
     let lastFogCullDist = 225;
     let shadowUpdatesWindow = 0;
+    let lastProgramCount = 0;
 
     function tick(): void {
       if (disposed) return;
@@ -1030,14 +1056,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           propsMs += performance.now() - tp1;
         }
 
-        // Smart on-demand shadow map updates: 0 GPU shadow passes while standing still, throttled to every 2nd frame while sprinting!
+        // Smart on-demand shadow map updates: 0 GPU shadow passes while standing still, throttled cleanly while walking!
         if (!isSoftwareGl && weatherSky.isSunCastingShadow) {
           shadowFrameSkip++;
           const movedSq =
             (player.pos.x - lastShadowX) * (player.pos.x - lastShadowX) +
             (player.pos.z - lastShadowZ) * (player.pos.z - lastShadowZ);
-          const sunMoved = Math.abs(skyInfo.sunDir.y - lastShadowSunY) > 0.004;
-          if ((movedSq > 0.14 || sunMoved) && shadowFrameSkip >= 2) {
+          const sunMoved = Math.abs(skyInfo.sunDir.y - lastShadowSunY) > 0.008;
+          const moveThreshSq = isLowPowerGpu ? 4.0 : 2.25;
+          const minSkip = isLowPowerGpu ? 6 : 4;
+          if ((movedSq > moveThreshSq || sunMoved) && shadowFrameSkip >= minSkip) {
             renderer.shadowMap.needsUpdate = true;
             shadowUpdatesWindow++;
             lastShadowX = player.pos.x;
@@ -1154,8 +1182,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         const isLowNow = fpsEma < 15 || fpsInstant < 15;
         const mightReport = isLowNow || fpsEma >= 22 || !hasLivePerfSample;
         if (mightReport) {
-          const tDiag = isLowNow && terrainMgr ? terrainMgr.consumeDiagnostics() : null;
-          const vDiag = isLowNow && vegetation ? vegetation.consumeDiagnostics() : null;
+          const needDiag = isLowNow || !hasLivePerfSample;
+          const tDiag = needDiag && terrainMgr ? terrainMgr.consumeDiagnostics() : null;
+          const vDiag = needDiag && vegetation ? vegetation.consumeDiagnostics() : null;
           const vc = worldToVirtualChunk(player.pos.x, player.pos.z);
 
           perfSample.nowMs = tr1;
@@ -1188,7 +1217,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfSample.points = renderer.info.render.points;
           perfSample.geometries = renderer.info.memory.geometries;
           perfSample.textures = renderer.info.memory.textures;
-          perfSample.programs = renderer.info.programs ? renderer.info.programs.length : 0;
+          const curProgs = renderer.info.programs ? renderer.info.programs.length : 0;
+          perfSample.programsDelta = lastProgramCount > 0 ? Math.max(0, curProgs - lastProgramCount) : 0;
+          lastProgramCount = curProgs;
+          perfSample.programs = curProgs;
           perfSample.visibleChunks = chunkStats.visibleChunks;
           perfSample.lodCounts[0] = chunkStats.lod0;
           perfSample.lodCounts[1] = chunkStats.lod1;
@@ -1245,8 +1277,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
         if (diagResetTimer >= 1.5 && fpsEma >= 18) {
           diagResetTimer = 0;
-          terrainMgr?.consumeDiagnostics();
-          vegetation?.consumeDiagnostics();
+          const td = terrainMgr?.consumeDiagnostics();
+          const vd = vegetation?.consumeDiagnostics();
+          if (td) perfSample.terrainCacheSize = td.cacheSize;
+          if (vd) {
+            perfSample.foliageCacheSize = vd.chunkCacheSize;
+            perfSample.grassCount = vd.grassCount;
+            perfSample.colliderCells = vd.colliderCells;
+          }
           perfSample.terrainBuilds = 0;
           perfSample.terrainEvictions = 0;
           perfSample.terrainRecenters = 0;
