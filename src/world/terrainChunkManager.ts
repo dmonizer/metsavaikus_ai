@@ -4,6 +4,7 @@ import {
   CHUNK_COUNT,
   CHUNK_SIZE,
   getTerrainHeight,
+  SWAMP_WATER_Y,
   WORLD_HALF,
   worldToVirtualChunk,
 } from './terrainMath';
@@ -56,7 +57,7 @@ export class TerrainChunkManager {
 
   private readonly meshes: THREE.Mesh[] = [];
   private readonly sharedIndices: THREE.BufferAttribute[];
-  private readonly material: THREE.MeshLambertMaterial;
+  private readonly material: THREE.MeshStandardMaterial;
   private readonly compute: ComputeEngine;
   private readonly frustum = new THREE.Frustum();
   private readonly projScreenMatrix = new THREE.Matrix4();
@@ -71,18 +72,67 @@ export class TerrainChunkManager {
 
   constructor(
     compute: ComputeEngine,
-    groundDetailTex: THREE.Texture
+    groundDetailTex: THREE.Texture,
+    groundNormalTex?: THREE.Texture
   ) {
     this.compute = compute;
     this.sharedIndices = LOD_SEGS.map(
       (s) => new THREE.BufferAttribute(buildGridIndices(s), 1)
     );
 
-    // Drop expensive fragment bump derivatives on terrain for crisp high-FPS ground shading
-    this.material = new THREE.MeshLambertMaterial({
+    // Physically-based forest-floor terrain with Sobel normal relief,
+    // rotated dual-scale anti-tiling, organic dappled breakup, and wet peat shoreline sheen.
+    this.material = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: groundDetailTex,
+      normalMap: groundNormalTex ?? null,
+      normalScale: new THREE.Vector2(0.82, 0.82),
+      roughness: 0.92,
+      metalness: 0.0,
+      envMapIntensity: 0.55,
     });
+    this.material.customProgramCacheKey = () => 'terrain_pbr_antitile_v2';
+    this.material.onBeforeCompile = (shader) => {
+      shader.vertexShader =
+        `varying vec3 vTerrainWorldPos;\n` +
+        shader.vertexShader.replace(
+          '#include <worldpos_vertex>',
+          `#include <worldpos_vertex>
+          vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+        );
+
+      shader.fragmentShader =
+        `varying vec3 vTerrainWorldPos;\n` +
+        shader.fragmentShader
+          .replace(
+            '#include <map_fragment>',
+            `#ifdef USE_MAP
+              // World-space dual-scale rotated sampling eliminates visible chunk/tile repetition
+              vec2 uvFine = vTerrainWorldPos.xz * 0.22;
+              vec2 uvMacro = mat2(0.819, -0.574, 0.574, 0.819) * (vTerrainWorldPos.xz * 0.068);
+              vec4 texFine = texture2D(map, uvFine);
+              vec4 texMacro = texture2D(map, uvMacro);
+              vec4 sampledDiffuseColor = mix(texFine, texMacro, 0.36);
+
+              // Subtle organic woodland floor variegation & dappled moss breakup
+              float macroVar = 0.92
+                + 0.08 * sin(vTerrainWorldPos.x * 0.19 + vTerrainWorldPos.z * 0.13)
+                + 0.06 * cos(vTerrainWorldPos.x * 0.43 - vTerrainWorldPos.z * 0.37);
+              sampledDiffuseColor.rgb *= macroVar;
+
+              // Darken damp peat & muddy banks near the bog water table
+              float wetShore = 1.0 - smoothstep(${(SWAMP_WATER_Y - 0.04).toFixed(3)}, ${(SWAMP_WATER_Y + 0.42).toFixed(3)}, vTerrainWorldPos.y);
+              sampledDiffuseColor.rgb *= mix(1.0, 0.56, wetShore);
+              diffuseColor *= sampledDiffuseColor;
+            #endif`
+          )
+          .replace(
+            '#include <roughnessmap_fragment>',
+            `#include <roughnessmap_fragment>
+            float wetGloss = 1.0 - smoothstep(${(SWAMP_WATER_Y - 0.04).toFixed(3)}, ${(SWAMP_WATER_Y + 0.34).toFixed(3)}, vTerrainWorldPos.y);
+            roughnessFactor = mix(roughnessFactor, 0.22, wetGloss);`
+          );
+    };
 
     for (let i = 0; i < CHUNK_COUNT; i++) {
       const mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
@@ -107,7 +157,6 @@ export class TerrainChunkManager {
     const key = `${vcx}_${vcz}_${lod}`;
     const existing = this.geoCache.get(key);
     if (existing) {
-      // Refresh LRU position
       this.geoCache.delete(key);
       this.geoCache.set(key, existing);
       return existing;
@@ -133,8 +182,8 @@ export class TerrainChunkManager {
     for (let iz = 0; iz < dim; iz++) {
       for (let ix = 0; ix < dim; ix++) {
         const idx = (iz * dim + ix) * 2;
-        uvs[idx] = ix / segs;
-        uvs[idx + 1] = iz / segs;
+        uvs[idx] = (minX + (ix / segs) * CHUNK_SIZE) * 0.22;
+        uvs[idx + 1] = (minZ + (iz / segs) * CHUNK_SIZE) * 0.22;
       }
     }
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
@@ -163,7 +212,7 @@ export class TerrainChunkManager {
     this.centerVcz = pcz;
     this.diagRecenters++;
 
-    const half = Math.floor(ACTIVE_GRID / 2); // 5 -> 11x11 around player
+    const half = Math.floor(ACTIVE_GRID / 2);
     let idx = 0;
     for (let dz = -half; dz <= half; dz++) {
       for (let dx = -half; dx <= half; dx++) {
@@ -254,9 +303,9 @@ export class TerrainChunkManager {
       camera.position.x,
       camera.position.y,
       camera.position.z,
-      230 * 230, // max view distance across large terrain
-      64 * 64,   // LOD 0 cutoff
-      130 * 130, // LOD 1 cutoff
+      230 * 230,
+      64 * 64,
+      130 * 130,
       this.chunkLods
     );
 

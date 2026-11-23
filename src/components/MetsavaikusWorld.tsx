@@ -1,6 +1,43 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+
+function createOutdoorEnvScene(): THREE.Scene {
+  const envScene = new THREE.Scene();
+  const skyGeo = new THREE.SphereGeometry(20, 24, 16);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    vertexShader: `
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vDir;
+      void main() {
+        float y = vDir.y;
+        vec3 zenith = vec3(0.22, 0.44, 0.72);
+        vec3 horizon = vec3(0.76, 0.86, 0.92);
+        vec3 pineBand = vec3(0.16, 0.24, 0.14);
+        vec3 ground = vec3(0.12, 0.15, 0.09);
+
+        vec3 col = y >= 0.0
+          ? mix(horizon, zenith, smoothstep(0.0, 0.75, y))
+          : mix(pineBand, ground, smoothstep(0.0, -0.55, y));
+
+        // Soft warm Baltic morning sun lobe for specular highlights on glass, water & wet caps
+        vec3 sunDir = normalize(vec3(0.55, 0.58, 0.35));
+        float sunGlow = pow(max(dot(normalize(vDir), sunDir), 0.0), 16.0);
+        col += vec3(1.15, 1.02, 0.82) * sunGlow * 0.9;
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  envScene.add(new THREE.Mesh(skyGeo, skyMat));
+  return envScene;
+}
 import {
   buildInteractionPrompt,
   canClearHeightCollider,
@@ -144,7 +181,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     renderer.setPixelRatio(pixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.08;
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.domElement.style.display = 'block';
@@ -162,10 +199,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     );
 
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    const roomEnv = new RoomEnvironment();
-    const envTarget = pmremGenerator.fromScene(roomEnv, 0.04);
+    const outdoorEnv = createOutdoorEnvScene();
+    const envTarget = pmremGenerator.fromScene(outdoorEnv, 0.03);
     scene.environment = envTarget.texture;
-    roomEnv.dispose();
+    outdoorEnv.traverse((obj) => {
+      const m = obj as THREE.Mesh;
+      if (m.geometry) m.geometry.dispose();
+      if (m.material) (m.material as THREE.Material).dispose();
+    });
     pmremGenerator.dispose();
 
     const flashlight = new THREE.SpotLight(0xfff1cc, 0, 38, Math.PI / 5.5, 0.45, 1.4);
@@ -885,10 +926,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (curPhase !== 'paused') {
         const tp0 = performance.now();
-        propsCtx?.updateDynamicProps(elapsed, camera.position.x, camera.position.z);
-        const tp1 = performance.now();
-        propsMs += tp1 - tp0;
-
         const skyInfo = weatherSky.update(
           dt,
           player.pos,
@@ -896,10 +933,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           sound,
           hudRefs.flashEl.current
         );
-        const tp2 = performance.now();
-        skyMs = tp2 - tp1;
+        const tp1 = performance.now();
+        skyMs = tp1 - tp0;
         skyTimeLabel = skyInfo.timeLabel;
         skyWindStrength = skyInfo.windStrength;
+
+        propsCtx?.updateDynamicProps(elapsed, camera.position.x, camera.position.z, skyInfo);
+        const tp2 = performance.now();
+        propsMs += tp2 - tp1;
 
         if (weatherSky.currentWeather !== lastObservedWeather) {
           lastObservedWeather = weatherSky.currentWeather;
@@ -918,7 +959,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             camera.position,
             elapsed,
             skyInfo.windStrength,
-            vegStats
+            vegStats,
+            skyInfo.sunDir,
+            skyInfo.sunColor
           );
           const tp4 = performance.now();
           vegMs = tp4 - tp3;
@@ -975,6 +1018,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const tr0 = performance.now();
       renderer.render(scene, camera);
       const tr1 = performance.now();
+      renderer.domElement.dataset.ready = 'true';
+      renderer.domElement.dataset.drawCalls = String(renderer.info.render.calls);
+      renderer.domElement.dataset.triangles = String(renderer.info.render.triangles);
       const renderMs = tr1 - tr0;
       const tickCpuMs = tr1 - now;
       const externalWaitMs = Math.max(0, rawDtMs - prevTickCpuMs);
@@ -1091,10 +1137,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       computeEngine = engine;
       textures = loadedTextures;
 
-      vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl);
-      vegetation.prewarmAround(spawnX, spawnZ);
-      scene.add(vegetation.group);
-
       propsCtx = buildArchitectureAndProps(
         scene,
         loadedTextures,
@@ -1103,10 +1145,38 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         isSoftwareGl
       );
       propCircleColliders = propsCtx.circleColliders;
-      minimap = createMinimapRenderer(getActiveBlueprint(), propsCtx.boardwalkZones);
+      const activeBp = getActiveBlueprint();
+      minimap = createMinimapRenderer(activeBp, propsCtx.boardwalkZones);
 
-      terrainMgr = new TerrainChunkManager(engine, loadedTextures.groundDetail);
-      terrainMgr.prewarmAround(spawnX, spawnZ);
+      const viewParam = new URLSearchParams(window.location.search).get('view');
+      if (viewParam === 'mushrooms' && propsCtx.heroMushroomPos) {
+        const hx = propsCtx.heroMushroomPos.x;
+        const hz = propsCtx.heroMushroomPos.z;
+        const mx = hx + 0.12;
+        const mz = hz + 1.08;
+        player.pos.set(mx, getTerrainHeight(mx, mz), mz);
+        player.yaw = 0.02;
+        player.pitch = -0.58;
+        player.currentEye = 0.78;
+      } else if (viewParam === 'bog' && propsCtx.boardwalkZones.length > 0) {
+        const bw = propsCtx.boardwalkZones[Math.floor(propsCtx.boardwalkZones.length * 0.28)];
+        const bx = (bw.minX + bw.maxX) * 0.5;
+        const bz = (bw.minZ + bw.maxZ) * 0.5;
+        player.pos.set(bx, bw.y, bz);
+        player.yaw = Math.atan2(-(activeBp.bogCenterX - bx), -(activeBp.bogCenterZ - bz));
+        player.pitch = -0.14;
+      }
+
+      vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl);
+      vegetation.prewarmAround(player.pos.x, player.pos.z);
+      scene.add(vegetation.group);
+
+      terrainMgr = new TerrainChunkManager(
+        engine,
+        loadedTextures.groundDetail,
+        loadedTextures.groundNormal
+      );
+      terrainMgr.prewarmAround(player.pos.x, player.pos.z);
       scene.add(terrainMgr.group);
 
       renderer.domElement.dataset.wasmActive = String(engine.isWasmActive);

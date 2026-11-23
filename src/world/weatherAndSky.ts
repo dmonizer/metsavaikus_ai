@@ -14,6 +14,20 @@ export const WEATHER_LABELS: Record<WeatherId, string> = {
   storm: 'Thunderstorm',
 };
 
+export interface SkyFrameState {
+  timeLabel: string;
+  weatherLabel: string;
+  lightningStrength: number;
+  windStrength: number;
+  sunDir: THREE.Vector3;
+  sunColor: THREE.Color;
+  skyTopColor: THREE.Color;
+  skyHorizonColor: THREE.Color;
+  dayFactor: number;
+  goldenFactor: number;
+  fogDensity: number;
+}
+
 function seededRand(seed: number): () => number {
   let s = seed | 0;
   return () => {
@@ -22,6 +36,253 @@ function seededRand(seed: number): () => number {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/**
+ * Single-draw-call Atmospheric Baltic Sky Dome with Rayleigh zenith-to-horizon scattering,
+ * Mie solar aureole, crisp sun/moon disks, and 2-octave drifting volumetric-feel FBM clouds.
+ */
+function createAtmosphericSkyDome(): {
+  mesh: THREE.Mesh;
+  material: THREE.ShaderMaterial;
+  geometry: THREE.SphereGeometry;
+} {
+  const geometry = new THREE.SphereGeometry(390, 32, 20);
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uSunDir: { value: new THREE.Vector3(0.5, 0.6, 0.3).normalize() },
+      uZenithColor: { value: new THREE.Color(0x2e649c) },
+      uMidSkyColor: { value: new THREE.Color(0x6d9cc2) },
+      uHorizonColor: { value: new THREE.Color(0xc2d8e4) },
+      uSunGlowColor: { value: new THREE.Color(0xffe7b8) },
+      uCloudBright: { value: new THREE.Color(0xf6f8fa) },
+      uCloudDark: { value: new THREE.Color(0x7c8e9e) },
+      uCloudCover: { value: 0.36 },
+      uDayFactor: { value: 1.0 },
+      uGoldenFactor: { value: 0.0 },
+      uTime: { value: 0.0 },
+    },
+    vertexShader: `
+      varying vec3 vLocalDir;
+      void main() {
+        vLocalDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uSunDir;
+      uniform vec3 uZenithColor;
+      uniform vec3 uMidSkyColor;
+      uniform vec3 uHorizonColor;
+      uniform vec3 uSunGlowColor;
+      uniform vec3 uCloudBright;
+      uniform vec3 uCloudDark;
+      uniform float uCloudCover;
+      uniform float uDayFactor;
+      uniform float uGoldenFactor;
+      uniform float uTime;
+
+      varying vec3 vLocalDir;
+
+      float hash21(vec2 p) {
+        p = fract(p * vec2(123.34, 456.21));
+        p += dot(p, p + 45.32);
+        return fract(p.x * p.y);
+      }
+
+      float noise2(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash21(i);
+        float b = hash21(i + vec2(1.0, 0.0));
+        float c = hash21(i + vec2(0.0, 1.0));
+        float d = hash21(i + vec2(1.0, 1.0));
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+
+      float cloudFbm(vec2 p) {
+        float v = 0.0;
+        float amp = 0.54;
+        mat2 rot = mat2(0.80, -0.60, 0.60, 0.80);
+        for (int i = 0; i < 3; i++) {
+          v += amp * noise2(p);
+          p = rot * p * 2.04 + vec2(1.7, 3.1);
+          amp *= 0.48;
+        }
+        return v;
+      }
+
+      void main() {
+        vec3 dir = normalize(vLocalDir);
+        float elev = clamp(dir.y, 0.0, 1.0);
+
+        // Smooth 3-stop Rayleigh atmospheric gradient
+        vec3 col = mix(uHorizonColor, uMidSkyColor, smoothstep(0.0, 0.24, elev));
+        col = mix(col, uZenithColor, smoothstep(0.18, 0.86, elev));
+
+        // Subtle warm horizon scattering band near sunrise/sunset
+        float sunCos = dot(dir, uSunDir);
+        float horizonBand = exp(-elev * 7.5);
+        float mieWide = pow(max(sunCos, 0.0), 4.0) * (0.22 + uGoldenFactor * 0.45) * (1.0 - uCloudCover * 0.65);
+        float mieTight = pow(max(sunCos, 0.0), 42.0) * 0.48 * (1.0 - uCloudCover * 0.82);
+        float sunDisk = smoothstep(0.9990, 0.99965, sunCos) * 2.1 * (1.0 - uCloudCover * 0.88) * smoothstep(-0.04, 0.05, uSunDir.y);
+
+        col += uSunGlowColor * (mieWide * (0.45 + 0.55 * horizonBand) + mieTight + sunDisk) * max(uDayFactor, uGoldenFactor * 0.7);
+
+        // Soft moon disk & lunar halo opposite the sun at night
+        float moonCos = dot(dir, -uSunDir);
+        float nightVis = clamp(1.0 - uDayFactor * 1.6, 0.0, 1.0) * (1.0 - uCloudCover * 0.75);
+        float moonDisk = smoothstep(0.99925, 0.99965, moonCos) * 1.25 * nightVis;
+        float moonHalo = pow(max(moonCos, 0.0), 28.0) * 0.22 * nightVis;
+        col += vec3(0.76, 0.86, 1.0) * (moonDisk + moonHalo);
+
+        // Projected planar Baltic cloud layer above horizon
+        if (dir.y > 0.015) {
+          float planeT = 1.0 / (dir.y + 0.14);
+          vec2 cloudUv = dir.xz * planeT * 0.48 + vec2(uTime * 0.0055, uTime * 0.0022);
+          float cVal = cloudFbm(cloudUv);
+          float thresh = mix(0.64, 0.24, uCloudCover);
+          float density = smoothstep(thresh, thresh + 0.32, cVal);
+
+          // Self-shadowing light offset toward sun for volumetric sunlit cloud rims
+          vec2 sunOff = uSunDir.xz * 0.12;
+          float cLight = cloudFbm(cloudUv + sunOff);
+          float litFactor = clamp(0.55 + (cVal - cLight) * 2.2 + max(sunCos, 0.0) * 0.35, 0.0, 1.0);
+          vec3 cloudCol = mix(uCloudDark, uCloudBright, litFactor);
+          cloudCol += uSunGlowColor * pow(max(sunCos, 0.0), 8.0) * 0.28 * (1.0 - density * 0.45) * max(uDayFactor, uGoldenFactor);
+
+          // Dissolve distant clouds smoothly into the horizon mist
+          float horizFade = smoothstep(0.015, 0.20, dir.y);
+          col = mix(col, cloudCol, density * horizFade * (0.72 + uCloudCover * 0.24));
+        }
+
+        // Below-horizon mirror blends cleanly into fog color
+        float belowFade = smoothstep(-0.06, 0.02, dir.y);
+        col = mix(uHorizonColor * 0.96, col, belowFade);
+
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10;
+  return { mesh, material, geometry };
+}
+
+/**
+ * Lightweight 1-draw-call morning/golden-hour volumetric sunbeam shafts filtering through pine crowns.
+ */
+function createSunbeamShafts(): {
+  mesh: THREE.Mesh;
+  material: THREE.ShaderMaterial;
+  geometry: THREE.BufferGeometry;
+} {
+  const SHAFT_COUNT = 8;
+  const rand = seededRand(5150);
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const seeds: number[] = [];
+  const indices: number[] = [];
+
+  for (let i = 0; i < SHAFT_COUNT; i++) {
+    const angle = (i / SHAFT_COUNT) * Math.PI * 2 + rand() * 0.45;
+    const dist = 14 + rand() * 24;
+    const cx = Math.cos(angle) * dist;
+    const cz = Math.sin(angle) * dist;
+    const w = 3.2 + rand() * 2.8;
+    const h = 24 + rand() * 10;
+    const rotY = rand() * Math.PI;
+    const cosY = Math.cos(rotY);
+    const sinY = Math.sin(rotY);
+    const seedVal = rand();
+
+    const baseVert = i * 4;
+    const corners: Array<[number, number, number, number]> = [
+      [-w * 0.5, 0, 0, 0],
+      [w * 0.5, 0, 1, 0],
+      [w * 0.65, h, 1, 1],
+      [-w * 0.65, h, 0, 1],
+    ];
+    for (const [lx, ly, u, v] of corners) {
+      const wx = cx + lx * cosY;
+      const wz = cz + lx * sinY;
+      positions.push(wx, ly - 1.5, wz);
+      uvs.push(u, v);
+      seeds.push(seedVal);
+    }
+    indices.push(baseVert, baseVert + 1, baseVert + 2, baseVert, baseVert + 2, baseVert + 3);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute('aSeed', new THREE.Float32BufferAttribute(seeds, 1));
+  geometry.setIndex(indices);
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      uSunDir: { value: new THREE.Vector3(0.5, 0.4, 0.3).normalize() },
+      uColor: { value: new THREE.Color(0xffe4ad) },
+      uOpacity: { value: 0.0 },
+      uTime: { value: 0.0 },
+    },
+    vertexShader: `
+      attribute float aSeed;
+      uniform vec3 uSunDir;
+      varying vec2 vUv;
+      varying float vSeed;
+      varying float vFade;
+
+      void main() {
+        vUv = uv;
+        vSeed = aSeed;
+        vec3 p = position;
+        // Lean upper shaft tips gently toward the sun direction
+        float topWeight = clamp(uv.y, 0.0, 1.0);
+        p.xz += uSunDir.xz * (topWeight * 12.0);
+        vec4 mvPos = modelViewMatrix * vec4(p, 1.0);
+        float dist = length(mvPos.xyz);
+        vFade = smoothstep(5.0, 14.0, dist) * (1.0 - smoothstep(32.0, 52.0, dist));
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      uniform float uTime;
+      varying vec2 vUv;
+      varying float vSeed;
+      varying float vFade;
+
+      void main() {
+        float edgeX = sin(vUv.x * 3.14159265);
+        edgeX = edgeX * edgeX;
+        float edgeY = smoothstep(0.0, 0.28, vUv.y) * (1.0 - smoothstep(0.55, 1.0, vUv.y));
+        float shimmer = 0.72 + 0.28 * sin(uTime * 0.45 + vSeed * 12.0 + vUv.x * 4.0);
+        float alpha = edgeX * edgeY * shimmer * vFade * uOpacity;
+        if (alpha < 0.003) discard;
+        gl_FragColor = vec4(uColor, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    fog: false,
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  return { mesh, material, geometry };
 }
 
 function createProceduralStarfield(): {
@@ -38,13 +299,12 @@ function createProceduralStarfield(): {
   const colors = new Float32Array(STAR_COUNT * 3);
   const twinkle = new Float32Array(STAR_COUNT * 2);
 
-  // Realistic stellar temperature palette
   const palette = [
-    new THREE.Color(0xffc994), // K-type warm amber
-    new THREE.Color(0xffe9c8), // G-type warm white
-    new THREE.Color(0xf7f8ff), // F/A-type crisp white
-    new THREE.Color(0xc7ddff), // B-type cool blue-white
-    new THREE.Color(0xa6c8ff), // O/B-type sapphire
+    new THREE.Color(0xffc994),
+    new THREE.Color(0xffe9c8),
+    new THREE.Color(0xf7f8ff),
+    new THREE.Color(0xc7ddff),
+    new THREE.Color(0xa6c8ff),
   ];
 
   const r = 340;
@@ -55,7 +315,6 @@ function createProceduralStarfield(): {
   for (let i = 0; i < STAR_COUNT; i++) {
     const inMilkyWay = i < STAR_COUNT * 0.36;
     if (inMilkyWay) {
-      // Cluster along galactic plane band
       const az = rand() * Math.PI * 2;
       const bandOffset = (rand() + rand() - 1) * 0.24;
       dir.set(Math.cos(az), bandOffset, Math.sin(az)).normalize();
@@ -76,7 +335,6 @@ function createProceduralStarfield(): {
     positions[i * 3 + 1] = dir.y * r;
     positions[i * 3 + 2] = dir.z * r;
 
-    // Power-law stellar magnitude distribution: many dim, few bright
     const mag = Math.pow(rand(), 3.8);
     const baseBright = inMilkyWay ? 0.18 + mag * 0.72 : 0.28 + mag * 0.92;
     brightness[i] = Math.min(1.0, baseBright);
@@ -118,7 +376,6 @@ function createProceduralStarfield(): {
       void main() {
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         float elev = clamp(normalize(position).y, 0.0, 1.0);
-        // Stronger scintillation near the horizon
         float scintAmp = mix(0.28, 0.07, elev);
         float scint = 1.0 + sin(uTime * aTwinkle.y + aTwinkle.x) * scintAmp;
         float horizonFade = smoothstep(0.01, 0.16, elev);
@@ -139,7 +396,6 @@ function createProceduralStarfield(): {
         vec2 uv = gl_PointCoord - vec2(0.5);
         float dist2 = dot(uv, uv);
         if (dist2 > 0.25) discard;
-        // Soft radial PSF core + subtle halo for bright stars (zero square pixels)
         float core = exp(-dist2 * 24.0);
         float halo = exp(-dist2 * 7.5) * 0.35 * vBright;
         float spike = 0.0;
@@ -171,7 +427,6 @@ function createRainStreakSystem(): {
   const RAIN_COUNT = 1500;
   const rand = seededRand(4099);
 
-  // Unit quad [-0.5..0.5, 0..1] per streak instance
   const baseGeo = new THREE.PlaneGeometry(1, 1, 1, 1);
   const instGeo = new THREE.InstancedBufferGeometry();
   instGeo.index = baseGeo.index;
@@ -188,9 +443,9 @@ function createRainStreakSystem(): {
     seeds[i * 4 + 2] = rand() * 22;
     seeds[i * 4 + 3] = 0.82 + rand() * 0.45;
 
-    scales[i * 3] = 0.02 + rand() * 0.016;    // slim crisp droplet streak width
-    scales[i * 3 + 1] = 0.62 + rand() * 0.78;  // elongated streak length
-    scales[i * 3 + 2] = 0.55 + rand() * 0.45;  // alpha variation
+    scales[i * 3] = 0.02 + rand() * 0.016;
+    scales[i * 3 + 1] = 0.62 + rand() * 0.78;
+    scales[i * 3 + 2] = 0.55 + rand() * 0.45;
   }
 
   instGeo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seeds, 4));
@@ -228,7 +483,6 @@ function createRainStreakSystem(): {
         );
         vec3 worldCenter = uPlayerPos + rel;
 
-        // Streak direction matches actual wind-slanted raindrop velocity; guard overhead cross singularity
         vec3 streakDir = normalize(vec3(-uWindX, speed, 0.0));
         vec3 camDelta = cameraPosition - worldCenter;
         float camDist = max(length(camDelta), 0.05);
@@ -281,61 +535,82 @@ export class WeatherAndSkySystem {
   readonly hemiLight: THREE.HemisphereLight;
   readonly sunLight: THREE.DirectionalLight;
 
-  private readonly sunMesh: THREE.Mesh;
-  private readonly moonMesh: THREE.Mesh;
+  private readonly skyDome: ReturnType<typeof createAtmosphericSkyDome>;
+  private readonly sunbeams: ReturnType<typeof createSunbeamShafts>;
   private readonly stars: ReturnType<typeof createProceduralStarfield>;
   private readonly rain: ReturnType<typeof createRainStreakSystem>;
   private readonly fireflies: THREE.Points;
   private readonly ffMat: THREE.PointsMaterial;
 
-  timeOfDay = 9.25; // 09:15 crisp Estonian morning
+  timeOfDay = 9.25; // 09:15 crisp Baltic morning sun
   weatherIdx = 0;
   private weatherTimer = 95;
   private lightningFlash = 0;
   private elapsed = 0;
 
   private readonly isSoftwareGl: boolean;
-  private readonly tmpDaySky = new THREE.Color();
-  private readonly tmpGoldenSky = new THREE.Color(0xc98b63);
-  private readonly tmpNightSky = new THREE.Color(0x091018);
-  private readonly tmpSky = new THREE.Color();
-  private readonly tmpSunCol = new THREE.Color();
-  private readonly tmpSunsetTint = new THREE.Color(0xff9c59);
+  private readonly shadowExtent = 46;
+  private readonly shadowTexelSize: number;
+
+  // Reusable colors & vectors (zero per-frame GC allocation)
+  private readonly sunDir = new THREE.Vector3(0.5, 0.55, 0.35).normalize();
+  private readonly zenithDayClear = new THREE.Color(0x285d96);
+  private readonly zenithDayOvercast = new THREE.Color(0x52626d);
+  private readonly zenithGolden = new THREE.Color(0x3a4f7c);
+  private readonly zenithNight = new THREE.Color(0x050912);
+
+  private readonly midDayClear = new THREE.Color(0x6c9cc4);
+  private readonly midDayOvercast = new THREE.Color(0x74828b);
+  private readonly midGolden = new THREE.Color(0xc58567);
+  private readonly midNight = new THREE.Color(0x0c1422);
+
+  private readonly horizDayClear = new THREE.Color(0xb9d1df);
+  private readonly horizDayOvercast = new THREE.Color(0x909ca3);
+  private readonly horizGolden = new THREE.Color(0xebb07e);
+  private readonly horizNight = new THREE.Color(0x111a26);
+
+  private readonly curZenith = new THREE.Color();
+  private readonly curMid = new THREE.Color();
+  private readonly curHorizon = new THREE.Color();
+  private readonly curSunCol = new THREE.Color();
+  private readonly tmpSunsetTint = new THREE.Color(0xff9a52);
+  private readonly tmpCloudBright = new THREE.Color();
+  private readonly tmpCloudDark = new THREE.Color();
+  private readonly tmpHemiSky = new THREE.Color();
+  private readonly tmpHemiGround = new THREE.Color();
 
   constructor(scene: THREE.Scene, isSoftwareGl: boolean, pixelRatio: number) {
     this.isSoftwareGl = isSoftwareGl;
-    scene.background = new THREE.Color(0x9cb5bd);
-    scene.fog = new THREE.FogExp2(0x9cb5bd, 0.0085);
+    const shadowRes = isSoftwareGl ? 1024 : 2048;
+    this.shadowTexelSize = (this.shadowExtent * 2) / shadowRes;
 
-    this.hemiLight = new THREE.HemisphereLight(0xcbe0ee, 0x3b4832, 0.7);
+    scene.background = new THREE.Color(0xb9d1df);
+    scene.fog = new THREE.FogExp2(0xb9d1df, 0.0068);
+
+    this.hemiLight = new THREE.HemisphereLight(0xbcd8ee, 0x38472b, 0.78);
     this.group.add(this.hemiLight);
 
-    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 1.85);
+    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 2.25);
     this.sunLight.castShadow = !isSoftwareGl;
-    this.sunLight.shadow.mapSize.set(1024, 1024);
-    this.sunLight.shadow.camera.near = 5;
-    this.sunLight.shadow.camera.far = 180;
-    const dShadow = 52;
+    this.sunLight.shadow.mapSize.set(shadowRes, shadowRes);
+    this.sunLight.shadow.camera.near = 6;
+    this.sunLight.shadow.camera.far = 175;
+    const dShadow = this.shadowExtent;
     this.sunLight.shadow.camera.left = -dShadow;
     this.sunLight.shadow.camera.right = dShadow;
     this.sunLight.shadow.camera.top = dShadow;
     this.sunLight.shadow.camera.bottom = -dShadow;
-    this.sunLight.shadow.bias = -0.0005;
-    this.sunLight.shadow.normalBias = 0.02;
+    this.sunLight.shadow.bias = -0.00045;
+    this.sunLight.shadow.normalBias = 0.024;
+    this.sunLight.shadow.radius = 2.6;
     this.group.add(this.sunLight);
     this.group.add(this.sunLight.target);
 
-    this.sunMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(6.5, 16, 16),
-      new THREE.MeshBasicMaterial({ color: 0xfff3c4, fog: false })
-    );
-    this.group.add(this.sunMesh);
+    this.skyDome = createAtmosphericSkyDome();
+    this.group.add(this.skyDome.mesh);
 
-    this.moonMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(4.2, 16, 16),
-      new THREE.MeshBasicMaterial({ color: 0xdbe7ff, fog: false })
-    );
-    this.group.add(this.moonMesh);
+    this.sunbeams = createSunbeamShafts();
+    this.group.add(this.sunbeams.mesh);
 
     this.stars = createProceduralStarfield();
     this.stars.material.uniforms.uPixelRatio.value = pixelRatio;
@@ -395,6 +670,7 @@ export class WeatherAndSkySystem {
     this.stars.points.visible = enabled;
     this.rain.mesh.visible = enabled;
     this.fireflies.visible = enabled;
+    this.sunbeams.mesh.visible = enabled;
   }
 
   update(
@@ -403,7 +679,7 @@ export class WeatherAndSkySystem {
     scene: THREE.Scene,
     sound: SoundEngine,
     flashEl: HTMLElement | null
-  ): { timeLabel: string; weatherLabel: string; lightningStrength: number; windStrength: number } {
+  ): SkyFrameState {
     this.elapsed += dt;
     this.timeOfDay = (this.timeOfDay + dt * 0.06) % 24;
 
@@ -417,59 +693,137 @@ export class WeatherAndSkySystem {
     const sunAngle = ((this.timeOfDay - 6) / 24) * Math.PI * 2;
     const sunY = Math.sin(sunAngle);
     const sunX = Math.cos(sunAngle);
+    // Authentic Estonian 59°N latitude sun arc tilted toward southern sky (+Z)
+    this.sunDir.set(sunX * 0.92, sunY, 0.39).normalize();
 
-    const sunDist = 140;
+    const sunDist = 118;
+    // Texel-snap shadow frustum target so ground shadows stay crisp and shimmer-free while walking
+    const snap = this.shadowTexelSize;
+    const snapX = Math.round(playerPos.x / snap) * snap;
+    const snapZ = Math.round(playerPos.z / snap) * snap;
+    const snapY = Math.round(playerPos.y / snap) * snap;
+    this.sunLight.target.position.set(snapX, snapY, snapZ);
     this.sunLight.position.set(
-      playerPos.x + sunX * sunDist,
-      Math.max(10, sunY * sunDist),
-      playerPos.z + 50
+      snapX + this.sunDir.x * sunDist,
+      snapY + Math.max(12, this.sunDir.y * sunDist),
+      snapZ + this.sunDir.z * sunDist
     );
-    this.sunLight.target.position.copy(playerPos);
     this.sunLight.target.updateMatrixWorld();
 
-    this.sunMesh.position.set(playerPos.x + sunX * 300, sunY * 300, playerPos.z + 95);
-    this.sunMesh.visible = sunY > -0.1;
-
-    this.moonMesh.position.set(playerPos.x - sunX * 300, -sunY * 300, playerPos.z - 95);
-    this.moonMesh.visible = sunY < 0.15;
-
+    this.skyDome.mesh.position.copy(playerPos);
     this.stars.points.position.copy(playerPos);
+    this.sunbeams.mesh.position.set(playerPos.x, playerPos.y, playerPos.z);
 
-    const dayFactor = THREE.MathUtils.clamp((sunY + 0.12) / 0.45, 0, 1);
-    const goldenFactor = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.08) / 0.22, 0, 1);
+    const dayFactor = THREE.MathUtils.clamp((sunY + 0.1) / 0.42, 0, 1);
+    const goldenFactor = THREE.MathUtils.clamp(1 - Math.abs(sunY - 0.14) / 0.28, 0, 1);
+    const overcastAmt =
+      weather === 'clear' ? 0.0 : weather === 'mist' ? 0.55 : weather === 'rain' ? 0.82 : 0.96;
 
-    this.tmpDaySky.setHex(weather === 'clear' ? 0x9ec0d4 : 0x7b8b91);
-    this.tmpSky
-      .copy(this.tmpNightSky)
-      .lerp(this.tmpDaySky, dayFactor)
-      .lerp(this.tmpGoldenSky, goldenFactor * (weather === 'clear' ? 0.55 : 0.2));
-    if (weather === 'storm') this.tmpSky.multiplyScalar(0.55);
+    // 3-stop atmospheric sky palette blended across day/night, golden hour, and cloud cover
+    this.curZenith
+      .copy(this.zenithDayClear)
+      .lerp(this.zenithDayOvercast, overcastAmt)
+      .lerp(this.zenithGolden, goldenFactor * (1 - overcastAmt * 0.65) * 0.65);
+    this.curZenith.lerp(this.zenithNight, 1 - dayFactor);
 
-    (scene.background as THREE.Color).copy(this.tmpSky);
+    this.curMid
+      .copy(this.midDayClear)
+      .lerp(this.midDayOvercast, overcastAmt)
+      .lerp(this.midGolden, goldenFactor * (1 - overcastAmt * 0.55) * 0.7);
+    this.curMid.lerp(this.midNight, 1 - dayFactor);
+
+    this.curHorizon
+      .copy(this.horizDayClear)
+      .lerp(this.horizDayOvercast, overcastAmt)
+      .lerp(this.horizGolden, goldenFactor * (1 - overcastAmt * 0.55) * 0.78);
+    this.curHorizon.lerp(this.horizNight, 1 - dayFactor);
+
+    if (weather === 'storm') {
+      this.curZenith.multiplyScalar(0.55);
+      this.curMid.multiplyScalar(0.58);
+      this.curHorizon.multiplyScalar(0.62);
+    }
+
+    // Cloud shading colors
+    this.tmpCloudBright
+      .setHex(0xf8fafc)
+      .lerp(new THREE.Color(0xffcfa0), goldenFactor * (1 - overcastAmt * 0.5) * 0.75)
+      .lerp(new THREE.Color(0x9ca7b0), overcastAmt * 0.6)
+      .lerp(new THREE.Color(0x162030), 1 - dayFactor);
+    this.tmpCloudDark
+      .setHex(0x889cb0)
+      .lerp(new THREE.Color(0x8c6258), goldenFactor * (1 - overcastAmt * 0.5) * 0.55)
+      .lerp(new THREE.Color(0x525d66), overcastAmt * 0.75)
+      .lerp(new THREE.Color(0x090f18), 1 - dayFactor);
+    if (weather === 'storm') {
+      this.tmpCloudBright.multiplyScalar(0.56);
+      this.tmpCloudDark.multiplyScalar(0.5);
+    }
+
+    const skyU = this.skyDome.material.uniforms;
+    skyU.uSunDir.value.copy(this.sunDir);
+    skyU.uZenithColor.value.copy(this.curZenith);
+    skyU.uMidSkyColor.value.copy(this.curMid);
+    skyU.uHorizonColor.value.copy(this.curHorizon);
+    skyU.uCloudBright.value.copy(this.tmpCloudBright);
+    skyU.uCloudDark.value.copy(this.tmpCloudDark);
+    const targetCloud =
+      weather === 'clear' ? 0.34 : weather === 'mist' ? 0.64 : weather === 'rain' ? 0.86 : 0.96;
+    skyU.uCloudCover.value = THREE.MathUtils.lerp(skyU.uCloudCover.value, targetCloud, Math.min(1, dt * 1.2));
+    skyU.uDayFactor.value = dayFactor;
+    skyU.uGoldenFactor.value = goldenFactor;
+    skyU.uTime.value = this.elapsed;
+
+    // Match scene background & exponential fog to exact sky horizon so distant trees dissolve seamlessly
+    (scene.background as THREE.Color).copy(this.curHorizon);
     const fog = scene.fog as THREE.FogExp2;
-    fog.color.copy(this.tmpSky);
+    fog.color.copy(this.curHorizon);
 
     const swampHere = getSwampFactor(playerPos.x, playerPos.z);
-    let targetFog = 0.0055 + swampHere * 0.011;
-    if (weather === 'mist') targetFog += 0.016;
-    else if (weather === 'rain') targetFog += 0.009;
-    else if (weather === 'storm') targetFog += 0.015;
+    let targetFog = 0.0046 + swampHere * 0.0095;
+    if (weather === 'mist') targetFog += 0.0135;
+    else if (weather === 'rain') targetFog += 0.0085;
+    else if (weather === 'storm') targetFog += 0.014;
     fog.density = THREE.MathUtils.lerp(fog.density, targetFog, Math.min(1, dt * 1.4));
 
     const overcast = weather === 'rain' || weather === 'storm';
     const weatherDim =
-      weather === 'clear' ? 1.0 : weather === 'mist' ? 0.55 : weather === 'rain' ? 0.44 : 0.3;
-    this.sunLight.intensity = THREE.MathUtils.lerp(0.08, 2.0 * weatherDim, dayFactor);
-    // Overcast rain/storm clouds diffuse sunlight; skip expensive 1024x1024 shadow pass in overcast & deep dusk
+      weather === 'clear' ? 1.0 : weather === 'mist' ? 0.62 : weather === 'rain' ? 0.45 : 0.32;
+    this.sunLight.intensity = THREE.MathUtils.lerp(0.1, 2.35 * weatherDim, dayFactor);
+    // Overcast rain/storm clouds diffuse sunlight; skip expensive shadow pass in overcast & deep dusk
     this.sunLight.castShadow = !this.isSoftwareGl && !overcast && dayFactor > 0.2;
+
     if (dayFactor < 0.15) {
-      this.sunLight.color.setHex(0x6484b8);
+      this.curSunCol.setHex(0x6a8cc4);
     } else {
-      this.tmpSunCol.setHex(0xfff1d6).lerp(this.tmpSunsetTint, goldenFactor * 0.65);
-      this.sunLight.color.copy(this.tmpSunCol);
+      this.curSunCol.setHex(0xfff4df).lerp(this.tmpSunsetTint, goldenFactor * 0.68);
     }
-    this.hemiLight.intensity = THREE.MathUtils.lerp(0.08, 0.72 * weatherDim, dayFactor);
-    scene.environmentIntensity = THREE.MathUtils.lerp(0.05, 0.45 * weatherDim, dayFactor);
+    this.sunLight.color.copy(this.curSunCol);
+    skyU.uSunGlowColor.value.copy(this.curSunCol);
+
+    // Dynamic outdoor hemisphere sky/forest-bounce lighting
+    this.tmpHemiSky.copy(this.curMid).lerp(new THREE.Color(0xdcebf7), 0.32 * dayFactor);
+    this.tmpHemiGround
+      .setHex(0x3a472b)
+      .lerp(new THREE.Color(0x4f442c), goldenFactor * 0.45)
+      .lerp(new THREE.Color(0x0b1014), 1 - dayFactor);
+    this.hemiLight.color.copy(this.tmpHemiSky);
+    this.hemiLight.groundColor.copy(this.tmpHemiGround);
+    this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.82 * weatherDim, dayFactor);
+    scene.environmentIntensity = THREE.MathUtils.lerp(0.1, 0.62 * weatherDim, dayFactor);
+
+    // Volumetric morning / golden-hour sunbeam shafts through forest pines
+    const beamRaw =
+      !overcast && sunY > 0.05
+        ? (goldenFactor * 0.078 + (weather === 'mist' ? 0.055 : 0.022) * dayFactor) *
+          (0.65 + swampHere * 0.55)
+        : 0;
+    const beamU = this.sunbeams.material.uniforms;
+    beamU.uOpacity.value = THREE.MathUtils.lerp(beamU.uOpacity.value, beamRaw, Math.min(1, dt * 1.8));
+    beamU.uSunDir.value.copy(this.sunDir);
+    beamU.uColor.value.copy(this.curSunCol);
+    beamU.uTime.value = this.elapsed;
+    this.sunbeams.mesh.visible = beamU.uOpacity.value > 0.004;
 
     // Stars & fireflies at dusk/night (hidden behind heavy rain/storm clouds to cut overdraw)
     const starVis = overcast
@@ -500,8 +854,7 @@ export class WeatherAndSkySystem {
     this.rain.material.uniforms.uOpacity.value = curRainAlpha;
     this.rain.material.uniforms.uTime.value = this.elapsed;
     this.rain.material.uniforms.uPlayerPos.value.copy(playerPos);
-    this.rain.material.uniforms.uWindX.value =
-      (weather === 'storm' ? 2.4 : 1.1) * windStrength;
+    this.rain.material.uniforms.uWindX.value = (weather === 'storm' ? 2.4 : 1.1) * windStrength;
     this.rain.material.uniforms.uFallSpeed.value = weather === 'storm' ? 28.0 : 21.0;
     this.rain.mesh.visible = curRainAlpha > 0.015;
 
@@ -528,19 +881,26 @@ export class WeatherAndSkySystem {
       weatherLabel: WEATHER_LABELS[weather],
       lightningStrength: this.lightningFlash,
       windStrength,
+      sunDir: this.sunDir,
+      sunColor: this.curSunCol,
+      skyTopColor: this.curZenith,
+      skyHorizonColor: this.curHorizon,
+      dayFactor,
+      goldenFactor,
+      fogDensity: fog.density,
     };
   }
 
   dispose(): void {
+    this.skyDome.geometry.dispose();
+    this.skyDome.material.dispose();
+    this.sunbeams.geometry.dispose();
+    this.sunbeams.material.dispose();
     this.stars.geometry.dispose();
     this.stars.material.dispose();
     this.rain.geometry.dispose();
     this.rain.material.dispose();
     this.fireflies.geometry.dispose();
     this.ffMat.dispose();
-    this.sunMesh.geometry.dispose();
-    (this.sunMesh.material as THREE.Material).dispose();
-    this.moonMesh.geometry.dispose();
-    (this.moonMesh.material as THREE.Material).dispose();
   }
 }

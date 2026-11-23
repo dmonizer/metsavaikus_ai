@@ -8,12 +8,14 @@ import {
   getNearestSwampIsland,
   getSwampFactor,
   getTerrainHeight,
+  roadCenterX,
   SWAMP_WATER_Y,
   WORLD_HALF,
 } from './terrainMath';
 import { HutDecayState } from './worldBlueprint';
 import { WorldTextures } from './proceduralTextures';
 import { SoundEngine } from './soundEngine';
+import { SkyFrameState } from './weatherAndSky';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
 
 export interface CircleCollider {
@@ -69,7 +71,13 @@ export interface WorldPropsContext {
   interactiveMeshes: THREE.Object3D[];
   dynamicObjects: InteractiveEntry[];
   mushroomCountTotal: number;
-  updateDynamicProps: (elapsed: number, camX: number, camZ: number) => void;
+  heroMushroomPos: { x: number; z: number } | null;
+  updateDynamicProps: (
+    elapsed: number,
+    camX: number,
+    camZ: number,
+    skyState?: SkyFrameState
+  ) => void;
   gatherMushroom: (entry: InteractiveEntry) => MushroomSpecies | null;
   dispose: () => void;
 }
@@ -144,6 +152,26 @@ function makeCylPart(
   if (rz) g.rotateZ(rz);
   g.translate(x, y, z);
   return prepNonIndexed(g);
+}
+
+/**
+ * Applies soft vertical ambient-occlusion darkening at the bottom (ground contact)
+ * and top (under roof eaves) of architectural wall geometry.
+ */
+function applyWallAoColors(geo: THREE.BufferGeometry, baseY: number, topY: number): void {
+  const pos = geo.attributes.position;
+  const cols = new Float32Array(pos.count * 3);
+  const span = Math.max(0.2, topY - baseY);
+  for (let i = 0; i < pos.count; i++) {
+    const t = clamp((pos.getY(i) - baseY) / span, 0, 1);
+    const groundAo = 0.72 + 0.28 * Math.min(1, t / 0.26);
+    const eaveAo = 0.66 + 0.34 * Math.min(1, (1 - t) / 0.22);
+    const v = Math.min(groundAo, eaveAo);
+    cols[i * 3] = v;
+    cols[i * 3 + 1] = v * 0.99;
+    cols[i * 3 + 2] = v * 0.97;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
 }
 
 export function buildArchitectureAndProps(
@@ -224,20 +252,99 @@ export function buildArchitectureAndProps(
   }
 
   // ============================================================================
-  // Large Peat Bog Water & Morning Mist Layers
+  // Animated Fresnel Reflective Peat-Bog Water & Morning Mist Layers
   // ============================================================================
-  const waterGeo = new THREE.CircleGeometry(bp.bogRadius + 28, 48);
+  const waterRadius = bp.bogRadius + 28;
+  const waterGeo = new THREE.CircleGeometry(waterRadius, 56);
   waterGeo.rotateX(-Math.PI / 2);
-  const waterMat = new THREE.MeshStandardMaterial({
-    color: 0x16201b,
-    roughness: 0.14,
-    metalness: 0.56,
+  const waterMat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uSunDir: { value: new THREE.Vector3(0.5, 0.55, 0.35).normalize() },
+      uSunColor: { value: new THREE.Color(0xfff1d6) },
+      uSkyTop: { value: new THREE.Color(0x285d96) },
+      uSkyHorizon: { value: new THREE.Color(0xb9d1df) },
+      uFogColor: { value: new THREE.Color(0xb9d1df) },
+      uFogDensity: { value: 0.0065 },
+      uRadius: { value: waterRadius },
+      uCenter: { value: new THREE.Vector2(bp.bogCenterX, bp.bogCenterZ) },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      uniform vec3 uSunDir;
+      uniform vec3 uSunColor;
+      uniform vec3 uSkyTop;
+      uniform vec3 uSkyHorizon;
+      uniform vec3 uFogColor;
+      uniform float uFogDensity;
+      uniform float uRadius;
+      uniform vec2 uCenter;
+
+      varying vec3 vWorldPos;
+
+      void main() {
+        vec2 p = vWorldPos.xz;
+        float t = uTime * 0.9;
+
+        // Multi-directional capillary bog ripples (zero texture fetches, fast & crisp)
+        float w1 = sin(p.x * 1.45 + p.y * 0.85 + t * 1.35);
+        float w2 = cos(p.x * 0.92 - p.y * 1.65 - t * 1.12);
+        float w3 = sin((p.x - p.y) * 2.75 + t * 1.95) * 0.45;
+        vec3 nrm = normalize(vec3(
+          (w1 * 0.022 + w3 * 0.016),
+          1.0,
+          (w2 * 0.022 - w3 * 0.016)
+        ));
+
+        vec3 toCam = cameraPosition - vWorldPos;
+        float dist = length(toCam);
+        vec3 viewDir = toCam / max(dist, 0.001);
+
+        float ndv = clamp(dot(nrm, viewDir), 0.0, 1.0);
+        // Schlick Fresnel: dark tea-brown peat depth looking down, mirror sky at grazing angle
+        float fresnel = 0.05 + 0.91 * pow(1.0 - ndv, 4.0);
+
+        vec3 reflDir = reflect(-viewDir, nrm);
+        float reflElev = clamp(reflDir.y, 0.0, 1.0);
+        vec3 skyRefl = mix(uSkyHorizon, uSkyTop, smoothstep(0.0, 0.65, reflElev));
+        // Subtle pine-silhouette reflection darkening right along the horizon mirror
+        float treeMirror = smoothstep(0.02, 0.22, reflElev);
+        skyRefl *= mix(vec3(0.46, 0.54, 0.48), vec3(1.0), treeMirror);
+
+        // Dark humic Estonian bog water absorption
+        vec3 peatDeep = vec3(0.042, 0.058, 0.046);
+        vec3 col = mix(peatDeep, skyRefl, fresnel);
+
+        // Solar specular glints across ripples
+        vec3 halfVec = normalize(uSunDir + viewDir);
+        float spec = pow(max(dot(nrm, halfVec), 0.0), 140.0) * smoothstep(0.02, 0.22, uSunDir.y);
+        float broadSpec = pow(max(dot(nrm, halfVec), 0.0), 22.0) * 0.14 * smoothstep(0.02, 0.22, uSunDir.y);
+        col += uSunColor * (spec * 1.45 + broadSpec);
+
+        // Exponential fog matching Three.js FogExp2
+        float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
+        col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
+
+        float radialFrac = length(p - uCenter) / max(1.0, uRadius);
+        float edgeAlpha = (1.0 - smoothstep(0.86, 1.0, radialFrac)) * 0.94;
+        gl_FragColor = vec4(col, edgeAlpha);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
     transparent: true,
-    opacity: 0.9,
+    depthWrite: true,
   });
   const swampWater = new THREE.Mesh(waterGeo, waterMat);
   swampWater.position.set(bp.bogCenterX, SWAMP_WATER_Y, bp.bogCenterZ);
-  swampWater.receiveShadow = true;
   scene.add(swampWater);
   disposables.push(waterGeo, waterMat);
 
@@ -246,7 +353,7 @@ export function buildArchitectureAndProps(
   const mistMat = new THREE.MeshBasicMaterial({
     map: textures.bogMistTex,
     transparent: true,
-    opacity: 0.44,
+    opacity: 0.42,
     depthWrite: false,
   });
   const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, 22);
@@ -269,43 +376,103 @@ export function buildArchitectureAndProps(
   disposables.push(mistGeo, mistMat);
 
   // ============================================================================
-  // Photo-Matched Estonian Heritage Log Buildings (Supports Full Decay Variants!)
+  // Photo-Matched PBR Estonian Heritage Log Buildings (Sobel Normal Maps + AO!)
   // ============================================================================
-  const weatheredLogMat = new THREE.MeshLambertMaterial({
+  const weatheredLogMat = new THREE.MeshStandardMaterial({
     map: textures.logWallWeathered,
+    normalMap: textures.logWallNormal,
+    normalScale: new THREE.Vector2(1.05, 1.05),
+    roughness: 0.91,
+    metalness: 0.0,
+    envMapIntensity: 0.48,
+    vertexColors: true,
   });
-  const warmLogMat = new THREE.MeshLambertMaterial({
+  const warmLogMat = new THREE.MeshStandardMaterial({
     map: textures.logWallWarm,
+    normalMap: textures.logWallNormal,
+    normalScale: new THREE.Vector2(1.05, 1.05),
+    roughness: 0.88,
+    metalness: 0.0,
+    envMapIntensity: 0.5,
+    vertexColors: true,
   });
-  const thatchMat = new THREE.MeshLambertMaterial({
+  const thatchMat = new THREE.MeshStandardMaterial({
     map: textures.thatchRoofMossy,
+    normalMap: textures.thatchNormal,
+    normalScale: new THREE.Vector2(1.15, 1.15),
+    roughness: 0.96,
+    metalness: 0.0,
+    envMapIntensity: 0.4,
   });
-  const shingleMat = new THREE.MeshLambertMaterial({
+  const shingleMat = new THREE.MeshStandardMaterial({
     map: textures.roofShingle,
+    normalMap: textures.shingleNormal,
+    normalScale: new THREE.Vector2(1.0, 1.0),
+    roughness: 0.9,
+    metalness: 0.0,
+    envMapIntensity: 0.46,
   });
-  const stonePlinthMat = new THREE.MeshLambertMaterial({
+  const stonePlinthMat = new THREE.MeshStandardMaterial({
     map: textures.fieldstone,
+    normalMap: textures.fieldstoneNormal,
+    normalScale: new THREE.Vector2(1.1, 1.1),
+    roughness: 0.88,
+    metalness: 0.02,
+    envMapIntensity: 0.55,
   });
-  const timberTrimMat = new THREE.MeshLambertMaterial({
+  const timberTrimMat = new THREE.MeshStandardMaterial({
     map: textures.plankWood,
-    color: 0x9b9080,
+    normalMap: textures.plankNormal,
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    color: 0x8f8576,
+    roughness: 0.91,
+    metalness: 0.0,
+    envMapIntensity: 0.45,
   });
-  const gableMat = new THREE.MeshLambertMaterial({
+  const gableMat = new THREE.MeshStandardMaterial({
     map: textures.gableBoards,
-    color: 0xd4cdc0,
+    normalMap: textures.plankNormal,
+    normalScale: new THREE.Vector2(0.8, 0.8),
+    color: 0xcbc3b6,
+    roughness: 0.9,
+    metalness: 0.0,
+    envMapIntensity: 0.48,
   });
-  const darkInteriorMat = new THREE.MeshLambertMaterial({ color: 0x2a2018 });
-  const chimneyWhiteMat = new THREE.MeshLambertMaterial({ color: 0xc8c3b8 });
+  const darkInteriorMat = new THREE.MeshStandardMaterial({
+    color: 0x1a130e,
+    roughness: 0.96,
+    metalness: 0.0,
+    envMapIntensity: 0.15,
+  });
+  const chimneyWhiteMat = new THREE.MeshStandardMaterial({
+    color: 0xcbc6bc,
+    roughness: 0.92,
+    metalness: 0.0,
+    envMapIntensity: 0.45,
+  });
+  // Realistic heritage glass: dark sky-reflective in daytime, warm hearth glow at dusk/night!
   const activeWinMat = new THREE.MeshStandardMaterial({
-    color: 0x26323a,
-    emissive: 0xffb35c,
-    emissiveIntensity: 0.45,
-    roughness: 0.16,
-    metalness: 0.1,
+    color: 0x141e24,
+    emissive: 0xffa64d,
+    emissiveIntensity: 0.04,
+    roughness: 0.1,
+    metalness: 0.18,
+    envMapIntensity: 1.55,
   });
   const darkWinMat = new THREE.MeshStandardMaterial({
-    color: 0x161a18,
-    roughness: 0.25,
+    color: 0x101413,
+    roughness: 0.16,
+    metalness: 0.12,
+    envMapIntensity: 1.15,
+  });
+  const contactShadowMat = new THREE.MeshBasicMaterial({
+    map: textures.contactShadowTex,
+    transparent: true,
+    opacity: 0.58,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
 
   disposables.push(
@@ -319,17 +486,22 @@ export function buildArchitectureAndProps(
     darkInteriorMat,
     chimneyWhiteMat,
     activeWinMat,
-    darkWinMat
+    darkWinMat,
+    contactShadowMat
   );
 
   function addBatchedMesh(
     parent: THREE.Group,
     parts: THREE.BufferGeometry[],
     mat: THREE.Material,
-    castShadow: boolean
+    castShadow: boolean,
+    wallAo?: { baseY: number; topY: number }
   ): void {
     if (parts.length === 0) return;
     const merged = mergeGeometries(parts)!;
+    if (wallAo) {
+      applyWallAoColors(merged, wallAo.baseY, wallAo.topY);
+    }
     const m = new THREE.Mesh(merged, mat);
     m.castShadow = castShadow;
     m.receiveShadow = true;
@@ -369,6 +541,14 @@ export function buildArchitectureAndProps(
     scene.add(group);
     structureNodes.push({ obj: group, x, z, maxDistSq: 255 * 255 });
 
+    // Soft ambient-occlusion grounding skirt beneath each building
+    const shadowGeo = new THREE.PlaneGeometry(w + 2.4, d + 2.4);
+    shadowGeo.rotateX(-Math.PI / 2);
+    const shadowQuad = new THREE.Mesh(shadowGeo, contactShadowMat);
+    shadowQuad.position.y = 0.03;
+    group.add(shadowQuad);
+    disposables.push(shadowGeo);
+
     const plinthParts: THREE.BufferGeometry[] = [];
     const wallParts: THREE.BufferGeometry[] = [];
     const roofParts: THREE.BufferGeometry[] = [];
@@ -378,22 +558,38 @@ export function buildArchitectureAndProps(
     const winParts: THREE.BufferGeometry[] = [];
     const chimneyParts: THREE.BufferGeometry[] = [];
 
-    // 1. Fieldstone foundation plinth + corner stones
-    plinthParts.push(makeBoxPart(w + 0.25, 0.48, d + 0.25, 0, 0.16, 0));
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const cb = new THREE.DodecahedronGeometry(0.3, 0);
-        cb.scale(1.1, 0.72, 1.0);
-        cb.translate(sx * (w * 0.5 + 0.08), 0.14, sz * (d * 0.5 + 0.08));
-        plinthParts.push(prepNonIndexed(cb));
+    // 1. Fieldstone foundation plinth + perimeter glacial sill boulders (matching large_house2 photo!)
+    plinthParts.push(makeBoxPart(w + 0.22, 0.46, d + 0.22, 0, 0.16, 0));
+    const frontStoneCount = Math.max(5, Math.floor(w / 1.15));
+    for (let i = 0; i <= frontStoneCount; i++) {
+      const sx = -w * 0.5 + (i / frontStoneCount) * w;
+      for (const sz of [-d * 0.5 - 0.06, d * 0.5 + 0.06]) {
+        const sr = 0.2 + (i % 3) * 0.04;
+        const sb = new THREE.DodecahedronGeometry(sr, 0);
+        sb.scale(1.25, 0.72, 0.95);
+        sb.rotateY(i * 1.1);
+        sb.translate(sx, 0.12, sz);
+        plinthParts.push(prepNonIndexed(sb));
+      }
+    }
+    const sideStoneCount = Math.max(3, Math.floor(d / 1.15));
+    for (let i = 1; i < sideStoneCount; i++) {
+      const sz = -d * 0.5 + (i / sideStoneCount) * d;
+      for (const sx of [-w * 0.5 - 0.06, w * 0.5 + 0.06]) {
+        const sr = 0.2 + (i % 2) * 0.05;
+        const sb = new THREE.DodecahedronGeometry(sr, 0);
+        sb.scale(0.95, 0.72, 1.25);
+        sb.rotateY(i * 0.9);
+        sb.translate(sx, 0.12, sz);
+        plinthParts.push(prepNonIndexed(sb));
       }
     }
 
     // Floor slab
     interiorParts.push(makeBoxPart(w - 0.2, 0.14, d - 0.2, 0, 0.36, 0));
 
-    // 2. Stacked log walls adjusted by decayState ('ruins' has staggered crumbled wall heights)
-    const wallThick = 0.26;
+    // 2. Stacked log walls adjusted by decayState
+    const wallThick = 0.28;
     const doorWidth = 1.25;
     const sideSegW = (w - doorWidth) / 2;
 
@@ -417,20 +613,20 @@ export function buildArchitectureAndProps(
       wallParts.push(makeBoxPart(doorWidth, 0.62, wallThick, 0, 0.4 + h - 0.31, d / 2 - wallThick / 2));
     }
 
-    // Interlocking corner log ends
+    // Interlocking saddle-notched corner log ends (ristpalk!)
     const maxWallH = decay === 'ruins' ? h * 0.55 : h;
-    const logCourses = decay === 'ruins' ? 4 : 7;
+    const logCourses = decay === 'ruins' ? 4 : 8;
     for (let c = 0; c < logCourses; c++) {
       const ly = 0.52 + (c / logCourses) * (maxWallH - 0.16);
       for (const sx of [-1, 1]) {
         for (const sz of [-1, 1]) {
           wallParts.push(
             makeCylPart(
-              0.105,
               0.11,
-              0.4,
-              6,
-              sx * (w / 2 + 0.08),
+              0.115,
+              0.46,
+              7,
+              sx * (w / 2 + 0.11),
               ly,
               sz * (d / 2 - wallThick / 2),
               0,
@@ -440,13 +636,13 @@ export function buildArchitectureAndProps(
           );
           wallParts.push(
             makeCylPart(
-              0.105,
               0.11,
-              0.4,
-              6,
+              0.115,
+              0.46,
+              7,
               sx * (w / 2 - wallThick / 2),
-              ly + 0.08,
-              sz * (d / 2 + 0.08),
+              ly + 0.085,
+              sz * (d / 2 + 0.11),
               Math.PI / 2,
               0,
               0
@@ -456,31 +652,30 @@ export function buildArchitectureAndProps(
       }
     }
 
-    // 3. Roof & Gable geometry depending on decayState
-    const roofOverhang = 0.62;
-    const roofH = roofStyle === 'thatch' ? 2.75 : 2.4;
+    // 3. Deep overhanging heritage Estonian roof & exposed eaves rafters
+    const roofOverhang = 0.84;
+    const roofH = roofStyle === 'thatch' ? 2.95 : 2.55;
     const slopeRun = d / 2 + roofOverhang;
     const slopeLen = Math.hypot(slopeRun, roofH);
     const slopeAngle = Math.atan2(roofH, slopeRun);
-    const roofThick = roofStyle === 'thatch' ? 0.3 : 0.16;
+    const roofThick = roofStyle === 'thatch' ? 0.34 : 0.18;
 
     if (decay === 'intact' || decay === 'sagging') {
       const sagAngle = decay === 'sagging' ? 0.09 : 0;
-      const frontRoofW = w + roofOverhang * 2;
+      const frontRoofW = w + roofOverhang * 1.95;
       roofParts.push(
         makeBoxPart(
           frontRoofW,
           roofThick,
           slopeLen,
           0,
-          0.4 + h + roofH / 2 - 0.12,
+          0.4 + h + roofH / 2 - 0.16,
           slopeRun / 2,
           slopeAngle,
           0,
           sagAngle
         )
       );
-      // Sagging buildings lose one partial back roof section to reveal decayed rafters
       const backW = decay === 'sagging' ? frontRoofW * 0.58 : frontRoofW;
       const backShiftX = decay === 'sagging' ? -frontRoofW * 0.2 : 0;
       roofParts.push(
@@ -489,13 +684,25 @@ export function buildArchitectureAndProps(
           roofThick,
           slopeLen,
           backShiftX,
-          0.4 + h + roofH / 2 - 0.12,
+          0.4 + h + roofH / 2 - 0.16,
           -slopeRun / 2,
           -slopeAngle,
           0,
           -sagAngle * 0.8
         )
       );
+
+      // Exposed dark eave rafter tails beneath the deep overhang
+      const eaveCount = Math.max(5, Math.floor(w / 1.35));
+      for (let i = 0; i < eaveCount; i++) {
+        const ex = -w * 0.46 + (i / (eaveCount - 1)) * w * 0.92;
+        trimParts.push(
+          makeBoxPart(0.11, 0.12, 0.95, ex, 0.4 + h - 0.04, d / 2 + 0.32, 0.24, 0, 0)
+        );
+        trimParts.push(
+          makeBoxPart(0.11, 0.12, 0.95, ex, 0.4 + h - 0.04, -d / 2 - 0.32, -0.24, 0, 0)
+        );
+      }
 
       const gableShape = new THREE.Shape();
       gableShape.moveTo(-d / 2, 0);
@@ -519,21 +726,23 @@ export function buildArchitectureAndProps(
       }
 
       if (roofStyle === 'thatch') {
-        const poleCount = Math.max(5, Math.floor(w / 0.95));
-        const nx = Math.sin(slopeAngle) * 0.19;
-        const ny = Math.cos(slopeAngle) * 0.19;
+        // Crossed ridge saddle poles (harimalgad) & reed hold-down poles matching large_house.jpg!
+        const poleCount = Math.max(6, Math.floor(w / 0.85));
+        const nx = Math.sin(slopeAngle) * 0.22;
+        const ny = Math.cos(slopeAngle) * 0.22;
         for (let i = 0; i < poleCount; i++) {
           if (decay === 'sagging' && i > poleCount * 0.6) continue;
-          const px = -w * 0.45 + (i / (poleCount - 1)) * w * 0.9;
+          const px = -w * 0.46 + (i / (poleCount - 1)) * w * 0.92;
+          // Full slope wind-poles crossing slightly above the ridge
           trimParts.push(
             makeCylPart(
-              0.034,
-              0.044,
-              slopeLen + 0.45,
+              0.036,
+              0.048,
+              slopeLen + 0.62,
               5,
               px - 0.045,
-              0.4 + h + roofH * 0.53 + ny,
-              slopeRun * 0.46 + nx,
+              0.4 + h + roofH * 0.56 + ny,
+              slopeRun * 0.44 + nx,
               Math.PI * 0.5 + slopeAngle,
               0,
               0
@@ -541,29 +750,33 @@ export function buildArchitectureAndProps(
           );
           trimParts.push(
             makeCylPart(
-              0.034,
-              0.044,
-              slopeLen + 0.45,
+              0.036,
+              0.048,
+              slopeLen + 0.62,
               5,
               px + 0.045,
-              0.4 + h + roofH * 0.53 + ny,
-              -(slopeRun * 0.46 + nx),
+              0.4 + h + roofH * 0.56 + ny,
+              -(slopeRun * 0.44 + nx),
               Math.PI * 0.5 - slopeAngle,
               0,
               0
             )
           );
         }
+        // Horizontal ridge weight pole
+        trimParts.push(
+          makeCylPart(0.06, 0.06, frontRoofW * 0.94, 6, 0, 0.4 + h + roofH + 0.06, 0, 0, 0, Math.PI / 2)
+        );
       } else if (decay === 'intact') {
-        chimneyParts.push(makeBoxPart(0.68, 1.45, 0.68, -w * 0.22, 0.4 + h + roofH - 0.2, -0.35));
+        chimneyParts.push(makeBoxPart(0.72, 1.55, 0.72, -w * 0.22, 0.4 + h + roofH - 0.16, -0.35));
+        // Brick chimney cap rim
+        trimParts.push(makeBoxPart(0.84, 0.14, 0.84, -w * 0.22, 0.4 + h + roofH + 0.62, -0.35));
       }
     } else if (decay === 'roofless') {
-      // No roof covering! Exposed jagged ridge/tie-beams & broken tilted rafters open to sky
       trimParts.push(makeCylPart(0.08, 0.09, w * 0.86, 5, -w * 0.04, 0.4 + h + 0.04, 0, 0, 0, Math.PI / 2 + 0.04));
       const rafterCount = 4;
       for (let i = 0; i < rafterCount; i++) {
         const rxPos = -w * 0.35 + (i / (rafterCount - 1)) * w * 0.7;
-        // Broken half-rafter stubs leaning above walls
         trimParts.push(
           makeCylPart(
             0.055,
@@ -595,44 +808,42 @@ export function buildArchitectureAndProps(
           );
         }
       }
-      // Fallen charred roof beam resting inside hut interior
       trimParts.push(makeCylPart(0.08, 0.095, w * 0.75, 5, 0.15, 0.62, -0.35, 0.18, 0.42, Math.PI / 2 - 0.14));
     } else if (decay === 'ruins') {
-      // Collapsed wall beams and weathered timber debris on stone floor
       trimParts.push(makeCylPart(0.09, 0.1, w * 0.72, 5, -0.2, 0.58, 0.2, 0.1, -0.35, Math.PI / 2 - 0.08));
       trimParts.push(makeCylPart(0.08, 0.09, d * 0.85, 5, 0.65, 0.64, -0.1, Math.PI / 2 - 0.12, 0.4, 0));
     }
 
-    // Timber door jamb & recessed windows (skipped on low ruins)
+    // Timber door jamb & deeply recessed heritage mullioned windows
     if (decay !== 'ruins') {
-      const doorFz = d / 2 - wallThick / 2 + 0.03;
-      trimParts.push(makeBoxPart(0.1, h - 0.65, 0.3, -doorWidth / 2 - 0.04, 0.4 + (h - 0.65) / 2, doorFz));
-      trimParts.push(makeBoxPart(0.1, h - 0.65, 0.3, doorWidth / 2 + 0.04, 0.4 + (h - 0.65) / 2, doorFz));
-      trimParts.push(makeBoxPart(doorWidth + 0.18, 0.1, 0.3, 0, 0.4 + h - 0.66, doorFz));
+      const doorFz = d / 2 - wallThick / 2 + 0.04;
+      trimParts.push(makeBoxPart(0.11, h - 0.65, 0.32, -doorWidth / 2 - 0.05, 0.4 + (h - 0.65) / 2, doorFz));
+      trimParts.push(makeBoxPart(0.11, h - 0.65, 0.32, doorWidth / 2 + 0.05, 0.4 + (h - 0.65) / 2, doorFz));
+      trimParts.push(makeBoxPart(doorWidth + 0.22, 0.11, 0.32, 0, 0.4 + h - 0.66, doorFz));
 
       for (const wx of [-w * 0.28, w * 0.28]) {
-        const wy = 0.4 + 1.45;
+        const wy = 0.4 + 1.42;
         const wz = d / 2 - wallThick / 2;
-        winParts.push(makeBoxPart(0.92, 0.9, 0.3, wx, wy, wz));
-        trimParts.push(makeBoxPart(1.02, 0.08, 0.34, wx, wy + 0.45, wz));
-        trimParts.push(makeBoxPart(1.02, 0.08, 0.34, wx, wy - 0.45, wz));
-        trimParts.push(makeBoxPart(0.08, 0.9, 0.34, wx - 0.46, wy, wz));
-        trimParts.push(makeBoxPart(0.08, 0.9, 0.34, wx + 0.46, wy, wz));
-        trimParts.push(makeBoxPart(0.05, 0.88, 0.33, wx, wy, wz));
-        trimParts.push(makeBoxPart(0.88, 0.05, 0.33, wx, wy, wz));
+        winParts.push(makeBoxPart(0.86, 0.86, 0.24, wx, wy, wz - 0.02));
+        trimParts.push(makeBoxPart(1.04, 0.09, 0.36, wx, wy + 0.45, wz + 0.02));
+        trimParts.push(makeBoxPart(1.08, 0.1, 0.4, wx, wy - 0.45, wz + 0.04)); // sloped windowsill
+        trimParts.push(makeBoxPart(0.09, 0.9, 0.36, wx - 0.46, wy, wz + 0.02));
+        trimParts.push(makeBoxPart(0.09, 0.9, 0.36, wx + 0.46, wy, wz + 0.02));
+        trimParts.push(makeBoxPart(0.05, 0.86, 0.32, wx, wy, wz + 0.02));
+        trimParts.push(makeBoxPart(0.86, 0.05, 0.32, wx, wy, wz + 0.02));
       }
 
       if (opts.porch) {
-        trimParts.push(makeBoxPart(w * 0.65, 0.16, 1.15, 0, 0.32, d / 2 + 0.56));
-        trimParts.push(makeBoxPart(1.85, 0.1, 0.38, -w * 0.16, 0.72, d / 2 + 0.52));
-        trimParts.push(makeBoxPart(1.15, 0.12, 0.32, 0, 0.16, d / 2 + 1.12));
+        trimParts.push(makeBoxPart(w * 0.68, 0.16, 1.2, 0, 0.32, d / 2 + 0.58));
+        trimParts.push(makeBoxPart(1.9, 0.1, 0.38, -w * 0.16, 0.72, d / 2 + 0.54));
+        trimParts.push(makeBoxPart(1.18, 0.12, 0.32, 0, 0.16, d / 2 + 1.15));
       }
 
       interiorParts.push(makeBoxPart(1.4, 0.76, 0.82, 0, 0.4 + 0.38, -0.5));
     }
 
     addBatchedMesh(group, plinthParts, stonePlinthMat, shadows);
-    addBatchedMesh(group, wallParts, wallMat, shadows);
+    addBatchedMesh(group, wallParts, wallMat, shadows, { baseY: 0.4, topY: 0.4 + h });
     addBatchedMesh(group, roofParts, roofStyle === 'thatch' ? thatchMat : shingleMat, shadows);
     addBatchedMesh(group, gableParts, gableMat, shadows);
     addBatchedMesh(group, trimParts, timberTrimMat, shadows);
@@ -640,14 +851,19 @@ export function buildArchitectureAndProps(
     addBatchedMesh(group, winParts, abandoned ? darkWinMat : activeWinMat, false);
     addBatchedMesh(group, chimneyParts, chimneyWhiteMat, shadows);
 
-    // Interactive door (absent on crumbled ruins so entrance stands wide open)
+    // Interactive door
     let doorCollider: BoxCollider | null = null;
     if (decay !== 'ruins') {
       const doorPivot = new THREE.Group();
       doorPivot.position.set(-doorWidth / 2, 0.4, d / 2 - wallThick / 2);
-      const doorMat = new THREE.MeshLambertMaterial({
+      const doorMat = new THREE.MeshStandardMaterial({
         map: textures.plankWood,
-        color: abandoned ? 0x5c5349 : 0x7a5c3c,
+        normalMap: textures.plankNormal,
+        normalScale: new THREE.Vector2(0.9, 0.9),
+        color: abandoned ? 0x544c42 : 0x6f5438,
+        roughness: 0.9,
+        metalness: 0.0,
+        envMapIntensity: 0.45,
       });
       disposables.push(doorMat);
       const doorMesh = new THREE.Mesh(
@@ -656,6 +872,7 @@ export function buildArchitectureAndProps(
       );
       doorMesh.position.set(doorWidth / 2, (h - 0.72) / 2, 0);
       doorMesh.castShadow = shadows;
+      doorMesh.receiveShadow = true;
       doorPivot.add(doorMesh);
       group.add(doorPivot);
 
@@ -741,7 +958,6 @@ export function buildArchitectureAndProps(
           parts.push(prepNonIndexed(g));
         }
 
-        // Solid jumpable fence bay collider (~0.92m above ground -> Space jump clears it cleanly!)
         const segLen = totalLen / bays;
         const bw = Math.abs(dx * segLen) + Math.abs(dz * 0.34);
         const bd = Math.abs(dz * segLen) + Math.abs(dx * 0.34);
@@ -763,7 +979,7 @@ export function buildArchitectureAndProps(
     disposables.push(fenceGeo);
   }
 
-  // Build all 4 Procedural Villages (Houses, Barns, Saunas, Wells, Fences)
+  // Build all 4 Procedural Villages
   for (let vi = 0; vi < bp.villages.length; vi++) {
     const v = bp.villages[vi];
     for (const b of v.buildings) {
@@ -783,13 +999,20 @@ export function buildArchitectureAndProps(
       buildSplitPoleFence(f.x0, f.z0, f.x1, f.z1);
     }
 
-    // Add stone well in villages 0 & 2
     if (vi === 0 || vi === 2) {
       const wx = v.x - 4.5;
       const wz = v.z + 9.5;
       const wy = getTerrainHeight(wx, wz);
       const wellGroup = new THREE.Group();
       wellGroup.position.set(wx, wy, wz);
+
+      const wellShadowGeo = new THREE.PlaneGeometry(3.2, 3.2);
+      wellShadowGeo.rotateX(-Math.PI / 2);
+      const wellShadow = new THREE.Mesh(wellShadowGeo, contactShadowMat);
+      wellShadow.position.y = 0.03;
+      wellGroup.add(wellShadow);
+      disposables.push(wellShadowGeo);
+
       const stoneCyl = new THREE.Mesh(
         new THREE.CylinderGeometry(0.95, 1.05, 1.0, 12),
         stonePlinthMat
@@ -805,7 +1028,7 @@ export function buildArchitectureAndProps(
         post.castShadow = shadows;
         wellGroup.add(post);
       });
-      const wellRoof = new THREE.Mesh(new THREE.ConeGeometry(1.38, 0.92, 4), shingleMat);
+      const wellRoof = new THREE.Mesh(new THREE.ConeGeometry(1.42, 0.96, 4), shingleMat);
       wellRoof.position.y = 2.85;
       wellRoof.rotation.y = Math.PI / 4;
       wellRoof.castShadow = shadows;
@@ -826,7 +1049,7 @@ export function buildArchitectureAndProps(
     }
   }
 
-  // Build Abandoned Decay Huts on Elevated Swamp Islands (rabasaared)
+  // Build Abandoned Decay Huts on Elevated Swamp Islands
   for (const isl of bp.swampIslands) {
     if (!isl.hut) continue;
     buildEstonianLogHouse(isl.x, isl.z, isl.hut.rotY, {
@@ -868,7 +1091,7 @@ export function buildArchitectureAndProps(
 
     const logs = new THREE.Mesh(
       new THREE.CylinderGeometry(0.1, 0.1, 0.9, 6),
-      new THREE.MeshLambertMaterial({ color: 0x2b1d14 })
+      new THREE.MeshStandardMaterial({ color: 0x261a12, roughness: 0.95 })
     );
     logs.rotation.z = Math.PI / 2;
     logs.position.y = 0.14;
@@ -942,13 +1165,23 @@ export function buildArchitectureAndProps(
       '"KÕRGESOO RABA — Keep to the wooden boardwalk (laudtee) to reach the bog islands."'
     );
 
-    const plankMat = new THREE.MeshLambertMaterial({
+    const plankMat = new THREE.MeshStandardMaterial({
       map: textures.plankWood,
-      color: 0xb7b0a2,
+      normalMap: textures.plankNormal,
+      normalScale: new THREE.Vector2(0.9, 0.9),
+      color: 0xb2aa9c,
+      roughness: 0.88,
+      metalness: 0.0,
+      envMapIntensity: 0.5,
     });
-    const sleeperMat = new THREE.MeshLambertMaterial({
+    const sleeperMat = new THREE.MeshStandardMaterial({
       map: textures.plankWood,
-      color: 0x7c7365,
+      normalMap: textures.plankNormal,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      color: 0x72695c,
+      roughness: 0.92,
+      metalness: 0.0,
+      envMapIntensity: 0.42,
     });
 
     interface BoardwalkSeg {
@@ -998,7 +1231,6 @@ export function buildArchitectureAndProps(
     let curX = trailStart.x;
     let curZ = trailStart.z;
     for (const isl of linkedIslands) {
-      // Stop boardwalk cleanly on the shore of each linked island
       const dirX = isl.x - curX;
       const dirZ = isl.z - curZ;
       const dist = Math.hypot(dirX, dirZ);
@@ -1044,23 +1276,45 @@ export function buildArchitectureAndProps(
   }
 
   // ============================================================================
-  // Dynamic Physics Props + Storm Lanterns Distributed Across Villages & Swamp Huts
+  // Dynamic Physics Props + Matte-Black Storm Lanterns
   // ============================================================================
-  const crateMat = new THREE.MeshLambertMaterial({ map: textures.plankWood, color: 0x8b6e4c });
+  const crateMat = new THREE.MeshStandardMaterial({
+    map: textures.plankWood,
+    normalMap: textures.plankNormal,
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    color: 0x856a49,
+    roughness: 0.9,
+    metalness: 0.0,
+    envMapIntensity: 0.48,
+  });
   const barrelGeo = new THREE.CylinderGeometry(0.34, 0.34, 0.95, 14);
-  const barrelMat = new THREE.MeshStandardMaterial({ color: 0x5c372a, roughness: 0.62, metalness: 0.42 });
+  const barrelMat = new THREE.MeshStandardMaterial({ color: 0x5c372a, roughness: 0.58, metalness: 0.45 });
   const logGeo = new THREE.CylinderGeometry(0.11, 0.12, 0.65, 8);
-  const logMat = new THREE.MeshLambertMaterial({ map: textures.birchBark });
-  const stonePropMat = new THREE.MeshLambertMaterial({ map: textures.boulderGranite });
+  const logMat = new THREE.MeshStandardMaterial({
+    map: textures.birchBark,
+    normalMap: textures.birchNormal,
+    normalScale: new THREE.Vector2(0.8, 0.8),
+    roughness: 0.88,
+    metalness: 0.0,
+  });
+  const stonePropMat = new THREE.MeshStandardMaterial({
+    map: textures.boulderGranite,
+    normalMap: textures.fieldstoneNormal,
+    normalScale: new THREE.Vector2(0.95, 0.95),
+    roughness: 0.86,
+    metalness: 0.02,
+  });
   const lanternMetalMat = new THREE.MeshStandardMaterial({
-    color: 0x1e2022,
-    metalness: 0.72,
-    roughness: 0.42,
+    color: 0x1a1c1e,
+    metalness: 0.78,
+    roughness: 0.38,
+    envMapIntensity: 1.1,
   });
   const lanternGlassMat = new THREE.MeshStandardMaterial({
     color: 0xdce4e6,
     roughness: 0.08,
-    metalness: 0.1,
+    metalness: 0.12,
+    envMapIntensity: 1.4,
     transparent: true,
     opacity: 0.45,
   });
@@ -1228,7 +1482,6 @@ export function buildArchitectureAndProps(
     });
   }
 
-  // Spread props naturally across all 4 procedural villages and island huts
   for (let vi = 0; vi < bp.villages.length; vi++) {
     const v = bp.villages[vi];
     spawnLantern(v.x + 1.8, v.z + 11.2, !v.abandoned);
@@ -1247,7 +1500,6 @@ export function buildArchitectureAndProps(
       }
     }
   }
-  // Dispersed fieldstones across the huge 1200x1200m terrain
   for (let i = 0; i < 42; i++) {
     const sx = (rand() - 0.5) * 900;
     const sz = (rand() - 0.5) * 900;
@@ -1257,80 +1509,170 @@ export function buildArchitectureAndProps(
   }
 
   // ============================================================================
-  // Gatherable Estonian Mushrooms — All 7 Species (Edible, Inedible, Poisonous!)
-  // Scarcest near villages; richly dispersed across forest, thickets, edges & swamp islands!
+  // Photorealistic Gatherable Estonian Mushrooms — All 7 Species!
+  // Hero botanical craftsmanship on Punane kärbseseen & Valge kärbseseen
   // ============================================================================
-  const mushroomMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  const porciniCapMat = new THREE.MeshLambertMaterial({ map: textures.boleteCap, color: 0xc47b52 });
-  const porciniStemMat = new THREE.MeshLambertMaterial({ map: textures.boleteStem });
-  const birchBoleteCapMat = new THREE.MeshLambertMaterial({ map: textures.boleteCap, color: 0xbda38a });
-  const birchBoleteStemMat = new THREE.MeshLambertMaterial({ map: textures.boleteStem, color: 0xcfc9bf });
-  const boletePoreMat = new THREE.MeshLambertMaterial({ color: 0xdccda4 });
+  const chanterelleMat = new THREE.MeshStandardMaterial({
+    map: textures.chanterelleTex,
+    vertexColors: true,
+    roughness: 0.42,
+    metalness: 0.0,
+    envMapIntensity: 0.72,
+  });
+  const saffronCapMat = new THREE.MeshStandardMaterial({
+    map: textures.saffronCapTex,
+    roughness: 0.34,
+    metalness: 0.0,
+    envMapIntensity: 0.78,
+  });
+  const porciniCapMat = new THREE.MeshStandardMaterial({
+    map: textures.boleteCap,
+    normalMap: textures.boleteNormal,
+    normalScale: new THREE.Vector2(0.75, 0.75),
+    color: 0xd4966c,
+    roughness: 0.3,
+    metalness: 0.0,
+    envMapIntensity: 0.85,
+  });
+  const porciniStemMat = new THREE.MeshStandardMaterial({
+    map: textures.boleteStem,
+    roughness: 0.74,
+    metalness: 0.0,
+    envMapIntensity: 0.5,
+  });
+  const birchBoleteCapMat = new THREE.MeshStandardMaterial({
+    map: textures.boleteCap,
+    normalMap: textures.boleteNormal,
+    normalScale: new THREE.Vector2(0.65, 0.65),
+    color: 0xbda38a,
+    roughness: 0.36,
+    metalness: 0.0,
+    envMapIntensity: 0.75,
+  });
+  const birchBoleteStemMat = new THREE.MeshStandardMaterial({
+    map: textures.birchBoleteStem,
+    roughness: 0.78,
+    metalness: 0.0,
+    envMapIntensity: 0.45,
+  });
+  const boletePoreMat = new THREE.MeshStandardMaterial({
+    color: 0xdccda4,
+    roughness: 0.88,
+    metalness: 0.0,
+  });
+  const bitterCapMat = new THREE.MeshStandardMaterial({
+    map: textures.boleteCap,
+    normalMap: textures.boleteNormal,
+    normalScale: new THREE.Vector2(0.6, 0.6),
+    color: 0x9c8260,
+    roughness: 0.38,
+    metalness: 0.0,
+  });
+  const bitterPoreMat = new THREE.MeshStandardMaterial({
+    color: 0xdca0a4,
+    roughness: 0.84,
+    metalness: 0.0,
+  });
 
-  // New Species Materials
-  const saffronCapMat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  const bitterCapMat = new THREE.MeshLambertMaterial({ map: textures.boleteCap, color: 0x9c8260 });
-  const bitterPoreMat = new THREE.MeshLambertMaterial({ color: 0xd99ca0 }); // Rose-pink pores!
-  const flyAgaricCapMat = new THREE.MeshLambertMaterial({ color: 0xc92519 });
-  const whiteCapMat = new THREE.MeshLambertMaterial({ color: 0xf4f2eb });
-  const whiteStemMat = new THREE.MeshLambertMaterial({ color: 0xf0eee5 });
+  // Hero Species: Punane kärbseseen (Amanita muscaria) — glossy wet scarlet-orange cuticle + sculpted warts
+  const flyAgaricCapMat = new THREE.MeshStandardMaterial({
+    map: textures.flyAgaricCap,
+    normalMap: textures.flyAgaricNormal,
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    roughness: 0.24,
+    metalness: 0.02,
+    envMapIntensity: 1.0,
+  });
+  // Hero Species: Valge kärbseseen (Amanita virosa / Destroying Angel) — porcelain-ivory silky sheen
+  const destroyingAngelCapMat = new THREE.MeshStandardMaterial({
+    map: textures.destroyingAngelCap,
+    roughness: 0.22,
+    metalness: 0.02,
+    envMapIntensity: 0.95,
+  });
+  const amanitaGillsMat = new THREE.MeshStandardMaterial({
+    map: textures.amanitaGills,
+    roughness: 0.72,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+  const amanitaStemMat = new THREE.MeshStandardMaterial({
+    color: 0xf6f3ea,
+    roughness: 0.68,
+    metalness: 0.0,
+    envMapIntensity: 0.55,
+  });
+  const amanitaWartMat = new THREE.MeshStandardMaterial({
+    color: 0xf2ead6,
+    roughness: 0.82,
+    metalness: 0.0,
+    envMapIntensity: 0.45,
+  });
 
-  const mossPadMat = new THREE.MeshLambertMaterial({
-    map: textures.groundDetail,
-    color: 0x5c7e3b,
+  const mushShadowMat = new THREE.MeshBasicMaterial({
+    map: textures.contactShadowTex,
+    transparent: true,
+    opacity: 0.44,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
   const hitProxyMat = new THREE.MeshBasicMaterial({ visible: false });
   const hitProxyGeo = new THREE.SphereGeometry(0.32, 6, 6);
-  const mossPadGeo = new THREE.CircleGeometry(0.24, 10);
-  mossPadGeo.rotateX(-Math.PI / 2);
-  mossPadGeo.translate(0, 0.012, 0);
+  const mushShadowGeo = new THREE.PlaneGeometry(0.46, 0.46);
+  mushShadowGeo.rotateX(-Math.PI / 2);
+  mushShadowGeo.translate(0, 0.012, 0);
 
   disposables.push(
-    mushroomMat,
+    chanterelleMat,
+    saffronCapMat,
     porciniCapMat,
     porciniStemMat,
     birchBoleteCapMat,
     birchBoleteStemMat,
     boletePoreMat,
-    saffronCapMat,
     bitterCapMat,
     bitterPoreMat,
     flyAgaricCapMat,
-    whiteCapMat,
-    whiteStemMat,
-    mossPadMat,
+    destroyingAngelCapMat,
+    amanitaGillsMat,
+    amanitaStemMat,
+    amanitaWartMat,
+    mushShadowMat,
     hitProxyMat,
     hitProxyGeo,
-    mossPadGeo
+    mushShadowGeo
   );
 
+  // Ruffled golden Chanterelle funnel
   const chanterelleBodyGeo = (() => {
     const funnelPts = [
-      new THREE.Vector2(0.0, 0.08),
-      new THREE.Vector2(0.018, 0.02),
-      new THREE.Vector2(0.024, 0.06),
-      new THREE.Vector2(0.055, 0.115),
-      new THREE.Vector2(0.095, 0.14),
-      new THREE.Vector2(0.08, 0.146),
-      new THREE.Vector2(0.032, 0.122),
-      new THREE.Vector2(0.0, 0.11),
+      new THREE.Vector2(0.0, 0.02),
+      new THREE.Vector2(0.017, 0.0),
+      new THREE.Vector2(0.023, 0.058),
+      new THREE.Vector2(0.056, 0.115),
+      new THREE.Vector2(0.098, 0.142),
+      new THREE.Vector2(0.082, 0.148),
+      new THREE.Vector2(0.032, 0.12),
+      new THREE.Vector2(0.0, 0.106),
     ];
-    const g = prepNonIndexed(new THREE.LatheGeometry(funnelPts, 14));
+    const g = prepNonIndexed(new THREE.LatheGeometry(funnelPts, 16));
     const pos = g.attributes.position;
     const cols = new Float32Array(pos.count * 3);
-    const stemCol = new THREE.Color(0xf2cf6b);
-    const rimCol = new THREE.Color(0xe89919);
+    const stemCol = new THREE.Color(0xf4d478);
+    const rimCol = new THREE.Color(0xee9c1a);
     for (let i = 0; i < pos.count; i++) {
       const px = pos.getX(i);
       const py = pos.getY(i);
       const pz = pos.getZ(i);
       const r = Math.hypot(px, pz);
-      if (r > 0.04 && py > 0.1) {
+      if (r > 0.038 && py > 0.095) {
         const ang = Math.atan2(pz, px);
-        const wave = Math.sin(ang * 5.0) * 0.016 + Math.cos(ang * 3.0) * 0.008;
-        pos.setY(i, py + wave * (r / 0.095));
+        const wave = Math.sin(ang * 5.0) * 0.018 + Math.cos(ang * 3.0) * 0.01;
+        pos.setY(i, py + wave * (r / 0.098));
       }
-      const t = clamp((py - 0.02) / 0.125, 0, 1);
+      const t = clamp((py - 0.015) / 0.13, 0, 1);
       cols[i * 3] = stemCol.r + (rimCol.r - stemCol.r) * t;
       cols[i * 3 + 1] = stemCol.g + (rimCol.g - stemCol.g) * t;
       cols[i * 3 + 2] = stemCol.b + (rimCol.b - stemCol.b) * t;
@@ -1340,54 +1682,50 @@ export function buildArchitectureAndProps(
     return g;
   })();
 
-  // Kuuseriisikas (Saffron Milk Cap) concentric carrot-orange saucer cap
+  // Kuuseriisikas (Saffron Milk Cap) concentric saucer cap with planar top UV
   const saffronBodyGeo = (() => {
     const pts = [
       new THREE.Vector2(0.0, 0.0),
       new THREE.Vector2(0.024, 0.0),
-      new THREE.Vector2(0.026, 0.095),
-      new THREE.Vector2(0.11, 0.105),
-      new THREE.Vector2(0.125, 0.126),
-      new THREE.Vector2(0.06, 0.132),
-      new THREE.Vector2(0.0, 0.115),
+      new THREE.Vector2(0.026, 0.092),
+      new THREE.Vector2(0.114, 0.104),
+      new THREE.Vector2(0.128, 0.126),
+      new THREE.Vector2(0.064, 0.132),
+      new THREE.Vector2(0.0, 0.114),
     ];
-    const g = prepNonIndexed(new THREE.LatheGeometry(pts, 14));
+    const g = prepNonIndexed(new THREE.LatheGeometry(pts, 16));
     const pos = g.attributes.position;
-    const cols = new Float32Array(pos.count * 3);
-    const orange = new THREE.Color(0xe67b2e);
-    const band = new THREE.Color(0xc24d18);
+    const uvs = new Float32Array(pos.count * 2);
     for (let i = 0; i < pos.count; i++) {
-      const r = Math.hypot(pos.getX(i), pos.getZ(i));
-      const zone = 0.5 + 0.5 * Math.sin(r * 75);
-      cols[i * 3] = orange.r + (band.r - orange.r) * zone;
-      cols[i * 3 + 1] = orange.g + (band.g - orange.g) * zone;
-      cols[i * 3 + 2] = orange.b + (band.b - orange.b) * zone;
+      uvs[i * 2] = clamp(pos.getX(i) / 0.26 + 0.5, 0, 1);
+      uvs[i * 2 + 1] = clamp(pos.getZ(i) / 0.26 + 0.5, 0, 1);
     }
-    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     return g;
   })();
 
+  // Kivipuravik (Boletus edulis) plump club stem + thick domed cap + pale olive spongy pores
   const porciniStemGeo = new THREE.LatheGeometry(
     [
       new THREE.Vector2(0.0, 0.0),
-      new THREE.Vector2(0.055, 0.0),
-      new THREE.Vector2(0.075, 0.055),
-      new THREE.Vector2(0.058, 0.118),
-      new THREE.Vector2(0.045, 0.158),
+      new THREE.Vector2(0.056, 0.0),
+      new THREE.Vector2(0.078, 0.055),
+      new THREE.Vector2(0.06, 0.118),
+      new THREE.Vector2(0.046, 0.158),
       new THREE.Vector2(0.0, 0.158),
     ],
-    14
+    16
   );
   const porciniCapGeo = (() => {
-    const g = new THREE.SphereGeometry(0.136, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.56);
+    const g = new THREE.SphereGeometry(0.138, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.56);
     g.scale(1.0, 0.78, 1.0);
     g.translate(0, 0.136, 0);
     return g;
   })();
   const porciniPoreGeo = (() => {
-    const g = new THREE.CircleGeometry(0.132, 14);
-    g.rotateX(Math.PI / 2);
-    g.translate(0, 0.135, 0);
+    const g = new THREE.SphereGeometry(0.132, 16, 6, 0, Math.PI * 2, Math.PI * 0.52, Math.PI * 0.48);
+    g.scale(1.0, 0.18, 1.0);
+    g.translate(0, 0.136, 0);
     return g;
   })();
 
@@ -1399,57 +1737,204 @@ export function buildArchitectureAndProps(
       new THREE.Vector2(0.024, 0.185),
       new THREE.Vector2(0.0, 0.185),
     ],
-    12
+    14
   );
   const birchBoleteCapGeo = (() => {
-    const g = new THREE.SphereGeometry(0.108, 14, 9, 0, Math.PI * 2, 0, Math.PI * 0.58);
+    const g = new THREE.SphereGeometry(0.108, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.58);
     g.scale(1.0, 0.82, 1.0);
     g.translate(0, 0.165, 0);
     return g;
   })();
   const birchBoletePoreGeo = (() => {
-    const g = new THREE.CircleGeometry(0.104, 12);
+    const g = new THREE.CircleGeometry(0.104, 14);
     g.rotateX(Math.PI / 2);
     g.translate(0, 0.164, 0);
     return g;
   })();
 
-  // Amanita stem with bulbous volva base + hanging skirt annulus ring (shared by Punane & Valge kärbseseen)
-  const amanitaStemGeo = new THREE.LatheGeometry(
+  // ---- HERO 1: Punane kärbseseen (Amanita muscaria) ----
+  // Concentric scaly bulbous volva + sturdy white stipe + drooping striated skirt annulus
+  const flyAgaricStemGeo = new THREE.LatheGeometry(
+    [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.052, 0.0),
+      new THREE.Vector2(0.064, 0.028), // bulbous scaly volva base
+      new THREE.Vector2(0.056, 0.048),
+      new THREE.Vector2(0.044, 0.056), // volva collar ridge
+      new THREE.Vector2(0.032, 0.078),
+      new THREE.Vector2(0.027, 0.148),
+      new THREE.Vector2(0.054, 0.136), // drooping flared annulus skirt!
+      new THREE.Vector2(0.048, 0.158),
+      new THREE.Vector2(0.025, 0.172),
+      new THREE.Vector2(0.024, 0.232),
+      new THREE.Vector2(0.0, 0.232),
+    ],
+    16
+  );
+
+  // Broad domed scarlet cap with planar radial top UVs matching flyAgaricCap texture
+  const flyAgaricCapGeo = (() => {
+    const g = prepNonIndexed(
+      new THREE.SphereGeometry(0.138, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.54)
+    );
+    const pos = g.attributes.position;
+    const uvs = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      const px = pos.getX(i);
+      const py = pos.getY(i);
+      const pz = pos.getZ(i);
+      // Gentle natural organic wave at the cap margin
+      const ang = Math.atan2(pz, px);
+      const rFrac = Math.hypot(px, pz) / 0.138;
+      const rimWave = Math.sin(ang * 4.0 + 0.5) * 0.0045 * rFrac * rFrac;
+      pos.setY(i, py * 0.62 + 0.214 + rimWave);
+      uvs[i * 2] = clamp(px / (0.138 * 2.02) + 0.5, 0.01, 0.99);
+      uvs[i * 2 + 1] = clamp(pz / (0.138 * 2.02) + 0.5, 0.01, 0.99);
+    }
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    g.computeVertexNormals();
+    return g;
+  })();
+
+  const flyAgaricGillsGeo = (() => {
+    const g = new THREE.CircleGeometry(0.134, 20);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0.213, 0);
+    return g;
+  })();
+
+  // Sculpted organic flattened pebble-warts hugging the dome curvature (NO cubes!)
+  const flyAgaricWartsGeo = (() => {
+    const parts: THREE.BufferGeometry[] = [];
+    const wr = seededRand(777);
+    const up = new THREE.Vector3(0, 1, 0);
+    const q = new THREE.Quaternion();
+    const nVec = new THREE.Vector3();
+    for (let i = 0; i < 24; i++) {
+      const phi = Math.acos(1 - ((i + 0.45) / 24) * 0.78);
+      const theta = i * 2.39996 + wr() * 0.28;
+      const rad = 0.138;
+      const wx = Math.sin(phi) * Math.cos(theta) * rad;
+      const wy = Math.cos(phi) * rad * 0.62 + 0.214;
+      const wz = Math.sin(phi) * Math.sin(theta) * rad;
+      nVec.set(Math.sin(phi) * Math.cos(theta), Math.cos(phi) / 0.62, Math.sin(phi) * Math.sin(theta)).normalize();
+      q.setFromUnitVectors(up, nVec);
+
+      const sz = (0.008 + wr() * 0.007) * (1.15 - phi * 0.35);
+      const pebble = new THREE.IcosahedronGeometry(sz, 0);
+      pebble.scale(1.15 + wr() * 0.45, 0.44 + wr() * 0.18, 0.95 + wr() * 0.4);
+      pebble.applyQuaternion(q);
+      pebble.translate(wx, wy, wz);
+      parts.push(prepNonIndexed(pebble));
+    }
+    return mergeGeometries(parts)!;
+  })();
+
+  // Young scarlet Fly Agaric egg-button bursting from its white universal veil!
+  const flyAgaricButtonCapGeo = (() => {
+    const g = prepNonIndexed(new THREE.SphereGeometry(0.068, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.74));
+    const pos = g.attributes.position;
+    const uvs = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      const px = pos.getX(i);
+      const py = pos.getY(i);
+      const pz = pos.getZ(i);
+      pos.setY(i, py * 0.95 + 0.088);
+      uvs[i * 2] = clamp(px / 0.15 + 0.5, 0.02, 0.98);
+      uvs[i * 2 + 1] = clamp(pz / 0.15 + 0.5, 0.02, 0.98);
+    }
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    g.computeVertexNormals();
+    return g;
+  })();
+  const flyAgaricButtonStemGeo = new THREE.LatheGeometry(
     [
       new THREE.Vector2(0.0, 0.0),
       new THREE.Vector2(0.056, 0.0),
-      new THREE.Vector2(0.062, 0.038),
-      new THREE.Vector2(0.03, 0.068),
-      new THREE.Vector2(0.026, 0.145),
-      new THREE.Vector2(0.048, 0.155), // skirt ring
-      new THREE.Vector2(0.024, 0.165),
-      new THREE.Vector2(0.024, 0.235),
-      new THREE.Vector2(0.0, 0.235),
+      new THREE.Vector2(0.062, 0.042),
+      new THREE.Vector2(0.052, 0.072),
+      new THREE.Vector2(0.036, 0.095),
+      new THREE.Vector2(0.0, 0.095),
     ],
-    12
+    14
   );
-  const amanitaCapGeo = (() => {
-    const g = new THREE.SphereGeometry(0.125, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.55);
-    g.scale(1.0, 0.65, 1.0);
-    g.translate(0, 0.215, 0);
+
+  // ---- HERO 2: Valge kärbseseen (Amanita virosa — Destroying Angel) ----
+  // Tall slender shaggy-floccose stem + prominent papery cup-like volva sac + delicate ragged skirt ring
+  const destroyingAngelStemGeo = (() => {
+    const g = prepNonIndexed(
+      new THREE.LatheGeometry(
+        [
+          new THREE.Vector2(0.0, 0.0),
+          new THREE.Vector2(0.046, 0.0),
+          new THREE.Vector2(0.056, 0.036), // swollen papery cup volva sac!
+          new THREE.Vector2(0.058, 0.076), // open papery volva rim
+          new THREE.Vector2(0.042, 0.072),
+          new THREE.Vector2(0.026, 0.056),
+          new THREE.Vector2(0.022, 0.175),
+          new THREE.Vector2(0.044, 0.168), // delicate ragged drooping skirt ring
+          new THREE.Vector2(0.038, 0.194),
+          new THREE.Vector2(0.018, 0.205),
+          new THREE.Vector2(0.017, 0.278),
+          new THREE.Vector2(0.0, 0.278),
+        ],
+        16
+      )
+    );
+    // Subtle organic shaggy floccose irregularity along the tall white stem
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const py = pos.getY(i);
+      if (py > 0.078 && py < 0.265) {
+        const px = pos.getX(i);
+        const pz = pos.getZ(i);
+        const ang = Math.atan2(pz, px);
+        const shag = 1.0 + Math.sin(py * 95.0 + ang * 3.0) * 0.06;
+        pos.setX(i, px * shag);
+        pos.setZ(i, pz * shag);
+      }
+    }
+    g.computeVertexNormals();
     return g;
   })();
-  const amanitaWartsGeo = (() => {
-    const parts: THREE.BufferGeometry[] = [];
-    const wr = seededRand(777);
-    for (let i = 0; i < 18; i++) {
-      const phi = Math.acos(1 - (i + 0.5) / 18 * 0.72);
-      const theta = i * 2.399 + wr() * 0.3;
-      const rad = 0.126;
-      const wx = Math.sin(phi) * Math.cos(theta) * rad;
-      const wy = 0.215 + Math.cos(phi) * rad * 0.66;
-      const wz = Math.sin(phi) * Math.sin(theta) * rad;
-      const dot = new THREE.BoxGeometry(0.022, 0.014, 0.022);
-      dot.translate(wx, wy, wz);
-      parts.push(prepNonIndexed(dot));
+
+  // Signature tall conical-bell umbonate porcelain-white Destroying Angel cap!
+  const destroyingAngelCapGeo = (() => {
+    const pts = [
+      new THREE.Vector2(0.112, 0.236),
+      new THREE.Vector2(0.106, 0.252),
+      new THREE.Vector2(0.088, 0.285),
+      new THREE.Vector2(0.062, 0.326),
+      new THREE.Vector2(0.034, 0.354),
+      new THREE.Vector2(0.012, 0.368),
+      new THREE.Vector2(0.0, 0.371),
+    ];
+    const g = prepNonIndexed(new THREE.LatheGeometry(pts, 20));
+    const pos = g.attributes.position;
+    const uvs = new Float32Array(pos.count * 2);
+    for (let i = 0; i < pos.count; i++) {
+      const px = pos.getX(i);
+      const py = pos.getY(i);
+      const pz = pos.getZ(i);
+      // Slight asymmetrical tilt typical of Amanita virosa bells
+      const ang = Math.atan2(pz, px);
+      const rFrac = Math.hypot(px, pz) / 0.112;
+      const tilt = Math.sin(ang + 0.8) * 0.01 * rFrac;
+      const lobe = Math.cos(ang * 3.0) * 0.005 * rFrac * rFrac;
+      pos.setY(i, py + tilt + lobe);
+      uvs[i * 2] = clamp(px / 0.23 + 0.5, 0.01, 0.99);
+      uvs[i * 2 + 1] = clamp(pz / 0.23 + 0.5, 0.01, 0.99);
     }
-    return mergeGeometries(parts)!;
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    g.computeVertexNormals();
+    return g;
+  })();
+
+  const destroyingAngelGillsGeo = (() => {
+    const g = new THREE.CircleGeometry(0.109, 18);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0.242, 0);
+    return g;
   })();
 
   disposables.push(
@@ -1461,9 +1946,15 @@ export function buildArchitectureAndProps(
     birchBoleteStemGeo,
     birchBoleteCapGeo,
     birchBoletePoreGeo,
-    amanitaStemGeo,
-    amanitaCapGeo,
-    amanitaWartsGeo
+    flyAgaricStemGeo,
+    flyAgaricCapGeo,
+    flyAgaricGillsGeo,
+    flyAgaricWartsGeo,
+    flyAgaricButtonCapGeo,
+    flyAgaricButtonStemGeo,
+    destroyingAngelStemGeo,
+    destroyingAngelCapGeo,
+    destroyingAngelGillsGeo
   );
 
   let mushroomCountTotal = 0;
@@ -1473,41 +1964,96 @@ export function buildArchitectureAndProps(
     const g = new THREE.Group();
     g.position.set(x, y, z);
 
-    const padMesh = new THREE.Mesh(mossPadGeo, mossPadMat);
+    const padMesh = new THREE.Mesh(mushShadowGeo, mushShadowMat);
     g.add(padMesh);
 
     if (species === 'kukeseen' || species === 'kuuseriisikas') {
       const baseGeo = species === 'kukeseen' ? chanterelleBodyGeo : saffronBodyGeo;
-      const mat = species === 'kukeseen' ? mushroomMat : saffronCapMat;
-      const count = species === 'kukeseen' ? 5 : 3;
+      const mat = species === 'kukeseen' ? chanterelleMat : saffronCapMat;
+      const count = species === 'kukeseen' ? 6 : 3;
       const parts: THREE.BufferGeometry[] = [];
       for (let i = 0; i < count; i++) {
         const clone = baseGeo.clone();
-        const s = i === 0 ? 1.15 : 0.7 + rand() * 0.38;
+        const s = i === 0 ? 1.18 : 0.68 + rand() * 0.42;
         const ang = (i / count) * Math.PI * 2 + rand() * 0.6;
-        const off = i === 0 ? 0 : 0.085 + rand() * 0.09;
+        const off = i === 0 ? 0 : 0.08 + rand() * 0.11;
         clone.scale(s, s, s);
-        clone.rotateX((rand() - 0.5) * 0.14);
-        clone.rotateZ((rand() - 0.5) * 0.14);
+        clone.rotateX((rand() - 0.5) * 0.16);
+        clone.rotateZ((rand() - 0.5) * 0.16);
         clone.rotateY(rand() * Math.PI * 2);
         clone.translate(Math.cos(ang) * off, 0, Math.sin(ang) * off);
         parts.push(clone);
       }
       const clusterGeo = mergeGeometries(parts)!;
       disposables.push(clusterGeo);
-      g.add(new THREE.Mesh(clusterGeo, mat));
-    } else if (species === 'punakarbseseen' || species === 'valgekarbseseen') {
-      const capMat = species === 'punakarbseseen' ? flyAgaricCapMat : whiteCapMat;
+      const m = new THREE.Mesh(clusterGeo, mat);
+      m.castShadow = shadows;
+      m.receiveShadow = true;
+      g.add(m);
+    } else if (species === 'punakarbseseen') {
+      // Photorealistic 3-stage Amanita muscaria cluster: mature umbrella + convex mid + young egg-button
       const stemParts: THREE.BufferGeometry[] = [];
       const capParts: THREE.BufferGeometry[] = [];
+      const gillParts: THREE.BufferGeometry[] = [];
       const wartParts: THREE.BufferGeometry[] = [];
-      for (let i = 0; i < 2; i++) {
-        const s = i === 0 ? 1.15 : 0.72 + rand() * 0.25;
-        const ang = rand() * Math.PI * 2;
-        const off = i === 0 ? 0 : 0.13 + rand() * 0.08;
+
+      const specs = [
+        { s: 1.22, off: 0, ang: 0, isButton: false },
+        { s: 0.84, off: 0.17, ang: rand() * Math.PI * 2, isButton: false },
+        { s: 0.95, off: 0.14, ang: rand() * Math.PI * 2 + 2.2, isButton: true },
+      ];
+      for (const sp of specs) {
         const rx = (rand() - 0.5) * 0.1;
         const ry = rand() * Math.PI * 2;
         const rz = (rand() - 0.5) * 0.1;
+        const dx = Math.cos(sp.ang) * sp.off;
+        const dz = Math.sin(sp.ang) * sp.off;
+        const xf = (src: THREE.BufferGeometry) => {
+          const c = prepNonIndexed(src.clone());
+          c.scale(sp.s, sp.s, sp.s);
+          c.rotateX(rx);
+          c.rotateZ(rz);
+          c.rotateY(ry);
+          c.translate(dx, 0, dz);
+          return c;
+        };
+        if (sp.isButton) {
+          stemParts.push(xf(flyAgaricButtonStemGeo));
+          capParts.push(xf(flyAgaricButtonCapGeo));
+        } else {
+          stemParts.push(xf(flyAgaricStemGeo));
+          capParts.push(xf(flyAgaricCapGeo));
+          gillParts.push(xf(flyAgaricGillsGeo));
+          wartParts.push(xf(flyAgaricWartsGeo));
+        }
+      }
+      const mStem = mergeGeometries(stemParts)!;
+      const mCap = mergeGeometries(capParts)!;
+      const mGills = mergeGeometries(gillParts)!;
+      const mWarts = mergeGeometries(wartParts)!;
+      disposables.push(mStem, mCap, mGills, mWarts);
+      const capMesh = new THREE.Mesh(mCap, flyAgaricCapMat);
+      capMesh.castShadow = shadows;
+      capMesh.receiveShadow = true;
+      g.add(
+        new THREE.Mesh(mStem, amanitaStemMat),
+        capMesh,
+        new THREE.Mesh(mGills, amanitaGillsMat),
+        new THREE.Mesh(mWarts, amanitaWartMat)
+      );
+    } else if (species === 'valgekarbseseen') {
+      // Photorealistic 2-stage Amanita virosa (Destroying Angel): tall conical bell + young bud
+      const stemParts: THREE.BufferGeometry[] = [];
+      const capParts: THREE.BufferGeometry[] = [];
+      const gillParts: THREE.BufferGeometry[] = [];
+
+      for (let i = 0; i < 2; i++) {
+        const s = i === 0 ? 1.16 : 0.76 + rand() * 0.18;
+        const ang = rand() * Math.PI * 2;
+        const off = i === 0 ? 0 : 0.14 + rand() * 0.06;
+        const rx = (rand() - 0.5) * 0.11;
+        const ry = rand() * Math.PI * 2;
+        const rz = (rand() - 0.5) * 0.11;
         const dx = Math.cos(ang) * off;
         const dz = Math.sin(ang) * off;
         const xf = (src: THREE.BufferGeometry) => {
@@ -1519,19 +2065,22 @@ export function buildArchitectureAndProps(
           c.translate(dx, 0, dz);
           return c;
         };
-        stemParts.push(xf(amanitaStemGeo));
-        capParts.push(xf(amanitaCapGeo));
-        if (species === 'punakarbseseen') wartParts.push(xf(amanitaWartsGeo));
+        stemParts.push(xf(destroyingAngelStemGeo));
+        capParts.push(xf(destroyingAngelCapGeo));
+        gillParts.push(xf(destroyingAngelGillsGeo));
       }
       const mStem = mergeGeometries(stemParts)!;
       const mCap = mergeGeometries(capParts)!;
-      disposables.push(mStem, mCap);
-      g.add(new THREE.Mesh(mStem, whiteStemMat), new THREE.Mesh(mCap, capMat));
-      if (wartParts.length > 0) {
-        const mWarts = mergeGeometries(wartParts)!;
-        disposables.push(mWarts);
-        g.add(new THREE.Mesh(mWarts, whiteStemMat));
-      }
+      const mGills = mergeGeometries(gillParts)!;
+      disposables.push(mStem, mCap, mGills);
+      const capMesh = new THREE.Mesh(mCap, destroyingAngelCapMat);
+      capMesh.castShadow = shadows;
+      capMesh.receiveShadow = true;
+      g.add(
+        new THREE.Mesh(mStem, amanitaStemMat),
+        capMesh,
+        new THREE.Mesh(mGills, amanitaGillsMat)
+      );
     } else {
       // Bolete family: kivipuravik, kasepuravik, sapipuravik
       const isBirch = species === 'kasepuravik';
@@ -1547,9 +2096,9 @@ export function buildArchitectureAndProps(
       const capParts: THREE.BufferGeometry[] = [];
       const poreParts: THREE.BufferGeometry[] = [];
       for (let i = 0; i < 2; i++) {
-        const s = i === 0 ? 1.14 : 0.68 + rand() * 0.24;
+        const s = i === 0 ? 1.18 : 0.68 + rand() * 0.24;
         const ang = rand() * Math.PI * 2;
-        const off = i === 0 ? 0 : 0.11 + rand() * 0.06;
+        const off = i === 0 ? 0 : 0.12 + rand() * 0.06;
         const rx = (rand() - 0.5) * 0.12;
         const ry = rand() * Math.PI * 2;
         const rz = (rand() - 0.5) * 0.12;
@@ -1572,11 +2121,14 @@ export function buildArchitectureAndProps(
       const mCap = mergeGeometries(capParts)!;
       const mPore = mergeGeometries(poreParts)!;
       disposables.push(mStem, mCap, mPore);
-      g.add(new THREE.Mesh(mStem, stemMat), new THREE.Mesh(mCap, capMat), new THREE.Mesh(mPore, poreMat));
+      const capMesh = new THREE.Mesh(mCap, capMat);
+      capMesh.castShadow = shadows;
+      capMesh.receiveShadow = true;
+      g.add(new THREE.Mesh(mStem, stemMat), capMesh, new THREE.Mesh(mPore, poreMat));
     }
 
     const hitProxy = new THREE.Mesh(hitProxyGeo, hitProxyMat);
-    hitProxy.position.y = 0.15;
+    hitProxy.position.y = 0.16;
     g.add(hitProxy);
 
     scene.add(g);
@@ -1602,8 +2154,6 @@ export function buildArchitectureAndProps(
     mushroomNodes.push({ mesh: g, x, z, entry });
   }
 
-  // A couple of distant edge specimens just past the starting clearing border (>34m from villages)
-  // so players walking into nearby woods encounter all mushroom types, while villages remain scarce
   const allSpecies: MushroomSpecies[] = [
     'kukeseen',
     'kivipuravik',
@@ -1614,7 +2164,6 @@ export function buildArchitectureAndProps(
     'valgekarbseseen',
   ];
 
-  // Weighted woodland species distribution
   const pickWeightedSpecies = (): MushroomSpecies => {
     const r = rand();
     if (r < 0.24) return 'kukeseen';
@@ -1626,7 +2175,7 @@ export function buildArchitectureAndProps(
     return 'valgekarbseseen';
   };
 
-  // Swamp Island mushrooms (2-3 per island!)
+  // Swamp Island mushrooms (3 per island)
   for (const isl of bp.swampIslands) {
     for (let k = 0; k < 3; k++) {
       const a = rand() * Math.PI * 2;
@@ -1639,22 +2188,28 @@ export function buildArchitectureAndProps(
     }
   }
 
-  // Accessible roadside woodland ring just past spawn (distance >32m from Vana-Kase, in forest floor!)
+  // Woodland-edge mossy forest glade guaranteed off-road & away from villages so players discover
+  // all iconic Estonian species (including Punane kärbseseen & Valge kärbseseen) naturally!
+  let heroMushroomPos: { x: number; z: number } | null = null;
+  const gladeZ = 24.5;
+  const gladeBaseX = roadCenterX(gladeZ) - 11.5;
   const starterOffsets: Array<[number, number, MushroomSpecies]> = [
-    [-7.5, 16.5, 'kukeseen'],
-    [10.5, 19.0, 'punakarbseseen'],
-    [-12.5, 22.0, 'kuuseriisikas'],
-    [8.2, 26.5, 'valgekarbseseen'],
-    [-5.5, 29.5, 'kivipuravik'],
+    [gladeBaseX, gladeZ, 'punakarbseseen'],
+    [gladeBaseX + 0.68, gladeZ - 0.35, 'valgekarbseseen'],
+    [gladeBaseX - 0.72, gladeZ - 0.48, 'kivipuravik'],
+    [gladeBaseX + 0.25, gladeZ - 0.95, 'kukeseen'],
+    [gladeBaseX - 1.35, gladeZ + 0.4, 'kuuseriisikas'],
   ];
   for (const [ox, oz, sp] of starterOffsets) {
-    if (getDistanceToNearestVillage(ox, oz).dist >= 30 && distToRoadDetail(ox, oz).dist > 3.2) {
+    if (getDistanceToNearestVillage(ox, oz).dist >= 28 && distToRoadDetail(ox, oz).dist > 3.5) {
       spawnMushroom(ox, oz, sp);
+      if (sp === 'punakarbseseen') {
+        heroMushroomPos = { x: ox, z: oz };
+      }
     }
   }
 
-  // Widely dispersed 240 forest clusters across the entire 1200x1200m world (out to edges [-580, 580])
-  // Strictly scarce around villages: skip 96% of spots within 36m of any village!
+  // Widely dispersed 240 forest clusters across the entire 1200x1200m world (scarcest near villages)
   let placed = 0;
   let attempts = 0;
   while (placed < 240 && attempts < 1400) {
@@ -1690,13 +2245,34 @@ export function buildArchitectureAndProps(
     interactiveMeshes,
     dynamicObjects,
     mushroomCountTotal,
-    updateDynamicProps: (elapsed: number, camX: number, camZ: number) => {
+    heroMushroomPos,
+    updateDynamicProps: (
+      elapsed: number,
+      camX: number,
+      camZ: number,
+      skyState?: SkyFrameState
+    ) => {
       if (fireLit) {
         fireLight.intensity = 2.5 + Math.sin(elapsed * 15.0) * 0.45;
         fireFlames.scale.y = 0.85 + Math.sin(elapsed * 20.0) * 0.2;
       }
-      // Frustum/range cull distant mushrooms and far outer village/island structures
-      const maxVisSq = 52 * 52;
+
+      // Sync Fresnel reflective bog water & day/night cottage window glow with live sky state
+      waterMat.uniforms.uTime.value = elapsed;
+      if (skyState) {
+        waterMat.uniforms.uSunDir.value.copy(skyState.sunDir);
+        waterMat.uniforms.uSunColor.value.copy(skyState.sunColor);
+        waterMat.uniforms.uSkyTop.value.copy(skyState.skyTopColor);
+        waterMat.uniforms.uSkyHorizon.value.copy(skyState.skyHorizonColor);
+        waterMat.uniforms.uFogColor.value.copy(skyState.skyHorizonColor);
+        waterMat.uniforms.uFogDensity.value = skyState.fogDensity;
+
+        // Dark reflective glass during bright daytime; warm amber hearth light at golden hour, dusk & night!
+        const duskGlow = THREE.MathUtils.clamp((0.86 - skyState.dayFactor) / 0.36, 0, 1);
+        activeWinMat.emissiveIntensity = 0.02 + duskGlow * 1.65;
+      }
+
+      const maxVisSq = 54 * 54;
       for (let i = 0; i < mushroomNodes.length; i++) {
         const m = mushroomNodes[i];
         if (m.entry.gathered) continue;
