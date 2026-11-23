@@ -16,6 +16,7 @@ import {
   FpsDropLogger,
   FramePerfSample,
 } from './perfLogger';
+import { SoundEngine } from '../world/soundEngine';
 
 test('Mushroom basket tracks all 7 edible, inedible, and poisonous species cleanly', () => {
   const b0 = createEmptyBasket();
@@ -238,4 +239,165 @@ test('FpsDropLogger logs LOW_FPS (<15), escalates EXTREME_FPS (3-4), classifies 
   const parsed = JSON.parse(lines[1].replace('[METSAVAIKUS_PERF:EXTREME_FPS] ', ''));
   assert.equal(parsed.world.weather, 'storm');
   assert.equal(classifyBottleneck(makePerfSample({ rawDtMs: 90, terrainMs: 48, tickCpuMs: 60, externalWaitMs: 30 })), 'CPU_TERRAIN_CHUNKS');
+});
+
+test('SoundEngine keeps AudioParam timelines bounded across 12,000 frames (200s) and reuses buffers', () => {
+  interface MockParam {
+    value: number;
+    pendingEvents: number;
+    maxPendingEvents: number;
+    totalScheduled: number;
+    cancelScheduledValues: (t: number) => void;
+    cancelAndHoldAtTime: (t: number) => void;
+    setValueAtTime: (v: number, t: number) => void;
+    setTargetAtTime: (v: number, t: number, tau: number) => void;
+    exponentialRampToValueAtTime: (v: number, t: number) => void;
+    linearRampToValueAtTime: (v: number, t: number) => void;
+  }
+
+  function makeParam(initial = 0): MockParam {
+    const p: MockParam = {
+      value: initial,
+      pendingEvents: 0,
+      maxPendingEvents: 0,
+      totalScheduled: 0,
+      cancelScheduledValues() {
+        p.pendingEvents = 0;
+      },
+      cancelAndHoldAtTime() {
+        p.pendingEvents = 0;
+      },
+      setValueAtTime(v: number) {
+        p.value = v;
+      },
+      setTargetAtTime(v: number) {
+        p.value = v;
+        p.pendingEvents++;
+        p.totalScheduled++;
+        if (p.pendingEvents > p.maxPendingEvents) p.maxPendingEvents = p.pendingEvents;
+      },
+      exponentialRampToValueAtTime(v: number) {
+        p.value = v;
+      },
+      linearRampToValueAtTime(v: number) {
+        p.value = v;
+      },
+    };
+    return p;
+  }
+
+  let createBufferCalls = 0;
+  let disconnectedNodes = 0;
+  const gainParams: MockParam[] = [];
+  const oneShotSources: Array<{ onended: (() => void) | null }> = [];
+  const mockCtx = {
+    currentTime: 0,
+    sampleRate: 44100,
+    state: 'running',
+    destination: {},
+    resume: () => Promise.resolve(),
+    suspend: () => Promise.resolve(),
+    close: () => Promise.resolve(),
+    createBuffer(_ch: number, len: number) {
+      createBufferCalls++;
+      const arr = new Float32Array(len);
+      return { getChannelData: () => arr };
+    },
+    createBufferSource() {
+      const node = {
+        buffer: null,
+        loop: false,
+        onended: null as (() => void) | null,
+        connect(dest: unknown) {
+          return dest;
+        },
+        disconnect() {
+          disconnectedNodes++;
+        },
+        start() {},
+        stop() {},
+      };
+      oneShotSources.push(node);
+      return node;
+    },
+    createBiquadFilter() {
+      return {
+        type: 'lowpass',
+        frequency: makeParam(320),
+        Q: makeParam(1),
+        connect(dest: unknown) {
+          return dest;
+        },
+        disconnect() {
+          disconnectedNodes++;
+        },
+      };
+    },
+    createGain() {
+      const g = makeParam(1);
+      gainParams.push(g);
+      return {
+        gain: g,
+        connect(dest: unknown) {
+          return dest;
+        },
+        disconnect() {
+          disconnectedNodes++;
+        },
+      };
+    },
+    createOscillator() {
+      const node = {
+        type: 'sine',
+        frequency: makeParam(440),
+        onended: null as (() => void) | null,
+        connect(dest: unknown) {
+          return dest;
+        },
+        disconnect() {
+          disconnectedNodes++;
+        },
+        start() {},
+        stop() {},
+      };
+      oneShotSources.push(node);
+      return node;
+    },
+  };
+
+  const sound = new SoundEngine();
+  sound.init(mockCtx as unknown as AudioContext);
+  const buffersAfterInit = createBufferCalls;
+  assert.equal(buffersAfterInit, 4); // ambient noise + step + water + thunder
+
+  // Simulate 200 seconds at 60Hz (12,000 frames) with gusting wind and weather changes
+  for (let frame = 0; frame < 12000; frame++) {
+    mockCtx.currentTime = frame / 60;
+    const weather = frame < 3600 ? 'clear' : frame < 9000 ? 'rain' : 'storm';
+    const wind = 0.5 + 0.35 * Math.sin(mockCtx.currentTime * 0.45);
+    sound.updateAmbience(weather, wind);
+  }
+
+  const windGain = gainParams[0];
+  const rainGain = gainParams[1];
+  // Prior events must always be cancelled so pending timeline never grows beyond 1
+  assert.equal(windGain.maxPendingEvents, 1);
+  assert.equal(rainGain.maxPendingEvents, 1);
+  // Throttling + deadband should reduce 12,000 calls to well under 500 scheduled updates
+  assert.ok(windGain.totalScheduled < 500, `Expected <500 wind updates, got ${windGain.totalScheduled}`);
+  assert.ok(rainGain.totalScheduled <= 4, `Expected <=4 rain updates, got ${rainGain.totalScheduled}`);
+
+  // Footsteps and thunder should NOT allocate any new AudioBuffers at runtime
+  sound.playFootstep('grass');
+  sound.playFootstep('water');
+  sound.playFootstep('wood');
+  sound.playThunder();
+  assert.equal(createBufferCalls, buffersAfterInit);
+
+  // Firing onended disconnects one-shot audio graphs
+  for (const s of oneShotSources) {
+    if (s.onended) s.onended();
+  }
+  assert.ok(disconnectedNodes >= 10);
+  sound.dispose();
 });

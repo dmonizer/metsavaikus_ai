@@ -807,9 +807,9 @@ function buildJuniperBushGeo(): THREE.BufferGeometry {
 
 function buildSingleGrassBladeGeo(): THREE.BufferGeometry {
   // Single arched 3D grass blade (3 triangles, vertex colored root-to-tip)
-  const w = 0.044;
-  const h = 0.42;
-  const lean = 0.13;
+  const w = 0.056;
+  const h = 0.44;
+  const lean = 0.14;
   const positions = new Float32Array([
     -w * 0.5, 0, 0,
      w * 0.5, 0, 0,
@@ -1122,6 +1122,10 @@ const CAP_BOULDER = 260;
 const CAP_DEADFALL = 200;
 
 const GRASS_BLADE_CAP = 13500;
+const GRASS_TILE_SIZE = 16;
+const GRASS_TILE_RADIUS = 2; // 5x5 tile window minus 4 far corners = 21 tiles (~32-44m radius)
+const GRASS_BLADE_SPACING = 0.62;
+const MAX_GRASS_TILE_CACHE = 180;
 const MAX_CHUNK_CACHE = 450;
 const COLLIDER_CELL_SIZE = 8;
 
@@ -1171,13 +1175,15 @@ export class WorldVegetationSystem {
   readonly windDirUniform = { value: new THREE.Vector2(0.86, 0.51) };
 
   private readonly chunkCache = new Map<string, ChunkBucketBaked>();
+  private readonly grassTileCache = new Map<string, BakedSlab>();
   private readonly indexedColliderChunks = new Set<string>();
   private readonly colliderGrid = new Map<string, CircleCollider[]>();
   private readonly buildingRects: BuildingRect[];
   private readonly disposables: Array<{ dispose: () => void }> = [];
   private lastVisibilitySig = '';
-  private lastGrassAnchorX = 999999;
-  private lastGrassAnchorZ = 999999;
+  private lastGrassTileX = 999999;
+  private lastGrassTileZ = 999999;
+  private grassHasPendingTiles = true;
 
   // Tree LOD InstancedMeshes (all opaque — zero alphaTest discard!)
   private birchTrunk0!: THREE.InstancedMesh;
@@ -1947,82 +1953,196 @@ export class WorldVegetationSystem {
     this.boulderMesh = this.createInstanced(boulderGeo, boulderMat, CAP_BOULDER, shadows);
   }
 
-  /**
-   * Populates 13,500 individual 3D grass blades uniformly on a world-snapped jittered grid
-   * around the camera, skipping only roads and water, eliminating patchy bare ground.
-   */
-  private updateGrassCarpet(camX: number, camZ: number): void {
-    const snapStep = 1.6;
-    const ax = Math.floor(camX / snapStep) * snapStep;
-    const az = Math.floor(camZ / snapStep) * snapStep;
-    if (ax === this.lastGrassAnchorX && az === this.lastGrassAnchorZ) return;
-    this.lastGrassAnchorX = ax;
-    this.lastGrassAnchorZ = az;
-    this.diagGrassRebuilds++;
-
-    const spacing = 0.46;
-    const halfGrid = 28.5; // 57m x 57m continuous carpet around player
-    const matArr = this.grassBladeMesh.instanceMatrix.array as Float32Array;
-    const colArr = this.grassBladeMesh.instanceColor!.array as Float32Array;
+  private bakeGrassTile(tx: number, tz: number): BakedSlab {
+    const minX = tx * GRASS_TILE_SIZE;
+    const minZ = tz * GRASS_TILE_SIZE;
+    const maxX = minX + GRASS_TILE_SIZE;
+    const maxZ = minZ + GRASS_TILE_SIZE;
     const minWorld = -WORLD_HALF + 2;
     const maxWorld = WORLD_HALF - 2;
+    if (maxX < minWorld || minX > maxWorld || maxZ < minWorld || minZ > maxWorld) {
+      return EMPTY_SLAB;
+    }
+
+    // Pre-filter building exclusion rects to only those overlapping this 16x16m tile
+    const tileCx = minX + GRASS_TILE_SIZE * 0.5;
+    const tileCz = minZ + GRASS_TILE_SIZE * 0.5;
+    const localBuildings: BuildingRect[] = [];
+    for (let i = 0; i < this.buildingRects.length; i++) {
+      const r = this.buildingRects[i];
+      const maxReach = Math.hypot(r.hw, r.hd) + GRASS_TILE_SIZE * 0.72;
+      const dx = tileCx - r.cx;
+      const dz = tileCz - r.cz;
+      if (dx * dx + dz * dz <= maxReach * maxReach) {
+        localBuildings.push(r);
+      }
+    }
+
+    const cellsPerSide = Math.ceil(GRASS_TILE_SIZE / GRASS_BLADE_SPACING);
+    const maxTileBlades = cellsPerSide * cellsPerSide;
+    const tmpMat = new Float32Array(maxTileBlades * 16);
+    const tmpCol = new Float32Array(maxTileBlades * 3);
+    const randSeed = getActiveBlueprint().seed | 0;
+    const baseIx = tx * cellsPerSide;
+    const baseIz = tz * cellsPerSide;
 
     let count = 0;
-    const randSeed = getActiveBlueprint().seed | 0;
+    for (let gz = 0; gz < cellsPerSide; gz++) {
+      const bz = minZ + (gz + 0.5) * GRASS_BLADE_SPACING;
+      if (bz >= maxZ || bz < minWorld || bz > maxWorld) continue;
+      const iz = baseIz + gz;
+      for (let gx = 0; gx < cellsPerSide; gx++) {
+        const bx = minX + (gx + 0.5) * GRASS_BLADE_SPACING;
+        if (bx >= maxX || bx < minWorld || bx > maxWorld) continue;
+        const ix = baseIx + gx;
 
-    for (let gz = -halfGrid; gz <= halfGrid; gz += spacing) {
-      const bz = az + gz;
-      if (bz < minWorld || bz > maxWorld) continue;
-      for (let gx = -halfGrid; gx <= halfGrid; gx += spacing) {
-        if (count >= GRASS_BLADE_CAP) break;
-        if (gx * gx + gz * gz > 28.0 * 28.0) continue;
-
-        const bx = ax + gx;
-        if (bx < minWorld || bx > maxWorld) continue;
-
-        const ix = Math.round(bx / spacing);
-        const iz = Math.round(bz / spacing);
         let h = Math.imul(ix, 374761393) ^ Math.imul(iz, 668265263) ^ randSeed;
         h = Math.imul(h ^ (h >>> 13), 1274126177);
         const r1 = ((h >>> 0) % 1000) / 1000;
         const r2 = (((h >>> 10) >>> 0) % 1000) / 1000;
         const r3 = (((h >>> 20) >>> 0) % 1000) / 1000;
 
-        const px = bx + (r1 - 0.5) * spacing * 0.9;
-        const pz = bz + (r2 - 0.5) * spacing * 0.9;
+        const px = bx + (r1 - 0.5) * GRASS_BLADE_SPACING * 0.9;
+        const pz = bz + (r2 - 0.5) * GRASS_BLADE_SPACING * 0.9;
 
         const roadInfo = distToRoadDetail(px, pz);
         if (roadInfo.dist < (roadInfo.isTrail ? 1.5 : 2.3)) continue;
-        if (this.isInsideBuilding(px, pz)) continue;
+
+        let insideBuilding = false;
+        for (let b = 0; b < localBuildings.length; b++) {
+          const r = localBuildings[b];
+          const dx = px - r.cx;
+          const dz = pz - r.cz;
+          const lx = dx * r.cosR - dz * r.sinR;
+          const lz = dx * r.sinR + dz * r.cosR;
+          if (Math.abs(lx) < r.hw && Math.abs(lz) < r.hd) {
+            insideBuilding = true;
+            break;
+          }
+        }
+        if (insideBuilding) continue;
 
         const py = getTerrainHeight(px, pz);
         if (py < SWAMP_WATER_Y + 0.04) continue;
 
         const isl = getNearestSwampIsland(px, pz);
         const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
-        const scale = swamp > 0.35 ? 0.65 + r3 * 0.72 : 0.68 + r3 * 0.85;
+        const sy = swamp > 0.35 ? 0.68 + r3 * 0.72 : 0.72 + r3 * 0.86;
+        const sxz = 0.9 + r2 * 0.45;
+        const rotY = r1 * Math.PI * 2;
+        const cosY = Math.cos(rotY);
+        const sinY = Math.sin(rotY);
 
-        _bakeDummy.position.set(px, py - 0.03, pz);
-        _bakeDummy.rotation.set(0, r1 * Math.PI * 2, 0);
-        _bakeDummy.scale.set(0.88 + r2 * 0.45, scale, 0.88 + r2 * 0.45);
-        _bakeDummy.updateMatrix();
-        _bakeDummy.matrix.toArray(matArr, count * 16);
+        // Direct column-major 4x4 TRS matrix write (avoids Object3D.updateMatrix overhead)
+        const mOff = count * 16;
+        tmpMat[mOff] = cosY * sxz;
+        tmpMat[mOff + 1] = 0;
+        tmpMat[mOff + 2] = -sinY * sxz;
+        tmpMat[mOff + 3] = 0;
+        tmpMat[mOff + 4] = 0;
+        tmpMat[mOff + 5] = sy;
+        tmpMat[mOff + 6] = 0;
+        tmpMat[mOff + 7] = 0;
+        tmpMat[mOff + 8] = sinY * sxz;
+        tmpMat[mOff + 9] = 0;
+        tmpMat[mOff + 10] = cosY * sxz;
+        tmpMat[mOff + 11] = 0;
+        tmpMat[mOff + 12] = px;
+        tmpMat[mOff + 13] = py - 0.03;
+        tmpMat[mOff + 14] = pz;
+        tmpMat[mOff + 15] = 1;
 
+        const cOff = count * 3;
         const tone = 0.78 + r2 * 0.3;
         if (swamp > 0.35) {
-          colArr[count * 3] = tone * 1.04;
-          colArr[count * 3 + 1] = tone * 0.88;
-          colArr[count * 3 + 2] = tone * 0.52;
+          tmpCol[cOff] = tone * 1.04;
+          tmpCol[cOff + 1] = tone * 0.88;
+          tmpCol[cOff + 2] = tone * 0.52;
         } else {
-          colArr[count * 3] = tone * (0.82 + r1 * 0.16);
-          colArr[count * 3 + 1] = tone * (0.94 + r3 * 0.14);
-          colArr[count * 3 + 2] = tone * 0.66;
+          tmpCol[cOff] = tone * (0.82 + r1 * 0.16);
+          tmpCol[cOff + 1] = tone * (0.94 + r3 * 0.14);
+          tmpCol[cOff + 2] = tone * 0.66;
         }
         count++;
       }
-      if (count >= GRASS_BLADE_CAP) break;
     }
 
+    if (count === 0) return EMPTY_SLAB;
+    return {
+      count,
+      matrices: tmpMat.slice(0, count * 16),
+      colors: tmpCol.slice(0, count * 3),
+    };
+  }
+
+  /**
+   * Assembles individual 3D grass blades around the camera from LRU-cached 16x16m tiles.
+   * Zero work while moving inside a tile, and budgeted incremental baking (<= 2 tiles/frame)
+   * when crossing into new territory so grass updates never stall the main thread.
+   */
+  private updateGrassCarpet(camX: number, camZ: number, bakeBudget = 2): void {
+    const ptx = Math.floor(camX / GRASS_TILE_SIZE);
+    const ptz = Math.floor(camZ / GRASS_TILE_SIZE);
+    const tileMoved = ptx !== this.lastGrassTileX || ptz !== this.lastGrassTileZ;
+    if (!tileMoved && !this.grassHasPendingTiles) return;
+
+    this.lastGrassTileX = ptx;
+    this.lastGrassTileZ = ptz;
+
+    let bakedThisCall = 0;
+    let missingTiles = 0;
+    const matArr = this.grassBladeMesh.instanceMatrix.array as Float32Array;
+    const colArr = this.grassBladeMesh.instanceColor!.array as Float32Array;
+    let count = 0;
+
+    // Visit inner tiles first so nearby grass around the player's feet is always guaranteed immediately
+    for (let ring = 0; ring <= GRASS_TILE_RADIUS; ring++) {
+      for (let dz = -ring; dz <= ring; dz++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
+          // Skip the 4 extreme corners of the 5x5 grid to keep a rounded ~36m carpet radius
+          if (Math.abs(dx) === GRASS_TILE_RADIUS && Math.abs(dz) === GRASS_TILE_RADIUS) continue;
+
+          const tx = ptx + dx;
+          const tz = ptz + dz;
+          const key = `${tx}_${tz}`;
+          let slab = this.grassTileCache.get(key);
+          if (slab) {
+            // Refresh LRU recency
+            this.grassTileCache.delete(key);
+            this.grassTileCache.set(key, slab);
+          } else if (bakedThisCall < bakeBudget) {
+            slab = this.bakeGrassTile(tx, tz);
+            this.grassTileCache.set(key, slab);
+            bakedThisCall++;
+            if (this.grassTileCache.size > MAX_GRASS_TILE_CACHE) {
+              const oldest = this.grassTileCache.keys().next().value;
+              if (oldest !== undefined) this.grassTileCache.delete(oldest);
+            }
+          } else {
+            missingTiles++;
+            continue;
+          }
+
+          if (slab.count === 0) continue;
+          const avail = GRASS_BLADE_CAP - count;
+          if (avail <= 0) continue;
+          const take = slab.count <= avail ? slab.count : avail;
+          matArr.set(
+            take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16),
+            count * 16
+          );
+          colArr.set(
+            take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3),
+            count * 3
+          );
+          count += take;
+        }
+      }
+    }
+
+    this.grassHasPendingTiles = missingTiles > 0;
+    this.diagGrassRebuilds++;
     this.grassBladeMesh.count = count;
     this.grassBladeMesh.instanceMatrix.needsUpdate = true;
     this.grassBladeMesh.instanceColor!.needsUpdate = true;
@@ -2065,7 +2185,7 @@ export class WorldVegetationSystem {
         this.getOrBakeChunk(pcx + dx, pcz + dz);
       }
     }
-    this.updateGrassCarpet(x, z);
+    this.updateGrassCarpet(x, z, 25);
     void half;
   }
 
@@ -2220,6 +2340,9 @@ export class WorldVegetationSystem {
   }
 
   dispose(): void {
+    this.chunkCache.clear();
+    this.grassTileCache.clear();
+    this.colliderGrid.clear();
     for (const d of this.disposables) d.dispose();
   }
 }

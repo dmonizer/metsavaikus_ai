@@ -698,6 +698,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
     }
 
+    const nearbyInteractives: THREE.Object3D[] = [];
+
     function updateInteractionHover(): void {
       if (!propsCtx || phaseRef.current !== 'playing' || player.carrying) {
         if (hoveredObj !== null) {
@@ -708,10 +710,29 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return;
       }
 
-      raycaster.setFromCamera(_rayCenter, camera);
-      const hits = raycaster.intersectObjects(propsCtx.interactiveMeshes, true);
-      const nextHover =
-        hits.length > 0 ? (hits[0].object.userData.interactive as InteractiveEntry) : null;
+      nearbyInteractives.length = 0;
+      const camX = camera.position.x;
+      const camZ = camera.position.z;
+      const maxRangeSq = 6.2 * 6.2; // raycaster.far is 3.8m; extra margin covers wide doors/crates
+      const items = propsCtx.interactiveObjects;
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i];
+        if (entry.gathered || !entry.mesh.visible) continue;
+        const me = entry.mesh.matrixWorld.elements;
+        const dx = me[12] - camX;
+        const dz = me[14] - camZ;
+        if (dx * dx + dz * dz <= maxRangeSq) {
+          nearbyInteractives.push(entry.mesh);
+        }
+      }
+
+      let nextHover: InteractiveEntry | null = null;
+      if (nearbyInteractives.length > 0) {
+        raycaster.setFromCamera(_rayCenter, camera);
+        const hits = raycaster.intersectObjects(nearbyInteractives, true);
+        nextHover =
+          hits.length > 0 ? (hits[0].object.userData.interactive as InteractiveEntry) : null;
+      }
       hoveredObj = nextHover && !nextHover.gathered ? nextHover : null;
 
       const nextPrompt = hoveredObj

@@ -456,10 +456,12 @@ export class WeatherAndSkySystem {
     else if (weather === 'storm') targetFog += 0.015;
     fog.density = THREE.MathUtils.lerp(fog.density, targetFog, Math.min(1, dt * 1.4));
 
+    const overcast = weather === 'rain' || weather === 'storm';
     const weatherDim =
       weather === 'clear' ? 1.0 : weather === 'mist' ? 0.55 : weather === 'rain' ? 0.44 : 0.3;
     this.sunLight.intensity = THREE.MathUtils.lerp(0.08, 2.0 * weatherDim, dayFactor);
-    this.sunLight.castShadow = !this.isSoftwareGl && dayFactor > 0.06;
+    // Overcast rain/storm clouds diffuse sunlight; skip expensive 1024x1024 shadow pass in overcast & deep dusk
+    this.sunLight.castShadow = !this.isSoftwareGl && !overcast && dayFactor > 0.2;
     if (dayFactor < 0.15) {
       this.sunLight.color.setHex(0x6484b8);
     } else {
@@ -470,7 +472,6 @@ export class WeatherAndSkySystem {
     scene.environmentIntensity = THREE.MathUtils.lerp(0.05, 0.45 * weatherDim, dayFactor);
 
     // Stars & fireflies at dusk/night (hidden behind heavy rain/storm clouds to cut overdraw)
-    const overcast = weather === 'rain' || weather === 'storm';
     const starVis = overcast
       ? 0
       : THREE.MathUtils.clamp((1 - dayFactor * 2.1) * (weather === 'clear' ? 0.98 : 0.2), 0, 0.98);
