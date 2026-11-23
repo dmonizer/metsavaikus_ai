@@ -199,7 +199,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let dprStepIdx = 0;
     let currentDpr = dprSteps[0];
     let drsCheckTimer = 0;
+    let drsLowFpsStreak = 0;
     let drsHighFpsStreak = 0;
+    let lastDrsStepDownMs = -Infinity;
 
     // antialias: false eliminates 4x MSAA fillrate explosion & ANGLE blit-resolve compositor stalls
     const renderer = new THREE.WebGLRenderer({
@@ -245,8 +247,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       pmremGenerator.dispose();
     }
 
+    // Keep flashlight visible=true forever (intensity=0 when off) so NUM_SPOT_LIGHTS stays constant
+    // and toggling [L] never triggers a synchronous 1.7s shader recompile across the entire scene.
     const flashlight = new THREE.SpotLight(0xfff1cc, 0, 38, Math.PI / 5.5, 0.45, 1.4);
-    flashlight.visible = false;
+    flashlight.visible = true;
     flashlight.position.set(0, 0, 0);
     camera.add(flashlight);
     camera.add(flashlight.target);
@@ -537,7 +541,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       },
       toggleFlashlight: () => {
         flashlightOn = !flashlightOn;
-        flashlight.visible = flashlightOn;
         flashlight.intensity = flashlightOn ? 3.5 : 0;
         perfLogger.recordEvent(`flashlight->${flashlightOn ? 'on' : 'off'}`, performance.now());
         sound.playImpact(0.3);
@@ -946,10 +949,13 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       overlays: 'none',
       lowPowerGpu: isLowPowerGpu,
       programsDelta: 0,
+      drsMs: 0,
     };
     let lastFogCullDist = 225;
     let shadowUpdatesWindow = 0;
     let lastProgramCount = 0;
+    let programsDeltaWindow = 0;
+    let drsMsWindow = 0;
 
     function tick(): void {
       if (disposed) return;
@@ -1091,30 +1097,54 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
-        // Hysteresis-guarded discrete DRS using real wall-clock rawDt so low-FPS stalls trigger step-down immediately!
+        // Hysteresis-guarded discrete DRS. On Mesa/Intel integrated GPUs, resizing the WebGL drawing
+        // buffer flushes the GPU & reallocates the EGL swapchain (600-1700ms stall), so we require
+        // sustained low FPS before stepping down and enforce a 45s sticky cooldown before stepping back up.
         if (!isSoftwareGl && curPhase === 'playing') {
           drsCheckTimer += Math.min(0.5, rawDt);
-          const drsInterval = fpsEma < 22 ? 1.2 : 2.5;
+          const drsInterval = isLowPowerGpu ? 2.0 : fpsEma < 22 ? 1.2 : 2.5;
           if (drsCheckTimer >= drsInterval) {
             drsCheckTimer = 0;
-            if (fpsEma < 44 && dprStepIdx < dprSteps.length - 1) {
-              dprStepIdx++;
-              currentDpr = dprSteps[dprStepIdx];
+            const stepDownFps = isLowPowerGpu ? 26 : 44;
+            const requiredLowChecks = isLowPowerGpu ? 2 : 1;
+            const requiredHighChecks = isLowPowerGpu ? 3 : 2;
+            const stepUpCooldownMs = isLowPowerGpu ? 45_000 : 6_000;
+
+            if (fpsEma < stepDownFps && dprStepIdx < dprSteps.length - 1) {
+              drsLowFpsStreak++;
               drsHighFpsStreak = 0;
-              renderer.setPixelRatio(currentDpr);
-              weatherSky.setPixelRatio(currentDpr);
-              perfLogger.recordEvent(`drs->${currentDpr.toFixed(2)}x`, now);
-            } else if (fpsEma > 57 && dprStepIdx > 0) {
+              if (drsLowFpsStreak >= requiredLowChecks) {
+                dprStepIdx++;
+                currentDpr = dprSteps[dprStepIdx];
+                drsLowFpsStreak = 0;
+                lastDrsStepDownMs = now;
+                const td0 = performance.now();
+                renderer.setPixelRatio(currentDpr);
+                weatherSky.setPixelRatio(currentDpr);
+                const resizeMs = performance.now() - td0;
+                if (resizeMs > drsMsWindow) drsMsWindow = resizeMs;
+                perfLogger.recordEvent(`drs->${currentDpr.toFixed(2)}x`, now);
+              }
+            } else if (
+              fpsEma > 57 &&
+              dprStepIdx > 0 &&
+              now - lastDrsStepDownMs >= stepUpCooldownMs
+            ) {
+              drsLowFpsStreak = 0;
               drsHighFpsStreak++;
-              if (drsHighFpsStreak >= 2) {
+              if (drsHighFpsStreak >= requiredHighChecks) {
                 dprStepIdx--;
                 currentDpr = dprSteps[dprStepIdx];
                 drsHighFpsStreak = 0;
+                const td0 = performance.now();
                 renderer.setPixelRatio(currentDpr);
                 weatherSky.setPixelRatio(currentDpr);
+                const resizeMs = performance.now() - td0;
+                if (resizeMs > drsMsWindow) drsMsWindow = resizeMs;
                 perfLogger.recordEvent(`drs->${currentDpr.toFixed(2)}x`, now);
               }
             } else {
+              drsLowFpsStreak = 0;
               drsHighFpsStreak = 0;
             }
           }
@@ -1235,8 +1265,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfSample.geometries = renderer.info.memory.geometries;
           perfSample.textures = renderer.info.memory.textures;
           const curProgs = renderer.info.programs ? renderer.info.programs.length : 0;
-          perfSample.programsDelta = lastProgramCount > 0 ? Math.max(0, curProgs - lastProgramCount) : 0;
+          if (lastProgramCount > 0 && curProgs > lastProgramCount) {
+            programsDeltaWindow += curProgs - lastProgramCount;
+          }
           lastProgramCount = curProgs;
+          perfSample.programsDelta = programsDeltaWindow;
+          perfSample.drsMs = drsMsWindow;
           perfSample.programs = curProgs;
           perfSample.visibleChunks = chunkStats.visibleChunks;
           perfSample.lodCounts[0] = chunkStats.lod0;
@@ -1289,6 +1323,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             perfSample.foliageVisRebuilds = 0;
             perfSample.grassRebuilds = 0;
             shadowUpdatesWindow = 0;
+            programsDeltaWindow = 0;
+            drsMsWindow = 0;
           }
         }
 
@@ -1310,6 +1346,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfSample.foliageVisRebuilds = 0;
           perfSample.grassRebuilds = 0;
           shadowUpdatesWindow = 0;
+          programsDeltaWindow = 0;
+          drsMsWindow = 0;
         }
       }
 
@@ -1395,8 +1433,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (!isSoftwareGl) {
         weatherSky.setShaderCompilePreview(true);
+        vegetation.setShaderCompilePreview(true);
         renderer.compile(scene, camera);
+        vegetation.setShaderCompilePreview(false);
         weatherSky.setShaderCompilePreview(false);
+        lastProgramCount = renderer.info.programs ? renderer.info.programs.length : 0;
       }
 
       callbacksRef.current.onWorldReady({

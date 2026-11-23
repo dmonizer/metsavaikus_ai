@@ -2720,6 +2720,31 @@ export class WorldVegetationSystem {
     return this.appendSlabCulled(slab, primary, maxCap, frustumPlanes);
   }
 
+  /**
+   * Temporarily marks all instanced foliage layers visible during boot renderer.compile()
+   * so every bark, leaf, bog-pine, reed, and grass shader compiles once up front (0 mid-game stalls!).
+   */
+  setShaderCompilePreview(enabled: boolean): void {
+    const apply = (mesh: THREE.InstancedMesh) => {
+      if (enabled) {
+        mesh.userData._prevVis = mesh.visible;
+        mesh.userData._prevCount = mesh.count;
+        mesh.visible = true;
+        if (mesh.count === 0) mesh.count = 1;
+      } else {
+        mesh.visible = Boolean(mesh.userData._prevVis);
+        mesh.count = Number(mesh.userData._prevCount ?? 0);
+      }
+    };
+    for (let i = 0; i < this.primaryChunkMeshes.length; i++) {
+      apply(this.primaryChunkMeshes[i]);
+    }
+    for (let i = 0; i < this.pairedFollowers.length; i++) {
+      apply(this.pairedFollowers[i].follower);
+    }
+    apply(this.grassBladeMesh);
+  }
+
   prewarmAround(x: number, z: number): void {
     const half = Math.floor(ACTIVE_GRID / 2);
     const pcx = Math.floor(x / CHUNK_SIZE);
@@ -2808,8 +2833,10 @@ export class WorldVegetationSystem {
       this.primaryChunkMeshes[i].count = 0;
     }
 
-    const lod0Sq = 36 * 36;
-    const lod1Sq = 92 * 92;
+    const lod0Dist = this.isLowPowerGpu ? 28 : 36;
+    const lod1Dist = this.isLowPowerGpu ? 74 : 92;
+    const lod0Sq = lod0Dist * lod0Dist;
+    const lod1Sq = lod1Dist * lod1Dist;
     const fogCellSq = (fogDist + 16) * (fogDist + 16);
     const bogDistSq = Math.min(108, fogDist) * Math.min(108, fogDist);
     const bushDistSq = Math.min(80, fogDist) * Math.min(80, fogDist);

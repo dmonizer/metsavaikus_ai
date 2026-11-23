@@ -110,11 +110,12 @@ test('FPS EMA uses harmonic frame-time mean and resists stutter + catch-up infla
 });
 
 test('computeAdaptiveDprSteps enforces integrated GPU pixel budget while keeping discrete GPUs crisp', () => {
-  // Mesa Intel UHD 630 at 2155x1287@1.00x (2.77M px) should start ~0.64x (~1.15M px) and descend to 0.48x
+  // Mesa Intel UHD 630 at 2155x1287@1.00x (2.77M px) should start ~0.58x (~0.92M px) with minimal steps to 0.45x
   const uhdSteps = computeAdaptiveDprSteps(2155, 1287, 1, false, true);
-  assert.ok(uhdSteps[0] <= 0.66 && uhdSteps[0] >= 0.62, `Expected ~0.64x start DPR, got ${uhdSteps[0]}`);
+  assert.ok(uhdSteps[0] <= 0.6 && uhdSteps[0] >= 0.56, `Expected ~0.58x start DPR, got ${uhdSteps[0]}`);
   const startPixels = 2155 * uhdSteps[0] * (1287 * uhdSteps[0]);
-  assert.ok(startPixels <= 1_250_000, `Expected <=1.25M pixels, got ${Math.round(startPixels)}`);
+  assert.ok(startPixels <= 1_000_000, `Expected <=1.0M pixels, got ${Math.round(startPixels)}`);
+  assert.equal(uhdSteps.length, 2);
   assert.equal(uhdSteps[uhdSteps.length - 1], 0.45);
   for (let i = 1; i < uhdSteps.length; i++) {
     assert.ok(uhdSteps[i] < uhdSteps[i - 1], 'DPR steps must be strictly descending');
@@ -490,6 +491,18 @@ test('FpsDropLogger classifies GPU backpressure, thermal throttles, bog overlays
       })
     ),
     'SHADER_COMPILE_STALL'
+  );
+
+  assert.equal(
+    classifyBottleneck(
+      makePerfSample({
+        rawDtMs: 1700,
+        tickCpuMs: 1650,
+        renderMs: 42,
+        drsMs: 1580,
+      })
+    ),
+    'DRS_SWAPCHAIN_RESIZE_STALL'
   );
 
   const logger = new FpsDropLogger(0, { sink: () => {} });

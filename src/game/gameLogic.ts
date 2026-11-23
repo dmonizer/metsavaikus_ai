@@ -174,12 +174,26 @@ export function computeAdaptiveDprSteps(
   if (isSoftwareGl) return [1];
   const pixelsAt1x = Math.max(1, viewportW * viewportH);
   const hardMaxDpr = Math.min(deviceDpr || 1, isLowPowerGpu ? 0.9 : 1.15);
-  const pixelBudget = isLowPowerGpu ? 1_150_000 : 2_300_000;
+  const pixelBudget = isLowPowerGpu ? 920_000 : 2_300_000;
   const budgetDpr = Math.sqrt(pixelBudget / pixelsAt1x);
   const startDpr = Math.max(0.5, Math.min(hardMaxDpr, Math.round(budgetDpr * 100) / 100));
   const floorDpr = isLowPowerGpu ? 0.45 : 0.62;
 
   const steps: number[] = [startDpr];
+  if (isLowPowerGpu) {
+    // Keep step count minimal (2 steps on UHD/2K viewports) to avoid Mesa EGL swapchain resize stalls
+    if (startDpr > 0.74) {
+      const mid = Math.max(floorDpr, Math.round(startDpr * 0.74 * 100) / 100);
+      if (mid < startDpr - 0.04 && mid > floorDpr + 0.04) {
+        steps.push(mid);
+      }
+    }
+    if (steps[steps.length - 1] > floorDpr + 0.03) {
+      steps.push(floorDpr);
+    }
+    return steps;
+  }
+
   const multipliers = [0.85, 0.7, 0.58];
   for (const m of multipliers) {
     const candidate = Math.max(floorDpr, Math.round(startDpr * m * 100) / 100);

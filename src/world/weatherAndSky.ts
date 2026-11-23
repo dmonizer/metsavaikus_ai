@@ -117,40 +117,52 @@ function createAtmosphericSkyDome(): {
         vec3 col = mix(uHorizonColor, uMidSkyColor, smoothstep(0.0, 0.24, elev));
         col = mix(col, uZenithColor, smoothstep(0.18, 0.86, elev));
 
-        // Subtle warm horizon scattering band near sunrise/sunset
+        // Subtle warm horizon scattering band near sunrise/sunset (skipped cleanly at dark night)
         float sunCos = dot(dir, uSunDir);
-        float horizonBand = exp(-elev * 7.5);
-        float mieWide = pow(max(sunCos, 0.0), 4.0) * (0.22 + uGoldenFactor * 0.45) * (1.0 - uCloudCover * 0.65);
-        float mieTight = pow(max(sunCos, 0.0), 42.0) * 0.48 * (1.0 - uCloudCover * 0.82);
-        float sunDisk = smoothstep(0.9990, 0.99965, sunCos) * 2.1 * (1.0 - uCloudCover * 0.88) * smoothstep(-0.04, 0.05, uSunDir.y);
+        float dayOrGold = max(uDayFactor, uGoldenFactor * 0.7);
+        if (dayOrGold > 0.01) {
+          float horizonBand = exp(-elev * 7.5);
+          float mieWide = pow(max(sunCos, 0.0), 4.0) * (0.22 + uGoldenFactor * 0.45) * (1.0 - uCloudCover * 0.65);
+          float mieTight = pow(max(sunCos, 0.0), 42.0) * 0.48 * (1.0 - uCloudCover * 0.82);
+          float sunDisk = smoothstep(0.9990, 0.99965, sunCos) * 2.1 * (1.0 - uCloudCover * 0.88) * smoothstep(-0.04, 0.05, uSunDir.y);
+          col += uSunGlowColor * (mieWide * (0.45 + 0.55 * horizonBand) + mieTight + sunDisk) * dayOrGold;
+        }
 
-        col += uSunGlowColor * (mieWide * (0.45 + 0.55 * horizonBand) + mieTight + sunDisk) * max(uDayFactor, uGoldenFactor * 0.7);
-
-        // Soft moon disk & lunar halo opposite the sun at night
-        float moonCos = dot(dir, -uSunDir);
+        // Soft moon disk & lunar halo opposite the sun at clear night (skipped in daytime & heavy overcast)
         float nightVis = clamp(1.0 - uDayFactor * 1.6, 0.0, 1.0) * (1.0 - uCloudCover * 0.75);
-        float moonDisk = smoothstep(0.99925, 0.99965, moonCos) * 1.25 * nightVis;
-        float moonHalo = pow(max(moonCos, 0.0), 28.0) * 0.22 * nightVis;
-        col += vec3(0.76, 0.86, 1.0) * (moonDisk + moonHalo);
+        if (nightVis > 0.02) {
+          float moonCos = dot(dir, -uSunDir);
+          float moonDisk = smoothstep(0.99925, 0.99965, moonCos) * 1.25 * nightVis;
+          float moonHalo = pow(max(moonCos, 0.0), 28.0) * 0.22 * nightVis;
+          col += vec3(0.76, 0.86, 1.0) * (moonDisk + moonHalo);
+        }
 
-        // Projected planar Baltic cloud layer above horizon (fast 2+1 octave shading)
+        // Projected planar Baltic cloud layer above horizon (fast 1-octave overcast night path avoids 12-hash stall when looking up!)
         if (dir.y > 0.015) {
-          float planeT = 1.0 / (dir.y + 0.14);
-          vec2 cloudUv = dir.xz * planeT * 0.46 + vec2(uTime * 0.0055, uTime * 0.0022);
-          float cVal = cloudFbm(cloudUv);
-          float thresh = mix(0.55, 0.22, uCloudCover);
-          float density = smoothstep(thresh, thresh + 0.28, cVal);
-
-          // Single-tap light offset toward sun for volumetric sunlit cloud rims
-          vec2 sunOff = uSunDir.xz * 0.14;
-          float cLight = noise2(cloudUv + sunOff);
-          float litFactor = clamp(0.58 + (cVal - cLight) * 2.2 + max(sunCos, 0.0) * 0.38, 0.0, 1.0);
-          vec3 cloudCol = mix(uCloudDark, uCloudBright, litFactor);
-          cloudCol += uSunGlowColor * pow(max(sunCos, 0.0), 7.0) * 0.34 * (1.0 - density * 0.4) * max(uDayFactor, uGoldenFactor);
-
-          // Dissolve distant clouds smoothly into the horizon mist
           float horizFade = smoothstep(0.015, 0.19, dir.y);
-          col = mix(col, cloudCol, density * horizFade * (0.82 + uCloudCover * 0.16));
+          if (uDayFactor < 0.08 && uCloudCover > 0.72) {
+            float planeT = 1.0 / (dir.y + 0.14);
+            vec2 cloudUv = dir.xz * planeT * 0.42 + vec2(uTime * 0.0055, uTime * 0.0022);
+            float cVal = noise2(cloudUv);
+            vec3 cloudCol = mix(uCloudDark, uCloudBright, clamp(0.35 + cVal * 0.45, 0.0, 1.0));
+            col = mix(col, cloudCol, horizFade * 0.86);
+          } else {
+            float planeT = 1.0 / (dir.y + 0.14);
+            vec2 cloudUv = dir.xz * planeT * 0.46 + vec2(uTime * 0.0055, uTime * 0.0022);
+            float cVal = cloudFbm(cloudUv);
+            float thresh = mix(0.55, 0.22, uCloudCover);
+            float density = smoothstep(thresh, thresh + 0.28, cVal);
+
+            // Single-tap light offset toward sun for volumetric sunlit cloud rims
+            vec2 sunOff = uSunDir.xz * 0.14;
+            float cLight = noise2(cloudUv + sunOff);
+            float litFactor = clamp(0.58 + (cVal - cLight) * 2.2 + max(sunCos, 0.0) * 0.38, 0.0, 1.0);
+            vec3 cloudCol = mix(uCloudDark, uCloudBright, litFactor);
+            if (dayOrGold > 0.01) {
+              cloudCol += uSunGlowColor * pow(max(sunCos, 0.0), 7.0) * 0.34 * (1.0 - density * 0.4) * max(uDayFactor, uGoldenFactor);
+            }
+            col = mix(col, cloudCol, density * horizFade * (0.82 + uCloudCover * 0.16));
+          }
         }
 
         // Below-horizon mirror blends cleanly into fog color
@@ -485,10 +497,10 @@ function createRainStreakSystem(): {
         );
         vec3 worldCenter = uRainCenter + rel;
 
-        // Early vertex-stage frustum cull: collapse streaks behind camera or outside forward cone
+        // Early vertex-stage frustum + near-lens cull: prevents close overhead drops from projecting giant screen-filling quads when looking up!
         vec3 fromCam = worldCenter - cameraPosition;
         float fwdDot = dot(fromCam, uCamFwd);
-        if (fwdDot < 0.75) {
+        if (fwdDot < 1.35) {
           vFade = 0.0;
           gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
           return;
@@ -921,8 +933,8 @@ export class WeatherAndSkySystem {
     const rainVisible = curRainAlpha > 0.015;
     this.rain.mesh.visible = rainVisible;
     if (rainVisible) {
-      const stormCap = this.isLowPowerGpu ? 460 : this.rain.maxCount;
-      const rainCap = this.isLowPowerGpu ? 320 : 480;
+      const stormCap = this.isLowPowerGpu ? 360 : this.rain.maxCount;
+      const rainCap = this.isLowPowerGpu ? 240 : 480;
       this.rain.geometry.instanceCount = weather === 'storm' ? stormCap : rainCap;
       const rainU = this.rain.material.uniforms;
       rainU.uOpacity.value = curRainAlpha;
