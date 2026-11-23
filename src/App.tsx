@@ -185,7 +185,7 @@ export default function App() {
       <div
         ref={flashEl}
         aria-hidden="true"
-        className="fixed inset-0 pointer-events-none z-20 bg-white opacity-0 transition-opacity duration-75"
+        className="fixed inset-0 pointer-events-none z-20 bg-white opacity-0"
       />
 
       {/* Active Gameplay HUD */}

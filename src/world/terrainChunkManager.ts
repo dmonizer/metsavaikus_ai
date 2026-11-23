@@ -10,7 +10,7 @@ import {
 import { ComputeEngine } from './wasmCompute';
 
 const LOD_SEGS = [24, 12, 6] as const;
-const MAX_GEO_CACHE = 240;
+const MAX_GEO_CACHE = 420;
 
 function buildGridIndices(segs: number): Uint16Array {
   const dim = segs + 1;
@@ -140,13 +140,13 @@ export class TerrainChunkManager {
 
     this.geoCache.set(key, geo);
     if (this.geoCache.size > MAX_GEO_CACHE) {
-      const oldestKey = this.geoCache.keys().next().value;
-      if (oldestKey !== undefined) {
-        const oldGeo = this.geoCache.get(oldestKey);
-        this.geoCache.delete(oldestKey);
-        // Only dispose if not currently bound to an active mesh
+      for (const [oldKey, oldGeo] of this.geoCache) {
+        if (this.geoCache.size <= MAX_GEO_CACHE) break;
         const inUse = this.meshes.some((m) => m.geometry === oldGeo);
-        if (!inUse) oldGeo?.dispose();
+        if (!inUse) {
+          this.geoCache.delete(oldKey);
+          oldGeo.dispose();
+        }
       }
     }
     return geo;
@@ -180,28 +180,33 @@ export class TerrainChunkManager {
         slot.centerX = centerX;
         slot.centerZ = centerZ;
 
-        let minH = Infinity;
-        let maxH = -Infinity;
-        for (let sz = 0; sz <= 3; sz++) {
-          for (let sx = 0; sx <= 3; sx++) {
-            const h = getTerrainHeight(
-              minX + (sx / 3) * CHUNK_SIZE,
-              minZ + (sz / 3) * CHUNK_SIZE
-            );
-            if (h < minH) minH = h;
-            if (h > maxH) maxH = h;
-          }
-        }
-        const centerY = (minH + maxH) * 0.5;
-        const halfY = (maxH - minH) * 0.5 + 1.5;
-        const halfXZ = CHUNK_SIZE * 0.5;
-        const radius = outOfWorld ? 0.01 : Math.hypot(halfXZ, halfY, halfXZ);
-
         const sb = idx * 4;
-        this.chunkSpheres[sb] = centerX;
-        this.chunkSpheres[sb + 1] = outOfWorld ? 99999 : centerY;
-        this.chunkSpheres[sb + 2] = centerZ;
-        this.chunkSpheres[sb + 3] = radius;
+        if (outOfWorld) {
+          this.chunkSpheres[sb] = centerX;
+          this.chunkSpheres[sb + 1] = 99999;
+          this.chunkSpheres[sb + 2] = centerZ;
+          this.chunkSpheres[sb + 3] = 0.01;
+        } else {
+          let minH = Infinity;
+          let maxH = -Infinity;
+          for (let sz = 0; sz <= 2; sz++) {
+            for (let sx = 0; sx <= 2; sx++) {
+              const h = getTerrainHeight(
+                minX + (sx / 2) * CHUNK_SIZE,
+                minZ + (sz / 2) * CHUNK_SIZE
+              );
+              if (h < minH) minH = h;
+              if (h > maxH) maxH = h;
+            }
+          }
+          const centerY = (minH + maxH) * 0.5;
+          const halfY = (maxH - minH) * 0.5 + 1.8;
+          const halfXZ = CHUNK_SIZE * 0.5;
+          this.chunkSpheres[sb] = centerX;
+          this.chunkSpheres[sb + 1] = centerY;
+          this.chunkSpheres[sb + 2] = centerZ;
+          this.chunkSpheres[sb + 3] = Math.hypot(halfXZ, halfY, halfXZ);
+        }
         this.chunkLods[idx] = -1;
         idx++;
       }
@@ -252,14 +257,36 @@ export class TerrainChunkManager {
     let lod0 = 0;
     let lod1 = 0;
     let lod2 = 0;
+    let finalVis = vis;
+
+    const px = camera.position.x;
+    const pz = camera.position.z;
 
     for (let i = 0; i < CHUNK_COUNT; i++) {
-      const lod = this.chunkLods[i];
+      const sb = i * 4;
+      if (this.chunkSpheres[sb + 1] > 9000) {
+        this.meshes[i].visible = false;
+        this.chunkLods[i] = -1;
+        continue;
+      }
+
+      const dx = this.chunkSpheres[sb] - px;
+      const dz = this.chunkSpheres[sb + 2] - pz;
+      const nearPlayer = dx * dx + dz * dz < 48 * 48;
+
+      let lod = this.chunkLods[i];
+      if (nearPlayer) {
+        if (lod < 0) finalVis++;
+        lod = 0;
+        this.chunkLods[i] = 0;
+      }
+
       const mesh = this.meshes[i];
-      if (lod < 0 || this.chunkSpheres[i * 4 + 1] > 9000) {
+      if (lod < 0) {
         mesh.visible = false;
         continue;
       }
+
       mesh.visible = true;
       const typedLod = lod as 0 | 1 | 2;
       if (typedLod === 0) lod0++;
@@ -274,27 +301,10 @@ export class TerrainChunkManager {
     }
 
     if (stats) {
-      stats.visibleChunks = vis;
+      stats.visibleChunks = finalVis;
       stats.lod0 = lod0;
       stats.lod1 = lod1;
       stats.lod2 = lod2;
-    }
-
-    // Keep chunks immediately under the player visible at LOD 0
-    const px = camera.position.x;
-    const pz = camera.position.z;
-    for (let i = 0; i < CHUNK_COUNT; i++) {
-      const sb = i * 4;
-      if (this.chunkSpheres[sb + 1] > 9000) continue;
-      const dx = this.chunkSpheres[sb] - px;
-      const dz = this.chunkSpheres[sb + 2] - pz;
-      if (dx * dx + dz * dz < 48 * 48) {
-        const mesh = this.meshes[i];
-        mesh.visible = true;
-        const slot = this.activeSlots[i];
-        const g0 = this.getOrCreateLodGeo(slot.vcx, slot.vcz, 0);
-        if (mesh.geometry !== g0) mesh.geometry = g0;
-      }
     }
   }
 

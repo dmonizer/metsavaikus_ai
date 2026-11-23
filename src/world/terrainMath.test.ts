@@ -18,8 +18,10 @@ import {
   WORLD_SIZE,
   worldToVirtualChunk,
 } from './terrainMath';
+import * as THREE from 'three';
 import { generateWorldBlueprint } from './worldBlueprint';
 import { ComputeEngine } from './wasmCompute';
+import { TerrainChunkManager } from './terrainChunkManager';
 
 test('World constants scale to 1200x1200m procedural streaming', () => {
   assert.equal(WORLD_SIZE, 1200);
@@ -181,4 +183,36 @@ test('Dynamic biomes reflect procedural villages, bog depths, swamp islands, and
   const tf = getThicketFactor(380, -410);
   assert.ok(tf >= 0 && tf <= 1);
   assert.equal(getActiveBlueprint().seed, 2026);
+});
+
+test('TerrainChunkManager keeps active geometries valid and avoids eviction thrashing at map edge', async () => {
+  const engine = await ComputeEngine.create();
+  const dummyTex = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1);
+  const manager = new TerrainChunkManager(engine, dummyTex);
+  const cam = new THREE.PerspectiveCamera(72, 16 / 9, 0.12, 220);
+  cam.updateProjectionMatrix();
+  const stats = { visibleChunks: 0, lod0: 0, lod1: 0, lod2: 0 };
+
+  // Traverse from center (0, 0) out to map edge (585, 585) and back to force >420 cached geometries
+  const steps = 20;
+  for (let pass = 0; pass <= steps * 2; pass++) {
+    const t = pass <= steps ? pass / steps : 1 - (pass - steps) / steps;
+    const pos = t * 585;
+    cam.position.set(pos, getTerrainHeight(pos, pos) + 1.65, pos);
+    cam.lookAt(pos - 18, cam.position.y - 0.5, pos - 18);
+    cam.updateMatrixWorld();
+    manager.update(cam, stats);
+    assert.ok(stats.visibleChunks > 0, `Expected visible chunks at (${pos}, ${pos})`);
+  }
+
+  for (const child of manager.group.children) {
+    const mesh = child as THREE.Mesh;
+    if (mesh.visible) {
+      const posAttr = mesh.geometry.getAttribute('position');
+      assert.ok(posAttr && posAttr.count > 0, 'Visible terrain mesh must retain valid geometry');
+    }
+  }
+
+  manager.dispose();
+  dummyTex.dispose();
 });

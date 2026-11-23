@@ -990,7 +990,7 @@ const CAP_BOULDER = 260;
 const CAP_DEADFALL = 200;
 
 const GRASS_BLADE_CAP = 13500;
-const MAX_CHUNK_CACHE = 180;
+const MAX_CHUNK_CACHE = 450;
 const COLLIDER_CELL_SIZE = 8;
 
 interface BuildingRect {
@@ -1039,6 +1039,7 @@ export class WorldVegetationSystem {
   readonly windDirUniform = { value: new THREE.Vector2(0.86, 0.51) };
 
   private readonly chunkCache = new Map<string, ChunkBucketBaked>();
+  private readonly indexedColliderChunks = new Set<string>();
   private readonly colliderGrid = new Map<string, CircleCollider[]>();
   private readonly buildingRects: BuildingRect[];
   private readonly disposables: Array<{ dispose: () => void }> = [];
@@ -1509,7 +1510,10 @@ export class WorldVegetationSystem {
       colliders,
     };
 
-    this.indexChunkColliders(colliders);
+    if (!this.indexedColliderChunks.has(key)) {
+      this.indexedColliderChunks.add(key);
+      this.indexChunkColliders(colliders);
+    }
     this.chunkCache.set(key, baked);
     if (this.chunkCache.size > MAX_CHUNK_CACHE) {
       const oldestKey = this.chunkCache.keys().next().value;

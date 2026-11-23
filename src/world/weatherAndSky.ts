@@ -29,7 +29,7 @@ function createProceduralStarfield(): {
   material: THREE.ShaderMaterial;
   geometry: THREE.BufferGeometry;
 } {
-  const STAR_COUNT = 1600;
+  const STAR_COUNT = 950;
   const rand = seededRand(8842);
 
   const positions = new Float32Array(STAR_COUNT * 3);
@@ -78,9 +78,9 @@ function createProceduralStarfield(): {
 
     // Power-law stellar magnitude distribution: many dim, few bright
     const mag = Math.pow(rand(), 3.8);
-    const baseBright = inMilkyWay ? 0.16 + mag * 0.7 : 0.25 + mag * 0.95;
+    const baseBright = inMilkyWay ? 0.18 + mag * 0.72 : 0.28 + mag * 0.92;
     brightness[i] = Math.min(1.0, baseBright);
-    sizes[i] = (inMilkyWay ? 1.8 : 2.1) + mag * 6.2;
+    sizes[i] = (inMilkyWay ? 1.6 : 1.9) + mag * 4.4;
 
     const col = palette[Math.floor(Math.pow(rand(), 0.9) * palette.length)];
     colors[i * 3] = col.r;
@@ -137,21 +137,19 @@ function createProceduralStarfield(): {
 
       void main() {
         vec2 uv = gl_PointCoord - vec2(0.5);
-        float dist = length(uv);
-        if (dist > 0.5) discard;
+        float dist2 = dot(uv, uv);
+        if (dist2 > 0.25) discard;
         // Soft radial PSF core + subtle halo for bright stars (zero square pixels)
-        float core = exp(-dist * dist * 24.0);
-        float halo = exp(-dist * dist * 7.5) * 0.35 * vBright;
-        // Subtle 4-point diffraction spikes only on brightest magnitude stars
+        float core = exp(-dist2 * 24.0);
+        float halo = exp(-dist2 * 7.5) * 0.35 * vBright;
         float spike = 0.0;
-        if (vBright > 0.72) {
-          float sx = exp(-abs(uv.y) * 28.0) * exp(-abs(uv.x) * 8.0);
-          float sy = exp(-abs(uv.x) * 28.0) * exp(-abs(uv.y) * 8.0);
-          spike = (sx + sy) * 0.25 * (vBright - 0.72) * 3.5;
+        if (vBright > 0.74) {
+          float sx = exp(-abs(uv.y) * 26.0) * exp(-abs(uv.x) * 8.0);
+          float sy = exp(-abs(uv.x) * 26.0) * exp(-abs(uv.y) * 8.0);
+          spike = (sx + sy) * 0.24 * (vBright - 0.74) * 3.5;
         }
         float intensity = (core + halo + spike) * vAlpha * uOpacity;
-        if (intensity < 0.01) discard;
-        gl_FragColor = vec4(vColor * (1.0 + core * 0.5), clamp(intensity, 0.0, 1.0));
+        gl_FragColor = vec4(vColor * intensity * (1.0 + core * 0.5), intensity);
       }
     `,
     transparent: true,
@@ -170,7 +168,7 @@ function createRainStreakSystem(): {
   material: THREE.ShaderMaterial;
   geometry: THREE.InstancedBufferGeometry;
 } {
-  const RAIN_COUNT = 5200;
+  const RAIN_COUNT = 1500;
   const rand = seededRand(4099);
 
   // Unit quad [-0.5..0.5, 0..1] per streak instance
@@ -185,13 +183,13 @@ function createRainStreakSystem(): {
   const scales = new Float32Array(RAIN_COUNT * 3);
 
   for (let i = 0; i < RAIN_COUNT; i++) {
-    seeds[i * 4] = rand() * 38;
-    seeds[i * 4 + 1] = rand() * 22;
-    seeds[i * 4 + 2] = rand() * 38;
+    seeds[i * 4] = rand() * 22;
+    seeds[i * 4 + 1] = rand() * 16;
+    seeds[i * 4 + 2] = rand() * 22;
     seeds[i * 4 + 3] = 0.82 + rand() * 0.45;
 
-    scales[i * 3] = 0.022 + rand() * 0.018;   // slim crisp droplet streak width
-    scales[i * 3 + 1] = 0.65 + rand() * 0.85;  // elongated streak length
+    scales[i * 3] = 0.02 + rand() * 0.016;    // slim crisp droplet streak width
+    scales[i * 3 + 1] = 0.62 + rand() * 0.78;  // elongated streak length
     scales[i * 3 + 2] = 0.55 + rand() * 0.45;  // alpha variation
   }
 
@@ -220,28 +218,32 @@ function createRainStreakSystem(): {
       void main() {
         vUv = uv;
         float speed = uFallSpeed * aSeed.w;
-        float boxXZ = 38.0;
-        float boxY = 22.0;
+        float boxXZ = 22.0;
+        float boxY = 16.0;
 
         vec3 rel = vec3(
           mod(aSeed.x + uTime * uWindX - uPlayerPos.x, boxXZ) - boxXZ * 0.5,
-          mod(aSeed.y - uTime * speed - uPlayerPos.y, boxY) - 4.0,
+          mod(aSeed.y - uTime * speed - uPlayerPos.y, boxY) - 3.0,
           mod(aSeed.z - uPlayerPos.z, boxXZ) - boxXZ * 0.5
         );
         vec3 worldCenter = uPlayerPos + rel;
 
-        // Streak direction matches actual wind-slanted raindrop velocity
+        // Streak direction matches actual wind-slanted raindrop velocity; guard overhead cross singularity
         vec3 streakDir = normalize(vec3(-uWindX, speed, 0.0));
-        vec3 toCam = normalize(cameraPosition - worldCenter);
-        vec3 side = normalize(cross(streakDir, toCam));
+        vec3 camDelta = cameraPosition - worldCenter;
+        float camDist = max(length(camDelta), 0.05);
+        vec3 toCam = camDelta / camDist;
+        vec3 rawSide = cross(streakDir, toCam);
+        float sideLen = length(rawSide);
+        vec3 side = sideLen > 0.001 ? rawSide / sideLen : vec3(1.0, 0.0, 0.0);
 
         vec3 vertexWorld = worldCenter
           + side * (position.x * aScale.x)
           + streakDir * (position.y * aScale.y);
 
         float dist = length(rel.xz);
-        float nearFade = smoothstep(0.6, 2.2, dist);
-        float farFade = 1.0 - smoothstep(16.0, 25.5, dist);
+        float nearFade = smoothstep(0.7, 2.0, dist);
+        float farFade = 1.0 - smoothstep(8.0, 12.2, dist);
         vFade = aScale.z * nearFade * farFade;
 
         gl_Position = projectionMatrix * viewMatrix * vec4(vertexWorld, 1.0);
@@ -254,11 +256,10 @@ function createRainStreakSystem(): {
       varying float vFade;
 
       void main() {
-        // Tapered rain streak profile: soft at top/bottom, crisp bright center
         float taperY = sin(vUv.y * 3.14159265);
-        float profileX = exp(-pow((vUv.x - 0.5) * 3.2, 2.0));
+        float dx = (vUv.x - 0.5) * 3.0;
+        float profileX = exp(-dx * dx);
         float alpha = taperY * profileX * vFade * uOpacity;
-        if (alpha < 0.01) discard;
         gl_FragColor = vec4(uColor, alpha);
       }
     `,
@@ -293,6 +294,7 @@ export class WeatherAndSkySystem {
   private lightningFlash = 0;
   private elapsed = 0;
 
+  private readonly isSoftwareGl: boolean;
   private readonly tmpDaySky = new THREE.Color();
   private readonly tmpGoldenSky = new THREE.Color(0xc98b63);
   private readonly tmpNightSky = new THREE.Color(0x091018);
@@ -301,6 +303,7 @@ export class WeatherAndSkySystem {
   private readonly tmpSunsetTint = new THREE.Color(0xff9c59);
 
   constructor(scene: THREE.Scene, isSoftwareGl: boolean, pixelRatio: number) {
+    this.isSoftwareGl = isSoftwareGl;
     scene.background = new THREE.Color(0x9cb5bd);
     scene.fog = new THREE.FogExp2(0x9cb5bd, 0.0085);
 
@@ -384,6 +387,12 @@ export class WeatherAndSkySystem {
     this.stars.material.uniforms.uPixelRatio.value = pr;
   }
 
+  setShaderCompilePreview(enabled: boolean): void {
+    this.stars.points.visible = enabled;
+    this.rain.mesh.visible = enabled;
+    this.fireflies.visible = enabled;
+  }
+
   update(
     dt: number,
     playerPos: THREE.Vector3,
@@ -446,6 +455,7 @@ export class WeatherAndSkySystem {
     const weatherDim =
       weather === 'clear' ? 1.0 : weather === 'mist' ? 0.55 : weather === 'rain' ? 0.44 : 0.3;
     this.sunLight.intensity = THREE.MathUtils.lerp(0.08, 2.0 * weatherDim, dayFactor);
+    this.sunLight.castShadow = !this.isSoftwareGl && dayFactor > 0.06;
     if (dayFactor < 0.15) {
       this.sunLight.color.setHex(0x6484b8);
     } else {
@@ -455,17 +465,16 @@ export class WeatherAndSkySystem {
     this.hemiLight.intensity = THREE.MathUtils.lerp(0.08, 0.72 * weatherDim, dayFactor);
     scene.environmentIntensity = THREE.MathUtils.lerp(0.05, 0.45 * weatherDim, dayFactor);
 
-    // Stars & fireflies at dusk/night
-    const starVis = THREE.MathUtils.clamp(
-      (1 - dayFactor * 2.1) * (weather === 'clear' ? 0.98 : 0.18),
-      0,
-      0.98
-    );
+    // Stars & fireflies at dusk/night (hidden behind heavy rain/storm clouds to cut overdraw)
+    const overcast = weather === 'rain' || weather === 'storm';
+    const starVis = overcast
+      ? 0
+      : THREE.MathUtils.clamp((1 - dayFactor * 2.1) * (weather === 'clear' ? 0.98 : 0.2), 0, 0.98);
     this.stars.material.uniforms.uOpacity.value = starVis;
     this.stars.material.uniforms.uTime.value = this.elapsed;
     this.stars.points.visible = starVis > 0.02;
 
-    this.ffMat.opacity = THREE.MathUtils.clamp(1 - dayFactor * 2.4, 0, 0.88);
+    this.ffMat.opacity = overcast ? 0 : THREE.MathUtils.clamp(1 - dayFactor * 2.4, 0, 0.88);
     this.fireflies.visible = this.ffMat.opacity > 0.02;
 
     const windProfile = getWeatherWindProfile(weather);

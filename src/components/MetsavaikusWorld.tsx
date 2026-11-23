@@ -159,6 +159,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     pmremGenerator.dispose();
 
     const flashlight = new THREE.SpotLight(0xfff1cc, 0, 38, Math.PI / 5.5, 0.45, 1.4);
+    flashlight.visible = false;
     flashlight.position.set(0, 0, 0);
     camera.add(flashlight);
     camera.add(flashlight.target);
@@ -411,6 +412,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       },
       toggleFlashlight: () => {
         flashlightOn = !flashlightOn;
+        flashlight.visible = flashlightOn;
         flashlight.intensity = flashlightOn ? 3.5 : 0;
         sound.playImpact(0.3);
       },
@@ -844,7 +846,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       renderer.domElement.dataset.wasmActive = String(engine.isWasmActive);
 
       if (!isSoftwareGl) {
+        weatherSky.setShaderCompilePreview(true);
         renderer.compile(scene, camera);
+        weatherSky.setShaderCompilePreview(false);
       }
 
       callbacksRef.current.onWorldReady({
