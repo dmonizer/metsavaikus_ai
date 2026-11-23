@@ -164,12 +164,12 @@ function applyWallAoColors(geo: THREE.BufferGeometry, baseY: number, topY: numbe
   const span = Math.max(0.2, topY - baseY);
   for (let i = 0; i < pos.count; i++) {
     const t = clamp((pos.getY(i) - baseY) / span, 0, 1);
-    const groundAo = 0.72 + 0.28 * Math.min(1, t / 0.26);
-    const eaveAo = 0.66 + 0.34 * Math.min(1, (1 - t) / 0.22);
+    const groundAo = 0.64 + 0.36 * Math.min(1, t / 0.28);
+    const eaveAo = 0.44 + 0.56 * Math.min(1, (1 - t) / 0.28);
     const v = Math.min(groundAo, eaveAo);
     cols[i * 3] = v;
     cols[i * 3 + 1] = v * 0.99;
-    cols[i * 3 + 2] = v * 0.97;
+    cols[i * 3 + 2] = v * 0.96;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
 }
@@ -299,9 +299,9 @@ export function buildArchitectureAndProps(
         float w2 = cos(p.x * 0.92 - p.y * 1.65 - t * 1.12);
         float w3 = sin((p.x - p.y) * 2.75 + t * 1.95) * 0.45;
         vec3 nrm = normalize(vec3(
-          (w1 * 0.022 + w3 * 0.016),
+          (w1 * 0.032 + w3 * 0.022),
           1.0,
-          (w2 * 0.022 - w3 * 0.016)
+          (w2 * 0.032 - w3 * 0.022)
         ));
 
         vec3 toCam = cameraPosition - vWorldPos;
@@ -309,25 +309,25 @@ export function buildArchitectureAndProps(
         vec3 viewDir = toCam / max(dist, 0.001);
 
         float ndv = clamp(dot(nrm, viewDir), 0.0, 1.0);
-        // Schlick Fresnel: dark tea-brown peat depth looking down, mirror sky at grazing angle
-        float fresnel = 0.05 + 0.91 * pow(1.0 - ndv, 4.0);
+        // Schlick Fresnel: rich dark humic peat looking down, crisp sky mirror at grazing angles
+        float fresnel = 0.06 + 0.78 * pow(1.0 - ndv, 3.6);
 
         vec3 reflDir = reflect(-viewDir, nrm);
         float reflElev = clamp(reflDir.y, 0.0, 1.0);
-        vec3 skyRefl = mix(uSkyHorizon, uSkyTop, smoothstep(0.0, 0.65, reflElev));
+        vec3 skyRefl = mix(uSkyHorizon * 0.94, uSkyTop, smoothstep(0.0, 0.58, reflElev));
         // Subtle pine-silhouette reflection darkening right along the horizon mirror
-        float treeMirror = smoothstep(0.02, 0.22, reflElev);
-        skyRefl *= mix(vec3(0.46, 0.54, 0.48), vec3(1.0), treeMirror);
+        float treeMirror = smoothstep(0.03, 0.24, reflElev);
+        skyRefl *= mix(vec3(0.36, 0.46, 0.40), vec3(1.0), treeMirror);
 
         // Dark humic Estonian bog water absorption
-        vec3 peatDeep = vec3(0.042, 0.058, 0.046);
+        vec3 peatDeep = vec3(0.022, 0.036, 0.034);
         vec3 col = mix(peatDeep, skyRefl, fresnel);
 
         // Solar specular glints across ripples
         vec3 halfVec = normalize(uSunDir + viewDir);
-        float spec = pow(max(dot(nrm, halfVec), 0.0), 140.0) * smoothstep(0.02, 0.22, uSunDir.y);
-        float broadSpec = pow(max(dot(nrm, halfVec), 0.0), 22.0) * 0.14 * smoothstep(0.02, 0.22, uSunDir.y);
-        col += uSunColor * (spec * 1.45 + broadSpec);
+        float spec = pow(max(dot(nrm, halfVec), 0.0), 150.0) * smoothstep(0.02, 0.22, uSunDir.y);
+        float broadSpec = pow(max(dot(nrm, halfVec), 0.0), 26.0) * 0.16 * smoothstep(0.02, 0.22, uSunDir.y);
+        col += uSunColor * (spec * 1.6 + broadSpec);
 
         // Exponential fog matching Three.js FogExp2
         float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
@@ -381,62 +381,64 @@ export function buildArchitectureAndProps(
   const weatheredLogMat = new THREE.MeshStandardMaterial({
     map: textures.logWallWeathered,
     normalMap: textures.logWallNormal,
-    normalScale: new THREE.Vector2(1.05, 1.05),
-    roughness: 0.91,
+    normalScale: new THREE.Vector2(1.9, 1.9),
+    roughness: 0.93,
     metalness: 0.0,
-    envMapIntensity: 0.48,
+    envMapIntensity: 0.24,
     vertexColors: true,
   });
   const warmLogMat = new THREE.MeshStandardMaterial({
     map: textures.logWallWarm,
     normalMap: textures.logWallNormal,
-    normalScale: new THREE.Vector2(1.05, 1.05),
-    roughness: 0.88,
+    normalScale: new THREE.Vector2(1.9, 1.9),
+    roughness: 0.9,
     metalness: 0.0,
-    envMapIntensity: 0.5,
+    envMapIntensity: 0.26,
     vertexColors: true,
   });
   const thatchMat = new THREE.MeshStandardMaterial({
     map: textures.thatchRoofMossy,
     normalMap: textures.thatchNormal,
-    normalScale: new THREE.Vector2(1.15, 1.15),
-    roughness: 0.96,
+    normalScale: new THREE.Vector2(2.2, 2.2),
+    color: 0xd8d2c4,
+    roughness: 0.97,
     metalness: 0.0,
-    envMapIntensity: 0.4,
+    envMapIntensity: 0.18,
   });
   const shingleMat = new THREE.MeshStandardMaterial({
     map: textures.roofShingle,
     normalMap: textures.shingleNormal,
-    normalScale: new THREE.Vector2(1.0, 1.0),
-    roughness: 0.9,
+    normalScale: new THREE.Vector2(2.0, 2.0),
+    color: 0xc8c2b8,
+    roughness: 0.92,
     metalness: 0.0,
-    envMapIntensity: 0.46,
+    envMapIntensity: 0.22,
   });
   const stonePlinthMat = new THREE.MeshStandardMaterial({
     map: textures.fieldstone,
     normalMap: textures.fieldstoneNormal,
-    normalScale: new THREE.Vector2(1.1, 1.1),
-    roughness: 0.88,
+    normalScale: new THREE.Vector2(2.2, 2.2),
+    roughness: 0.9,
     metalness: 0.02,
-    envMapIntensity: 0.55,
+    envMapIntensity: 0.3,
   });
   const timberTrimMat = new THREE.MeshStandardMaterial({
     map: textures.plankWood,
     normalMap: textures.plankNormal,
-    normalScale: new THREE.Vector2(0.85, 0.85),
-    color: 0x8f8576,
-    roughness: 0.91,
+    normalScale: new THREE.Vector2(1.5, 1.5),
+    color: 0x867c6e,
+    roughness: 0.92,
     metalness: 0.0,
-    envMapIntensity: 0.45,
+    envMapIntensity: 0.24,
   });
   const gableMat = new THREE.MeshStandardMaterial({
     map: textures.gableBoards,
     normalMap: textures.plankNormal,
-    normalScale: new THREE.Vector2(0.8, 0.8),
-    color: 0xcbc3b6,
-    roughness: 0.9,
+    normalScale: new THREE.Vector2(1.4, 1.4),
+    color: 0xbeb5a6,
+    roughness: 0.92,
     metalness: 0.0,
-    envMapIntensity: 0.48,
+    envMapIntensity: 0.24,
   });
   const darkInteriorMat = new THREE.MeshStandardMaterial({
     color: 0x1a130e,
@@ -1862,24 +1864,22 @@ export function buildArchitectureAndProps(
   // ---- HERO 2: Valge kärbseseen (Amanita virosa — Destroying Angel) ----
   // Tall slender shaggy-floccose stem + prominent papery cup-like volva sac + delicate ragged skirt ring
   const destroyingAngelStemGeo = (() => {
-    const g = prepNonIndexed(
-      new THREE.LatheGeometry(
-        [
-          new THREE.Vector2(0.0, 0.0),
-          new THREE.Vector2(0.046, 0.0),
-          new THREE.Vector2(0.056, 0.036), // swollen papery cup volva sac!
-          new THREE.Vector2(0.058, 0.076), // open papery volva rim
-          new THREE.Vector2(0.042, 0.072),
-          new THREE.Vector2(0.026, 0.056),
-          new THREE.Vector2(0.022, 0.175),
-          new THREE.Vector2(0.044, 0.168), // delicate ragged drooping skirt ring
-          new THREE.Vector2(0.038, 0.194),
-          new THREE.Vector2(0.018, 0.205),
-          new THREE.Vector2(0.017, 0.278),
-          new THREE.Vector2(0.0, 0.278),
-        ],
-        16
-      )
+    const g = new THREE.LatheGeometry(
+      [
+        new THREE.Vector2(0.0, 0.0),
+        new THREE.Vector2(0.046, 0.0),
+        new THREE.Vector2(0.056, 0.036), // swollen papery cup volva sac!
+        new THREE.Vector2(0.058, 0.076), // open papery volva rim
+        new THREE.Vector2(0.042, 0.072),
+        new THREE.Vector2(0.026, 0.056),
+        new THREE.Vector2(0.022, 0.175),
+        new THREE.Vector2(0.044, 0.168), // delicate ragged drooping skirt ring
+        new THREE.Vector2(0.038, 0.194),
+        new THREE.Vector2(0.018, 0.205),
+        new THREE.Vector2(0.017, 0.278),
+        new THREE.Vector2(0.0, 0.278),
+      ],
+      22
     );
     // Subtle organic shaggy floccose irregularity along the tall white stem
     const pos = g.attributes.position;
@@ -1889,7 +1889,7 @@ export function buildArchitectureAndProps(
         const px = pos.getX(i);
         const pz = pos.getZ(i);
         const ang = Math.atan2(pz, px);
-        const shag = 1.0 + Math.sin(py * 95.0 + ang * 3.0) * 0.06;
+        const shag = 1.0 + Math.sin(py * 95.0 + ang * 3.0) * 0.05;
         pos.setX(i, px * shag);
         pos.setZ(i, pz * shag);
       }
@@ -1909,7 +1909,7 @@ export function buildArchitectureAndProps(
       new THREE.Vector2(0.012, 0.368),
       new THREE.Vector2(0.0, 0.371),
     ];
-    const g = prepNonIndexed(new THREE.LatheGeometry(pts, 20));
+    const g = new THREE.LatheGeometry(pts, 28);
     const pos = g.attributes.position;
     const uvs = new Float32Array(pos.count * 2);
     for (let i = 0; i < pos.count; i++) {

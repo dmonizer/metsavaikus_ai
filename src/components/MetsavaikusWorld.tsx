@@ -171,19 +171,23 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let isTimeoutFrame = false;
 
     const isSoftwareGl = detectSoftwareGl();
-    const pixelRatio = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
+    const maxDpr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.35);
+    let currentDpr = maxDpr;
+    let drsCheckTimer = 0;
 
     const renderer = new THREE.WebGLRenderer({
       antialias: !isSoftwareGl,
       powerPreference: 'high-performance',
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(pixelRatio);
+    renderer.setPixelRatio(currentDpr);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
+    renderer.toneMappingExposure = 1.12;
     renderer.shadowMap.enabled = !isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = true;
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
@@ -218,7 +222,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     scene.add(camera);
 
     const sound = new SoundEngine();
-    const weatherSky = new WeatherAndSkySystem(scene, isSoftwareGl, pixelRatio);
+    const weatherSky = new WeatherAndSkySystem(scene, isSoftwareGl, currentDpr);
+    let lastShadowX = 9999;
+    let lastShadowZ = 9999;
+    let lastShadowSunY = -99;
+    let shadowFrameSkip = 0;
 
     let textures: WorldTextures | null = null;
     let vegetation: WorldVegetationSystem | null = null;
@@ -948,6 +956,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
 
         if (terrainMgr && vegetation) {
+          terrainMgr.setLightingState(skyInfo.dayFactor, elapsed);
           terrainMgr.update(camera, chunkStats);
           const tp3 = performance.now();
           terrainMs = tp3 - tp2;
@@ -965,6 +974,39 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           );
           const tp4 = performance.now();
           vegMs = tp4 - tp3;
+        }
+
+        // Smart on-demand shadow map updates: 0 GPU shadow passes while standing still, throttled to every 2nd frame while sprinting!
+        if (!isSoftwareGl && weatherSky.isSunCastingShadow) {
+          shadowFrameSkip++;
+          const movedSq =
+            (player.pos.x - lastShadowX) * (player.pos.x - lastShadowX) +
+            (player.pos.z - lastShadowZ) * (player.pos.z - lastShadowZ);
+          const sunMoved = Math.abs(skyInfo.sunDir.y - lastShadowSunY) > 0.004;
+          if ((movedSq > 0.14 || sunMoved) && shadowFrameSkip >= 2) {
+            renderer.shadowMap.needsUpdate = true;
+            lastShadowX = player.pos.x;
+            lastShadowZ = player.pos.z;
+            lastShadowSunY = skyInfo.sunDir.y;
+            shadowFrameSkip = 0;
+          }
+        }
+
+        // Smooth Automatic Dynamic Resolution Scaling (DRS) to keep real GPUs locked above 50-60 FPS
+        if (!isSoftwareGl && curPhase === 'playing') {
+          drsCheckTimer += dt;
+          if (drsCheckTimer >= 1.8) {
+            drsCheckTimer = 0;
+            if (fpsEma < 47 && currentDpr > 0.92) {
+              currentDpr = Math.max(0.92, +(currentDpr - 0.12).toFixed(2));
+              renderer.setPixelRatio(currentDpr);
+              weatherSky.setPixelRatio(currentDpr);
+            } else if (fpsEma > 57 && currentDpr < maxDpr) {
+              currentDpr = Math.min(maxDpr, +(currentDpr + 0.08).toFixed(2));
+              renderer.setPixelRatio(currentDpr);
+              weatherSky.setPixelRatio(currentDpr);
+            }
+          }
         }
 
         if (hudTimer >= 0.25) {
@@ -1174,10 +1216,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       terrainMgr = new TerrainChunkManager(
         engine,
         loadedTextures.groundDetail,
-        loadedTextures.groundNormal
+        loadedTextures.groundNormal,
+        {
+          forestTex: loadedTextures.terrainForestTex,
+          meadowTex: loadedTextures.terrainMeadowTex,
+          roadTex: loadedTextures.terrainRoadTex,
+        }
       );
       terrainMgr.prewarmAround(player.pos.x, player.pos.z);
       scene.add(terrainMgr.group);
+      renderer.shadowMap.needsUpdate = true;
 
       renderer.domElement.dataset.wasmActive = String(engine.isWasmActive);
 

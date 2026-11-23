@@ -11,6 +11,7 @@ import {
   getSwampFactor,
   getTerrainHeight,
   getThicketFactor,
+  isDryLandForPlanting,
   lerp,
   smoothNoise,
   SWAMP_WATER_Y,
@@ -349,26 +350,26 @@ function buildBirchGeometries() {
     new THREE.Color(0xffffff)
   );
 
-  // 34 airy photographic birch leaf-spray cards draped gracefully along crown limbs
+  // 18 airy wider photographic birch leaf-spray cards (47% less overdraw, richer silhouette!)
   const leafParts: THREE.BufferGeometry[] = [];
   const rand = seededRand(11);
-  const colInner = new THREE.Color(0x8aa264);
-  const colMid = new THREE.Color(0xb8cc82);
-  const colSun = new THREE.Color(0xe6f0a2);
+  const colInner = new THREE.Color(0x90a86a);
+  const colMid = new THREE.Color(0xc0d48a);
+  const colSun = new THREE.Color(0xeaf4aa);
 
-  for (let i = 0; i < 34; i++) {
-    const a = (i / 34) * Math.PI * 8 + rand() * 0.65;
-    const t = i / 34;
-    const r = (1 - t * 0.48) * (0.45 + rand() * 1.15);
-    const y = 4.7 + t * 4.3 + (rand() - 0.5) * 0.5;
-    const cardW = 1.55 + rand() * 0.72;
-    const cardL = 1.75 + rand() * 0.85;
-    const isOuter = r > 0.85 || y > 7.4;
+  for (let i = 0; i < 18; i++) {
+    const a = (i / 18) * Math.PI * 6 + rand() * 0.65;
+    const t = i / 18;
+    const r = (1 - t * 0.46) * (0.42 + rand() * 1.1);
+    const y = 4.6 + t * 4.3 + (rand() - 0.5) * 0.45;
+    const cardW = 1.95 + rand() * 0.78;
+    const cardL = 2.15 + rand() * 0.85;
+    const isOuter = r > 0.8 || y > 7.2;
     leafParts.push(
       makeArchedSprigCard(
         cardW,
         cardL,
-        0.38,
+        0.4,
         0.2 + Math.cos(a) * r,
         y,
         0.1 + Math.sin(a) * r,
@@ -383,7 +384,7 @@ function buildBirchGeometries() {
   }
   const crownLod0 = mergeGeometries(leafParts)!;
 
-  // LOD1: 14 broader crossed birch sprig sprays
+  // LOD1: 8 broader crossed birch sprig sprays
   const lod1Bot = new THREE.Vector3(0, -0.1, 0);
   const lod1Top = new THREE.Vector3(0.26, 8.5, 0.1);
   const l1b1 = lod1Bot.clone().lerp(lod1Top, 0.6);
@@ -400,15 +401,15 @@ function buildBirchGeometries() {
     new THREE.Color(0xffffff)
   );
   const crownLod1Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 4.5 + rand() * 0.5;
-    const t = i / 14;
-    const r = (1 - t * 0.4) * (0.4 + rand() * 0.85);
-    const y = 5.0 + t * 3.8;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 3.5 + rand() * 0.5;
+    const t = i / 8;
+    const r = (1 - t * 0.4) * (0.35 + rand() * 0.8);
+    const y = 4.9 + t * 3.8;
     crownLod1Parts.push(
       makeArchedSprigCard(
-        2.15 + rand() * 0.55,
-        2.35 + rand() * 0.6,
+        2.55 + rand() * 0.55,
+        2.75 + rand() * 0.6,
         0.35,
         0.18 + Math.cos(a) * r,
         y,
@@ -424,10 +425,10 @@ function buildBirchGeometries() {
   }
   const crownLod1 = mergeGeometries(crownLod1Parts)!;
 
-  // LOD2: 4 crossed photo-sprig silhouettes (natural far treeline, zero blocky octahedrons!)
+  // LOD2: 3 crossed photo-sprig silhouettes (crisp far treeline, minimal overdraw!)
   const crownLod2Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI;
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI;
     crownLod2Parts.push(
       makeArchedSprigCard(3.8, 5.2, 0.25, 0.16, 4.7, 0.08, 0.08, a, 0, colInner, colSun, 7.2)
     );
@@ -482,25 +483,25 @@ function buildPineGeometries() {
     new THREE.Color(0xe69f70)
   );
 
-  // 26 umbrella-tiered photographic Scots pine needle-bough sprays
+  // 16 umbrella-tiered photographic Scots pine needle-bough sprays (38% less overdraw!)
   const needleParts: THREE.BufferGeometry[] = [];
   const rand = seededRand(22);
   const pineInner = new THREE.Color(0x90aa7c);
   const pineMid = new THREE.Color(0xb4ce90);
   const pineSun = new THREE.Color(0xd6e8a6);
 
-  for (let i = 0; i < 26; i++) {
-    const a = (i / 26) * Math.PI * 8 + rand() * 0.5;
-    const t = i / 26;
-    const r = (1 - t * 0.52) * (0.45 + rand() * 1.35);
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 6 + rand() * 0.5;
+    const t = i / 16;
+    const r = (1 - t * 0.5) * (0.45 + rand() * 1.3);
     const y = 10.6 + t * 3.1 + (rand() - 0.5) * 0.4;
-    const w = 1.75 + rand() * 0.72;
-    const l = 1.65 + rand() * 0.65;
+    const w = 2.15 + rand() * 0.78;
+    const l = 2.0 + rand() * 0.7;
     needleParts.push(
       makeArchedSprigCard(
         w,
         l,
-        0.34,
+        0.36,
         Math.cos(a) * r,
         y,
         Math.sin(a) * r,
@@ -527,15 +528,15 @@ function buildPineGeometries() {
     new THREE.Color(0xe69f70)
   );
   const crownLod1Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 4 + rand() * 0.45;
-    const t = i / 12;
-    const r = (1 - t * 0.45) * (0.35 + rand() * 1.15);
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 3.5 + rand() * 0.45;
+    const t = i / 7;
+    const r = (1 - t * 0.45) * (0.35 + rand() * 1.1);
     const y = 10.8 + t * 2.8;
     crownLod1Parts.push(
       makeArchedSprigCard(
-        2.35 + rand() * 0.5,
-        2.15 + rand() * 0.45,
+        2.75 + rand() * 0.5,
+        2.5 + rand() * 0.45,
         0.3,
         Math.cos(a) * r,
         y,
@@ -554,10 +555,10 @@ function buildPineGeometries() {
   const trunkLod2 = makeBranchCyl(0.07, 0.22, 13.2, 4, 0, -0.1, 0, 0, 0, 0);
   applyHeightGradient(trunkLod2, 2.4, 8.5, new THREE.Color(0x504944), new THREE.Color(0xd28d60));
   const crownLod2Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 4; i++) {
-    const a = (i / 4) * Math.PI;
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI;
     crownLod2Parts.push(
-      makeArchedSprigCard(4.3, 3.6, 0.28, 0, 10.6, 0, 0.14, a, 0, pineInner, pineSun, 12.5)
+      makeArchedSprigCard(4.5, 3.8, 0.28, 0, 10.6, 0, 0.14, a, 0, pineInner, pineSun, 12.5)
     );
   }
   const crownLod2 = mergeGeometries(crownLod2Parts)!;
@@ -614,29 +615,28 @@ function buildSpruceGeometries() {
   const spTip = new THREE.Color(0xcce2a4);
 
   const tiers = [
-    { y: 2.1, r: 0.35, w: 1.75, l: 2.15, count: 7 },
-    { y: 3.45, r: 0.3, w: 1.6, l: 1.92, count: 6 },
-    { y: 4.8, r: 0.26, w: 1.44, l: 1.68, count: 6 },
-    { y: 6.1, r: 0.22, w: 1.24, l: 1.44, count: 5 },
-    { y: 7.35, r: 0.18, w: 1.04, l: 1.18, count: 5 },
-    { y: 8.55, r: 0.12, w: 0.82, l: 0.96, count: 4 },
-    { y: 9.7, r: 0.08, w: 0.58, l: 0.82, count: 3 },
+    { y: 2.15, r: 0.35, w: 2.1, l: 2.35, count: 5 },
+    { y: 3.75, r: 0.28, w: 1.85, l: 2.05, count: 4 },
+    { y: 5.35, r: 0.24, w: 1.6, l: 1.78, count: 4 },
+    { y: 6.9, r: 0.18, w: 1.32, l: 1.48, count: 4 },
+    { y: 8.4, r: 0.12, w: 0.98, l: 1.15, count: 3 },
+    { y: 9.75, r: 0.08, w: 0.68, l: 0.9, count: 2 },
   ];
 
-  // Drooping tiered Norway spruce photo-boughs fanning down & out (like real Estonian kuusik!)
+  // Drooping tiered Norway spruce photo-boughs (22 boughs -> 43% less overdraw!)
   for (let t = 0; t < tiers.length; t++) {
     const tier = tiers[t];
     for (let i = 0; i < tier.count; i++) {
-      const a = (i / tier.count) * Math.PI * 2 + t * 0.52 + (rand() - 0.5) * 0.22;
+      const a = (i / tier.count) * Math.PI * 2 + t * 0.58 + (rand() - 0.5) * 0.22;
       boughParts.push(
         makeArchedSprigCard(
-          tier.w * (0.9 + rand() * 0.2),
-          tier.l * (0.9 + rand() * 0.2),
-          0.32,
+          tier.w * (0.92 + rand() * 0.18),
+          tier.l * (0.92 + rand() * 0.18),
+          0.34,
           Math.sin(a) * tier.r,
           tier.y + (rand() - 0.5) * 0.24,
           Math.cos(a) * tier.r,
-          1.34 + (rand() - 0.5) * 0.22, // sweeping outward & downward
+          1.34 + (rand() - 0.5) * 0.22,
           a,
           (rand() - 0.5) * 0.22,
           i % 2 === 0 ? spInner : spMid,
@@ -646,23 +646,21 @@ function buildSpruceGeometries() {
       );
     }
   }
-  // Top spire shoots
-  for (let k = 0; k < 3; k++) {
-    const a = (k / 3) * Math.PI * 2;
+  for (let k = 0; k < 2; k++) {
+    const a = (k / 2) * Math.PI;
     boughParts.push(
-      makeArchedSprigCard(0.46, 0.92, 0.1, 0, 10.3, 0, 0.22, a, 0, spMid, spTip, 10.6)
+      makeArchedSprigCard(0.54, 0.98, 0.1, 0, 10.3, 0, 0.2, a, 0, spMid, spTip, 10.6)
     );
   }
   const crownLod0 = mergeGeometries(boughParts)!;
 
-  // LOD1: 15 tiered drooping photo-boughs (replaces old boxy cones!)
+  // LOD1: 9 tiered drooping photo-boughs
   const trunkLod1 = makeBranchCyl(0.04, 0.23, 11.0, 5, 0, -0.1, 0, 0, 0, 0);
   const c1Parts: THREE.BufferGeometry[] = [];
   const lod1Tiers = [
-    { y: 2.3, w: 2.2, l: 2.35, count: 4 },
-    { y: 4.3, w: 1.9, l: 2.05, count: 4 },
-    { y: 6.3, w: 1.5, l: 1.65, count: 4 },
-    { y: 8.3, w: 1.05, l: 1.25, count: 3 },
+    { y: 2.4, w: 2.55, l: 2.55, count: 3 },
+    { y: 5.0, w: 2.05, l: 2.15, count: 3 },
+    { y: 7.6, w: 1.45, l: 1.65, count: 3 },
   ];
   for (let t = 0; t < lod1Tiers.length; t++) {
     const tier = lod1Tiers[t];
@@ -675,13 +673,13 @@ function buildSpruceGeometries() {
   }
   const crownLod1 = mergeGeometries(c1Parts)!;
 
-  // LOD2: 6 crossed silhouette bough cards forming a realistic tapered spruce spire
+  // LOD2: 4 crossed silhouette bough cards forming a realistic tapered spruce spire
   const trunkLod2 = makeBranchCyl(0.06, 0.22, 4.0, 4, 0, -0.1, 0, 0, 0, 0);
   const c2Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI;
-    c2Parts.push(makeArchedSprigCard(4.1, 5.2, 0.18, 0, 1.8, 0, 0.08, a, 0, spInner, spMid, 6.0));
-    c2Parts.push(makeArchedSprigCard(2.7, 5.0, 0.12, 0, 6.1, 0, 0.06, a + 0.5, 0, spMid, spTip, 8.2));
+  for (let i = 0; i < 2; i++) {
+    const a = (i / 2) * Math.PI;
+    c2Parts.push(makeArchedSprigCard(4.3, 5.4, 0.18, 0, 1.8, 0, 0.08, a, 0, spInner, spMid, 6.0));
+    c2Parts.push(makeArchedSprigCard(2.9, 5.2, 0.12, 0, 6.1, 0, 0.06, a + 0.7, 0, spMid, spTip, 8.2));
   }
   const crownLod2 = mergeGeometries(c2Parts)!;
 
@@ -843,70 +841,58 @@ function buildJuniperBushGeo(): THREE.BufferGeometry {
 // ============================================================================
 
 /**
- * Lush 7-blade slim fanned Estonian meadow/forest grass tuft (14 opaque tris, zero alphaTest!).
- * Spreads gracefully across a 0.52m patch with olive/moss/warm-straw variation for dense natural cover.
+ * Photorealistic 3-plane crossed Estonian meadow/forest grass, sedge & clover clump (6 tris total!).
+ * Uses 512x512 photo-sampled grassClumpCard with upward-biased terrain-blended normals for seamless ground merging.
  */
 function buildGrassTuftGeo(): THREE.BufferGeometry {
-  const rand = seededRand(8801);
-  const bladeParts: THREE.BufferGeometry[] = [];
-  const rootCol = new THREE.Color(0x324820);
-  const midCol = new THREE.Color(0x587c32);
-  const tipGreen = new THREE.Color(0x8eb24a);
-  const tipStraw = new THREE.Color(0xb2a858);
+  const parts: THREE.BufferGeometry[] = [];
+  const rootCol = new THREE.Color(0x6c7a52);
+  const tipCol = new THREE.Color(0xeef4cc);
+  const hw = 0.42;
+  const h = 0.42;
 
-  const bladeSpecs = [
-    { ang: 0.15, ox: -0.2, oz: -0.14, w: 0.03, h: 0.4, lean: 0.19, straw: 0.15 },
-    { ang: 1.08, ox: 0.18, oz: -0.16, w: 0.028, h: 0.32, lean: 0.16, straw: 0.55 },
-    { ang: 2.02, ox: 0.24, oz: 0.08, w: 0.03, h: 0.28, lean: 0.15, straw: 0.1 },
-    { ang: 2.95, ox: 0.05, oz: 0.22, w: 0.028, h: 0.36, lean: 0.17, straw: 0.35 },
-    { ang: 3.92, ox: -0.21, oz: 0.15, w: 0.026, h: 0.24, lean: 0.13, straw: 0.2 },
-    { ang: 4.88, ox: -0.05, oz: -0.04, w: 0.032, h: 0.44, lean: 0.2, straw: 0.65 },
-    { ang: 5.75, ox: 0.07, oz: 0.04, w: 0.026, h: 0.22, lean: 0.11, straw: 0.05 },
-  ];
-
-  for (const spec of bladeSpecs) {
-    const a = spec.ang + (rand() - 0.5) * 0.42;
-    const h = spec.h;
-    const w = spec.w;
-    const lean = spec.lean;
-    // 2 triangles per slim curved blade = 14 tris per 7-blade tuft (22% fewer tris, 2.5x wider coverage!)
+  for (let p = 0; p < 3; p++) {
+    const ang = (p / 3) * Math.PI + (p === 1 ? 0.14 : p === 2 ? -0.12 : 0);
+    const tilt = 0.12;
     const positions = new Float32Array([
-      -w * 0.5, 0, 0,
-       w * 0.5, 0, 0,
-       0, h * 0.48, lean * 0.32,
-       0, h, lean,
+      -hw, -0.02, 0,
+       hw, -0.02, 0,
+       hw * 1.06, h, tilt,
+      -hw * 1.06, h, tilt,
+    ]);
+    const uvs = new Float32Array([
+      0.03, 0.0,
+      0.97, 0.0,
+      0.97, 0.98,
+      0.03, 0.98,
     ]);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    g.setIndex([0, 1, 2, 1, 3, 2]);
-    g.rotateY(a);
-    g.translate(spec.ox, 0, spec.oz);
-    const nonIdx = prepGeo(g);
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    g.rotateY(ang);
+    const nonIdx = g.toNonIndexed();
+    g.dispose();
 
     const pos = nonIdx.attributes.position;
-    const nrm = nonIdx.attributes.normal;
+    const nrms = new Float32Array(pos.count * 3);
     const cols = new Float32Array(pos.count * 3);
-    const outX = Math.sin(a) * 0.24;
-    const outZ = Math.cos(a) * 0.24;
-    const nLen = Math.hypot(outX, 0.97, outZ);
-    const bladeTip = tipGreen.clone().lerp(tipStraw, spec.straw);
-
     for (let i = 0; i < pos.count; i++) {
       const t = Math.min(1, Math.max(0, pos.getY(i) / h));
-      const c =
-        t < 0.48
-          ? rootCol.clone().lerp(midCol, t / 0.48)
-          : midCol.clone().lerp(bladeTip, (t - 0.48) / 0.52);
+      const c = rootCol.clone().lerp(tipCol, t);
       cols[i * 3] = c.r;
       cols[i * 3 + 1] = c.g;
       cols[i * 3 + 2] = c.b;
-      nrm.setXYZ(i, outX / nLen, 0.97 / nLen, outZ / nLen);
+      // Upward-biased terrain normal so clumps blend seamlessly into ground lighting from every angle
+      nrms[i * 3] = 0;
+      nrms[i * 3 + 1] = 1;
+      nrms[i * 3 + 2] = 0;
     }
+    nonIdx.setAttribute('normal', new THREE.BufferAttribute(nrms, 3));
     nonIdx.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-    bladeParts.push(nonIdx);
+    parts.push(nonIdx);
   }
-
-  return mergeGeometries(bladeParts)!;
+  return mergeGeometries(parts)!;
 }
 
 function buildBilberrySubShrubGeo(): THREE.BufferGeometry {
@@ -1124,13 +1110,14 @@ function addWindSway(
         `uniform vec3 uSssSunDir;\nuniform vec3 uSssSunColor;\nvarying vec3 vSssWorldPos;\n` +
         shader.fragmentShader.replace(
           '#include <opaque_fragment>',
-          `// View-dependent sunlit foliage translucency (backlit chartreuse-gold glow)
+          `// View-dependent sunlit foliage translucency (backlit chartreuse-gold glow + cool Baltic sky bounce)
           vec3 sssViewDir = normalize(cameraPosition - vSssWorldPos);
           float sssAlign = clamp(dot(sssViewDir, -uSssSunDir), 0.0, 1.0);
-          float sssDay = smoothstep(0.02, 0.28, uSssSunDir.y);
-          float sssBack = pow(sssAlign, 2.8) * ${sss.toFixed(3)} * sssDay;
-          float sssWrap = ${(sss * 0.24).toFixed(3)} * sssDay;
-          outgoingLight += diffuseColor.rgb * uSssSunColor * (sssBack + sssWrap) * vec3(1.12, 1.18, 0.72);
+          float sssDay = smoothstep(0.02, 0.26, uSssSunDir.y);
+          float sssBack = pow(sssAlign, 2.6) * ${sss.toFixed(3)} * sssDay;
+          float sssWrap = ${(sss * 0.26).toFixed(3)} * sssDay;
+          outgoingLight += diffuseColor.rgb * uSssSunColor * (sssBack + sssWrap) * vec3(1.14, 1.2, 0.72);
+          outgoingLight += diffuseColor.rgb * vec3(0.09, 0.13, 0.14) * sssDay;
           #include <opaque_fragment>`
         );
     }
@@ -1221,11 +1208,11 @@ const CAP_REED = 1200;
 const CAP_BOULDER = 260;
 const CAP_DEADFALL = 200;
 
-// Each instanced grass tuft renders 4 fanned blades (12 opaque tris) -> ~30,000 grass blades in 1 draw call!
-const GRASS_BLADE_CAP = 9600;
+// Each instanced photographic grass clump renders 3 crossed curved photo-cards (6 tris!)
+const GRASS_BLADE_CAP = 7200;
 const GRASS_TILE_SIZE = 16;
 const GRASS_TILE_RADIUS = 2; // 5x5 minus 4 far corners = 21 tiles (~34-42m carpet radius)
-const GRASS_BLADE_SPACING = 0.74;
+const GRASS_BLADE_SPACING = 0.68;
 const MAX_GRASS_TILE_CACHE = 180;
 const MAX_CHUNK_CACHE = 450;
 const COLLIDER_CELL_SIZE = 8;
@@ -1459,7 +1446,7 @@ export class WorldVegetationSystem {
       const y = getTerrainHeight(tx, tz);
 
       if (swamp > 0.35) {
-        if (y > SWAMP_WATER_Y + 0.06 && rand() < 0.5) {
+        if (isDryLandForPlanting(tx, tz, 0.24, 1.1) && rand() < 0.45) {
           const s = 0.65 + rand() * 0.6;
           bogPine.push({
             x: tx,
@@ -1475,6 +1462,9 @@ export class WorldVegetationSystem {
         }
         continue;
       }
+
+      // Never allow forest trees inside lakes, flooded basins, or submerged island rims
+      if (!isDryLandForPlanting(tx, tz, 0.34, 1.5)) continue;
 
       if (onIsland && isl.island!.hut && isl.dist < 6.8) continue;
 
@@ -1525,7 +1515,7 @@ export class WorldVegetationSystem {
       if (thicket < 0.45 && rand() > 0.55) continue;
 
       const by = getTerrainHeight(bx, bz);
-      if (by < SWAMP_WATER_Y + 0.05) continue;
+      if (!isDryLandForPlanting(bx, bz, 0.24, 0.95)) continue;
       const s = 0.78 + rand() * 0.65;
 
       const roll = rand();
@@ -1579,6 +1569,7 @@ export class WorldVegetationSystem {
         if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.7) continue;
         if (this.isInsideBuilding(tx, tz)) continue;
         if (getSwampFactor(tx, tz) > 0.36) continue;
+        if (!isDryLandForPlanting(tx, tz, 0.32, 1.35)) continue;
         const ty = getTerrainHeight(tx, tz);
         const s = 0.85 + rand() * 0.55;
         if (i % 2 === 0) {
@@ -1626,7 +1617,7 @@ export class WorldVegetationSystem {
       const patch = smoothNoise(gx * 0.09, gz * 0.09);
 
       if (swamp > 0.36) {
-        if (rand() < 0.65) {
+        if (gy <= SWAMP_WATER_Y + 0.35 && rand() < 0.65) {
           reed.push({
             x: gx,
             y: gy - 0.04,
@@ -1637,7 +1628,7 @@ export class WorldVegetationSystem {
             g: 0.72 + rand() * 0.18,
             b: 0.42 + rand() * 0.12,
           });
-        } else if (gy > SWAMP_WATER_Y + 0.04 && rand() < 0.22) {
+        } else if (gy > SWAMP_WATER_Y + 0.14 && rand() < 0.22) {
           mossHummock.push({
             x: gx,
             y: gy - 0.05,
@@ -1651,6 +1642,9 @@ export class WorldVegetationSystem {
         }
         continue;
       }
+
+      // Dry-land forest floor understory must sit cleanly above lake water level
+      if (gy < SWAMP_WATER_Y + 0.16) continue;
 
       if (patch > 0.62 && rand() < 0.48) {
         fern.push({
@@ -1697,6 +1691,7 @@ export class WorldVegetationSystem {
       const nearV = getDistanceToNearestVillage(dx, dz);
       if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.7) continue;
       if (getSwampFactor(dx, dz) > 0.32) continue;
+      if (!isDryLandForPlanting(dx, dz, 0.24, 1.15)) continue;
       const dy = getTerrainHeight(dx, dz);
       deadfall.push({
         x: dx,
@@ -1718,7 +1713,7 @@ export class WorldVegetationSystem {
       const nearV = getDistanceToNearestVillage(bx, bz);
       if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.68) continue;
       const by = getTerrainHeight(bx, bz);
-      if (by < SWAMP_WATER_Y + 0.1) continue;
+      if (by < SWAMP_WATER_Y + 0.18) continue;
       const s = 0.48 + rand() * 1.05;
       boulder.push({
         x: bx,
@@ -1772,13 +1767,14 @@ export class WorldVegetationSystem {
     mat: THREE.Material,
     maxCapacity: number,
     castShadow: boolean,
+    receiveShadow = false,
     registerInChunkMeshes = true
   ): THREE.InstancedMesh {
     const mesh = new THREE.InstancedMesh(geo, mat, maxCapacity);
     mesh.count = 0;
     mesh.frustumCulled = false;
     mesh.castShadow = castShadow;
-    mesh.receiveShadow = true;
+    mesh.receiveShadow = receiveShadow;
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const colors = new Float32Array(maxCapacity * 3);
     colors.fill(1);
@@ -1995,62 +1991,77 @@ export class WorldVegetationSystem {
 
     const shadows = !isSoftwareGl;
 
-    // Trees
-    this.birchTrunk0 = this.createInstanced(birch.trunkLod0, birchBarkMat, CAP_LOD0, shadows);
-    this.birchCrown0 = this.createInstanced(birch.crownLod0, birchLeafMat, CAP_LOD0, false);
-    this.birchTrunk1 = this.createInstanced(birch.trunkLod1, birchBarkMat, CAP_LOD1, false);
-    this.birchCrown1 = this.createInstanced(birch.crownLod1, birchLeafMat, CAP_LOD1, false);
-    this.birchTrunk2 = this.createInstanced(birch.trunkLod2, birchBarkMat, CAP_LOD2, false);
-    this.birchCrown2 = this.createInstanced(birch.crownLod2, birchLeafMat, CAP_LOD2, false);
+    // Lightweight Lambert bark materials for mid/far LOD1 & LOD2 trunks (zero IBL/normal-map GPU waste at 70-200m!)
+    const birchBarkFarMat = new THREE.MeshLambertMaterial({
+      map: textures.birchBark,
+      vertexColors: true,
+    });
+    const pineBarkFarMat = new THREE.MeshLambertMaterial({
+      map: textures.pineBark,
+      vertexColors: true,
+    });
+    const spruceBarkFarMat = new THREE.MeshLambertMaterial({
+      map: textures.spruceBark,
+    });
 
-    this.pineTrunk0 = this.createInstanced(pine.trunkLod0, pineBarkMat, CAP_LOD0, shadows);
-    this.pineCrown0 = this.createInstanced(pine.crownLod0, pineLeafMat, CAP_LOD0, false);
-    this.pineTrunk1 = this.createInstanced(pine.trunkLod1, pineBarkMat, CAP_LOD1, false);
-    this.pineCrown1 = this.createInstanced(pine.crownLod1, pineLeafMat, CAP_LOD1, false);
-    this.pineTrunk2 = this.createInstanced(pine.trunkLod2, pineBarkMat, CAP_LOD2, false);
-    this.pineCrown2 = this.createInstanced(pine.crownLod2, pineLeafMat, CAP_LOD2, false);
+    // Trees: ONLY close LOD0 trunks cast & receive shadows; all alpha-tested crowns & distant LODs skip heavy shadow sampling!
+    this.birchTrunk0 = this.createInstanced(birch.trunkLod0, birchBarkMat, CAP_LOD0, shadows, true);
+    this.birchCrown0 = this.createInstanced(birch.crownLod0, birchLeafMat, CAP_LOD0, false, false);
+    this.birchTrunk1 = this.createInstanced(birch.trunkLod1, birchBarkFarMat, CAP_LOD1, false, false);
+    this.birchCrown1 = this.createInstanced(birch.crownLod1, birchLeafMat, CAP_LOD1, false, false);
+    this.birchTrunk2 = this.createInstanced(birch.trunkLod2, birchBarkFarMat, CAP_LOD2, false, false);
+    this.birchCrown2 = this.createInstanced(birch.crownLod2, birchLeafMat, CAP_LOD2, false, false);
 
-    this.bogPineTrunk = this.createInstanced(bogPine.trunk, bogPineBarkMat, CAP_BOG_PINE, shadows);
-    this.bogPineCrown = this.createInstanced(bogPine.crown, bogPineLeafMat, CAP_BOG_PINE, false);
+    this.pineTrunk0 = this.createInstanced(pine.trunkLod0, pineBarkMat, CAP_LOD0, shadows, true);
+    this.pineCrown0 = this.createInstanced(pine.crownLod0, pineLeafMat, CAP_LOD0, false, false);
+    this.pineTrunk1 = this.createInstanced(pine.trunkLod1, pineBarkFarMat, CAP_LOD1, false, false);
+    this.pineCrown1 = this.createInstanced(pine.crownLod1, pineLeafMat, CAP_LOD1, false, false);
+    this.pineTrunk2 = this.createInstanced(pine.trunkLod2, pineBarkFarMat, CAP_LOD2, false, false);
+    this.pineCrown2 = this.createInstanced(pine.crownLod2, pineLeafMat, CAP_LOD2, false, false);
 
-    this.spruceTrunk0 = this.createInstanced(spruce.trunkLod0, spruceBarkMat, CAP_LOD0, shadows);
-    this.spruceCrown0 = this.createInstanced(spruce.crownLod0, spruceLeafMat, CAP_LOD0, false);
-    this.spruceTrunk1 = this.createInstanced(spruce.trunkLod1, spruceBarkMat, CAP_LOD1, false);
-    this.spruceCrown1 = this.createInstanced(spruce.crownLod1, spruceLeafMat, CAP_LOD1, false);
-    this.spruceTrunk2 = this.createInstanced(spruce.trunkLod2, spruceBarkMat, CAP_LOD2, false);
-    this.spruceCrown2 = this.createInstanced(spruce.crownLod2, spruceLeafMat, CAP_LOD2, false);
+    this.bogPineTrunk = this.createInstanced(bogPine.trunk, bogPineBarkMat, CAP_BOG_PINE, shadows, true);
+    this.bogPineCrown = this.createInstanced(bogPine.crown, bogPineLeafMat, CAP_BOG_PINE, false, false);
 
-    this.saplingMesh = this.createInstanced(saplingGeo, saplingMat, CAP_SAPLING, false);
+    this.spruceTrunk0 = this.createInstanced(spruce.trunkLod0, spruceBarkMat, CAP_LOD0, shadows, true);
+    this.spruceCrown0 = this.createInstanced(spruce.crownLod0, spruceLeafMat, CAP_LOD0, false, false);
+    this.spruceTrunk1 = this.createInstanced(spruce.trunkLod1, spruceBarkFarMat, CAP_LOD1, false, false);
+    this.spruceCrown1 = this.createInstanced(spruce.crownLod1, spruceLeafMat, CAP_LOD1, false, false);
+    this.spruceTrunk2 = this.createInstanced(spruce.trunkLod2, spruceBarkFarMat, CAP_LOD2, false, false);
+    this.spruceCrown2 = this.createInstanced(spruce.crownLod2, spruceLeafMat, CAP_LOD2, false, false);
+
+    this.saplingMesh = this.createInstanced(saplingGeo, saplingMat, CAP_SAPLING, false, false);
     const deadfallMat = new THREE.MeshStandardMaterial({
       map: textures.spruceBark,
       normalMap: textures.pineNormal,
-      normalScale: new THREE.Vector2(0.9, 0.9),
+      normalScale: new THREE.Vector2(0.95, 0.95),
       roughness: 0.95,
       metalness: 0.0,
-      envMapIntensity: 0.35,
+      envMapIntensity: 0.3,
     });
-    this.deadfallMesh = this.createInstanced(deadfallGeo, deadfallMat, CAP_DEADFALL, shadows);
+    this.deadfallMesh = this.createInstanced(deadfallGeo, deadfallMat, CAP_DEADFALL, false, true);
 
-    // Solid Woodland Bushes
-    this.hazelStemMesh = this.createInstanced(hazel.stems, hazelStemMat, CAP_HAZEL, shadows);
-    this.hazelLeafMesh = this.createInstanced(hazel.leaves, hazelLeafMat, CAP_HAZEL, false);
-    this.juniperMesh = this.createInstanced(juniperGeo, juniperMat, CAP_JUNIPER, false);
+    // Solid Woodland Bushes (skip shadow-map reads on overdrawn leaf sprays for massive GPU speedup!)
+    this.hazelStemMesh = this.createInstanced(hazel.stems, hazelStemMat, CAP_HAZEL, false, false);
+    this.hazelLeafMesh = this.createInstanced(hazel.leaves, hazelLeafMat, CAP_HAZEL, false, false);
+    this.juniperMesh = this.createInstanced(juniperGeo, juniperMat, CAP_JUNIPER, false, false);
 
-    // Continuous Multi-Blade 3D Grass Tuft Carpet (100% OPAQUE, 1 single draw call, backlit SSS!)
+    // Photorealistic Multi-Blade Grass, Sedge & Wild Clover Carpet (6 tris/clump, 1 draw call, backlit SSS!)
     const bladeGeo = buildGrassTuftGeo();
     const bladeMat = new THREE.MeshLambertMaterial({
+      map: textures.grassClumpCard,
+      alphaTest: 0.42,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
     addWindSway(bladeMat, windUniforms, {
       bendStart: 0.02,
-      bendSpan: 0.44,
+      bendSpan: 0.42,
       bendAmp: 0.14,
       leafAmp: 0.045,
       leafFreq: 5.0,
-      sssStrength: 0.42,
+      sssStrength: 0.44,
     });
-    this.grassBladeMesh = this.createInstanced(bladeGeo, bladeMat, GRASS_BLADE_CAP, false, false);
+    this.grassBladeMesh = this.createInstanced(bladeGeo, bladeMat, GRASS_BLADE_CAP, false, false, false);
 
     const fernGeo = buildPhotoFernRosetteGeo();
     const fernMat = new THREE.MeshLambertMaterial({
@@ -2067,7 +2078,7 @@ export class WorldVegetationSystem {
       leafFreq: 3.9,
       sssStrength: 0.52,
     });
-    this.fernMesh = this.createInstanced(fernGeo, fernMat, CAP_FERN, false);
+    this.fernMesh = this.createInstanced(fernGeo, fernMat, CAP_FERN, false, false);
 
     const shrubGeo = buildBilberrySubShrubGeo();
     const shrubMat = new THREE.MeshLambertMaterial({
@@ -2082,19 +2093,19 @@ export class WorldVegetationSystem {
       leafFreq: 4.2,
       sssStrength: 0.36,
     });
-    this.shrubMesh = this.createInstanced(shrubGeo, shrubMat, CAP_SHRUB, false);
+    this.shrubMesh = this.createInstanced(shrubGeo, shrubMat, CAP_SHRUB, false, false);
 
     const mossGeo = buildMossHummockGeo();
     const mossMat = new THREE.MeshStandardMaterial({
-      map: textures.groundDetail,
+      map: textures.terrainForestTex,
       normalMap: textures.groundNormal,
-      normalScale: new THREE.Vector2(0.75, 0.75),
-      roughness: 0.94,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      roughness: 0.95,
       metalness: 0.0,
-      envMapIntensity: 0.45,
+      envMapIntensity: 0.35,
       vertexColors: true,
     });
-    this.mossHummockMesh = this.createInstanced(mossGeo, mossMat, CAP_MOSS, false);
+    this.mossHummockMesh = this.createInstanced(mossGeo, mossMat, CAP_MOSS, false, true);
 
     const reedGeo = buildOpaqueReedClumpGeo();
     const reedMat = new THREE.MeshLambertMaterial({
@@ -2109,19 +2120,19 @@ export class WorldVegetationSystem {
       leafFreq: 4.1,
       sssStrength: 0.4,
     });
-    this.reedMesh = this.createInstanced(reedGeo, reedMat, CAP_REED, false);
+    this.reedMesh = this.createInstanced(reedGeo, reedMat, CAP_REED, false, false);
 
     const boulderGeo = new THREE.DodecahedronGeometry(0.65, 1);
     boulderGeo.scale(1.15, 0.72, 1.0);
     const boulderMat = new THREE.MeshStandardMaterial({
       map: textures.boulderGranite,
       normalMap: textures.fieldstoneNormal,
-      normalScale: new THREE.Vector2(0.95, 0.95),
+      normalScale: new THREE.Vector2(1.15, 1.15),
       roughness: 0.88,
       metalness: 0.02,
-      envMapIntensity: 0.5,
+      envMapIntensity: 0.4,
     });
-    this.boulderMesh = this.createInstanced(boulderGeo, boulderMat, CAP_BOULDER, shadows);
+    this.boulderMesh = this.createInstanced(boulderGeo, boulderMat, CAP_BOULDER, shadows, true);
   }
 
   private bakeGrassTile(tx: number, tz: number): BakedSlab {
@@ -2193,7 +2204,7 @@ export class WorldVegetationSystem {
         if (insideBuilding) continue;
 
         const py = getTerrainHeight(px, pz);
-        if (py < SWAMP_WATER_Y + 0.04) continue;
+        if (py < SWAMP_WATER_Y + 0.12) continue;
 
         const isl = getNearestSwampIsland(px, pz);
         const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);

@@ -11,6 +11,7 @@ import {
   getTerrainHeight,
   getThicketFactor,
   hash2i,
+  isDryLandForPlanting,
   setActiveWorldSeed,
   smoothNoise,
   SWAMP_WATER_Y,
@@ -305,3 +306,35 @@ test('Heading-up minimap projects North/East targets accurately and rasterizes w
   }
   assert.ok(uniqueColors.size > 15, 'Rasterized terrain map should contain varied biome shades');
 });
+
+test('isDryLandForPlanting strictly excludes open lake water and flooded rims while accepting dry hills & islands', () => {
+  const bp = setActiveWorldSeed(2026);
+  // Every swamp island peak must be plantable dry land
+  const isl0 = bp.swampIslands[0];
+  assert.equal(isDryLandForPlanting(isl0.x, isl0.z, 0.34, 1.5, bp), true);
+
+  // Sample across the bog basin: NO submerged point (h <= SWAMP_WATER_Y + 0.34) may ever pass
+  let submergedCount = 0;
+  let dryCount = 0;
+  for (let dx = -bp.bogRadius; dx <= bp.bogRadius; dx += 14) {
+    for (let dz = -bp.bogRadius; dz <= bp.bogRadius; dz += 14) {
+      const x = bp.bogCenterX + dx;
+      const z = bp.bogCenterZ + dz;
+      const h = getTerrainHeight(x, z, bp);
+      const plantable = isDryLandForPlanting(x, z, 0.34, 1.5, bp);
+      if (h <= SWAMP_WATER_Y + 0.34) {
+        submergedCount++;
+        assert.equal(
+          plantable,
+          false,
+          `Submerged/shoreline spot (${x.toFixed(1)}, ${z.toFixed(1)}, y=${h.toFixed(2)}) must never allow trees`
+        );
+      } else if (plantable) {
+        dryCount++;
+      }
+    }
+  }
+  assert.ok(submergedCount > 20, `Expected open bog water spots to test, found ${submergedCount}`);
+  assert.ok(dryCount > 5, `Expected dry bog islands/ridges to remain plantable, found ${dryCount}`);
+});
+

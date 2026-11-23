@@ -3,6 +3,11 @@ import {
   ACTIVE_GRID,
   CHUNK_COUNT,
   CHUNK_SIZE,
+  clamp,
+  distToRoadDetail,
+  getDistanceToNearestVillage,
+  getNearestSwampIsland,
+  getSwampFactor,
   getTerrainHeight,
   SWAMP_WATER_Y,
   WORLD_HALF,
@@ -64,6 +69,9 @@ export class TerrainChunkManager {
   private readonly planesFlat = new Float32Array(24);
   private readonly geoCache = new Map<string, THREE.BufferGeometry>();
 
+  private readonly sunDayUniform = { value: 1.0 };
+  private readonly timeUniform = { value: 0.0 };
+
   private centerVcx = 99999;
   private centerVcz = 99999;
   private diagGeoBuilds = 0;
@@ -73,64 +81,113 @@ export class TerrainChunkManager {
   constructor(
     compute: ComputeEngine,
     groundDetailTex: THREE.Texture,
-    groundNormalTex?: THREE.Texture
+    groundNormalTex?: THREE.Texture,
+    splatTextures?: {
+      forestTex: THREE.Texture;
+      meadowTex: THREE.Texture;
+      roadTex: THREE.Texture;
+    }
   ) {
     this.compute = compute;
     this.sharedIndices = LOD_SEGS.map(
       (s) => new THREE.BufferAttribute(buildGridIndices(s), 1)
     );
 
-    // Physically-based forest-floor terrain with Sobel normal relief,
-    // rotated dual-scale anti-tiling, organic dappled breakup, and wet peat shoreline sheen.
+    const forestTex = splatTextures?.forestTex ?? groundDetailTex;
+    const meadowTex = splatTextures?.meadowTex ?? groundDetailTex;
+    const roadTex = splatTextures?.roadTex ?? groundDetailTex;
+
+    // Physically-based 4-biome photographic splat terrain with world-space anti-tiling,
+    // organic road verges, wet peat shoreline sheen, and dappled forest-canopy sunlight!
     this.material = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      map: groundDetailTex,
+      map: forestTex,
       normalMap: groundNormalTex ?? null,
-      normalScale: new THREE.Vector2(0.82, 0.82),
-      roughness: 0.92,
+      normalScale: new THREE.Vector2(1.05, 1.05),
+      roughness: 0.94,
       metalness: 0.0,
-      envMapIntensity: 0.55,
+      envMapIntensity: 0.36,
     });
-    this.material.customProgramCacheKey = () => 'terrain_pbr_antitile_v2';
+    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_v4';
     this.material.onBeforeCompile = (shader) => {
+      shader.uniforms.uMeadowTex = { value: meadowTex };
+      shader.uniforms.uRoadTex = { value: roadTex };
+      shader.uniforms.uSunDay = this.sunDayUniform;
+      shader.uniforms.uTime = this.timeUniform;
+
       shader.vertexShader =
-        `varying vec3 vTerrainWorldPos;\n` +
+        `attribute vec4 aSplat;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
         shader.vertexShader.replace(
           '#include <worldpos_vertex>',
           `#include <worldpos_vertex>
-          vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+          vTerrainWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vSplat = aSplat;`
         );
 
       shader.fragmentShader =
-        `varying vec3 vTerrainWorldPos;\n` +
+        `uniform sampler2D uMeadowTex;\nuniform sampler2D uRoadTex;\nuniform float uSunDay;\nuniform float uTime;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
         shader.fragmentShader
+          .replace(
+            '#include <color_fragment>',
+            `// Use mild macro tint from vertex colors so real photographic splat textures shine at full fidelity
+            #if defined( USE_COLOR_ALPHA )
+              diffuseColor.rgb *= mix(vec3(1.0), vColor.rgb * 1.45, 0.24);
+              diffuseColor.a *= vColor.a;
+            #elif defined( USE_COLOR )
+              diffuseColor.rgb *= mix(vec3(1.0), vColor.rgb * 1.45, 0.24);
+            #endif`
+          )
           .replace(
             '#include <map_fragment>',
             `#ifdef USE_MAP
-              // World-space dual-scale rotated sampling eliminates visible chunk/tile repetition
-              vec2 uvFine = vTerrainWorldPos.xz * 0.22;
-              vec2 uvMacro = mat2(0.819, -0.574, 0.574, 0.819) * (vTerrainWorldPos.xz * 0.068);
-              vec4 texFine = texture2D(map, uvFine);
-              vec4 texMacro = texture2D(map, uvMacro);
-              vec4 sampledDiffuseColor = mix(texFine, texMacro, 0.36);
+              // World-space dual-scale rotated UVs eliminate visible chunk/tile repetition
+              vec2 uvFine = vTerrainWorldPos.xz * 0.24;
+              vec2 uvMacro = mat2(0.819, -0.574, 0.574, 0.819) * (vTerrainWorldPos.xz * 0.072);
 
-              // Subtle organic woodland floor variegation & dappled moss breakup
-              float macroVar = 0.92
-                + 0.08 * sin(vTerrainWorldPos.x * 0.19 + vTerrainWorldPos.z * 0.13)
-                + 0.06 * cos(vTerrainWorldPos.x * 0.43 - vTerrainWorldPos.z * 0.37);
-              sampledDiffuseColor.rgb *= macroVar;
+              vec3 colForest = mix(texture2D(map, uvFine).rgb, texture2D(map, uvMacro).rgb, 0.34);
+              vec3 colMeadow = mix(texture2D(uMeadowTex, uvFine * 1.12).rgb, texture2D(uMeadowTex, uvMacro * 1.05).rgb, 0.32);
+              vec3 colRoad = mix(texture2D(uRoadTex, uvFine * 1.18).rgb, texture2D(uRoadTex, uvMacro * 0.95).rgb, 0.28);
+              vec3 colBog = mix(colForest * vec3(0.46, 0.40, 0.24), vec3(0.085, 0.068, 0.038), 0.48);
+
+              // High-frequency organic noise breaks up road verges and meadow boundaries cleanly
+              float edgeNoise = sin(vTerrainWorldPos.x * 1.35 + vTerrainWorldPos.z * 0.95) * 0.14
+                              + cos(vTerrainWorldPos.x * 2.8 - vTerrainWorldPos.z * 2.1) * 0.08;
+              float wRoad = smoothstep(0.18, 0.72, vSplat.x + edgeNoise);
+              float wBog = smoothstep(0.12, 0.78, vSplat.w + edgeNoise * 0.7);
+              float wMeadow = clamp(vSplat.y + edgeNoise * 0.45, 0.0, 1.0);
+              float wForest = clamp(vSplat.z, 0.0, 1.0);
+
+              vec3 baseGround = mix(colForest, colMeadow, wMeadow / max(0.001, wMeadow + wForest));
+              baseGround = mix(baseGround, colBog, wBog);
+              baseGround = mix(baseGround, colRoad, wRoad);
+
+              // Subtle macro organic variation across the landscape
+              float macroVar = 0.91
+                + 0.07 * sin(vTerrainWorldPos.x * 0.16 + vTerrainWorldPos.z * 0.11)
+                + 0.06 * cos(vTerrainWorldPos.x * 0.39 - vTerrainWorldPos.z * 0.33);
+              baseGround *= macroVar;
+
+              // Photographic dappled sunlight filtering through Estonian pine & birch crowns onto forest floor!
+              vec2 dappleUv = vTerrainWorldPos.xz * 0.31 + vec2(sin(uTime * 0.45) * 0.08, cos(uTime * 0.38) * 0.06);
+              float canopyRaw = sin(dappleUv.x * 1.7 + sin(dappleUv.y * 1.3))
+                              * cos(dappleUv.y * 1.9 - cos(dappleUv.x * 1.1));
+              float dappleMask = smoothstep(-0.18, 0.55, canopyRaw);
+              float forestDappleAmt = wForest * (1.0 - wRoad * 0.75) * (1.0 - wBog * 0.8) * uSunDay;
+              vec3 dappleTint = mix(vec3(0.68, 0.74, 0.78), vec3(1.24, 1.18, 0.96), dappleMask);
+              baseGround *= mix(vec3(1.0), dappleTint, forestDappleAmt * 0.52);
 
               // Darken damp peat & muddy banks near the bog water table
-              float wetShore = 1.0 - smoothstep(${(SWAMP_WATER_Y - 0.04).toFixed(3)}, ${(SWAMP_WATER_Y + 0.42).toFixed(3)}, vTerrainWorldPos.y);
-              sampledDiffuseColor.rgb *= mix(1.0, 0.56, wetShore);
-              diffuseColor *= sampledDiffuseColor;
+              float wetShore = 1.0 - smoothstep(${(SWAMP_WATER_Y - 0.04).toFixed(3)}, ${(SWAMP_WATER_Y + 0.44).toFixed(3)}, vTerrainWorldPos.y);
+              baseGround *= mix(1.0, 0.42, wetShore);
+
+              diffuseColor.rgb *= baseGround;
             #endif`
           )
           .replace(
             '#include <roughnessmap_fragment>',
             `#include <roughnessmap_fragment>
             float wetGloss = 1.0 - smoothstep(${(SWAMP_WATER_Y - 0.04).toFixed(3)}, ${(SWAMP_WATER_Y + 0.34).toFixed(3)}, vTerrainWorldPos.y);
-            roughnessFactor = mix(roughnessFactor, 0.22, wetGloss);`
+            roughnessFactor = mix(roughnessFactor, 0.54, wetGloss);`
           );
     };
 
@@ -178,15 +235,40 @@ export class TerrainChunkManager {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const uvs = new Float32Array(vertCount * 2);
+    const splats = new Float32Array(vertCount * 4);
     const dim = segs + 1;
     for (let iz = 0; iz < dim; iz++) {
+      const wz = minZ + (iz / segs) * CHUNK_SIZE;
       for (let ix = 0; ix < dim; ix++) {
-        const idx = (iz * dim + ix) * 2;
-        uvs[idx] = (minX + (ix / segs) * CHUNK_SIZE) * 0.22;
-        uvs[idx + 1] = (minZ + (iz / segs) * CHUNK_SIZE) * 0.22;
+        const wx = minX + (ix / segs) * CHUNK_SIZE;
+        const vIdx = iz * dim + ix;
+        uvs[vIdx * 2] = wx * 0.24;
+        uvs[vIdx * 2 + 1] = wz * 0.24;
+
+        // Compute 4-biome splat weights: [road, meadow, forest, bog]
+        const roadInfo = distToRoadDetail(wx, wz);
+        const roadW = clamp(1 - (roadInfo.dist - 1.35) / 2.25, 0, 1);
+
+        const isl = getNearestSwampIsland(wx, wz);
+        const rawSwamp = getSwampFactor(wx, wz);
+        const bogW = isl.islandMask > 0.45 ? 0 : clamp((rawSwamp - 0.14) / 0.52, 0, 1);
+
+        const nearV = getDistanceToNearestVillage(wx, wz);
+        const villageClearing =
+          nearV.village !== null
+            ? clamp(1 - (nearV.dist - nearV.village.clearingRadius * 0.55) / (nearV.village.clearingRadius * 0.65), 0, 1)
+            : 0;
+        const meadowW = clamp(Math.max(villageClearing, (1 - bogW) * 0.18), 0, 1);
+        const forestW = clamp(1 - Math.max(villageClearing * 0.85, bogW), 0, 1);
+
+        splats[vIdx * 4] = roadW;
+        splats[vIdx * 4 + 1] = meadowW;
+        splats[vIdx * 4 + 2] = forestW;
+        splats[vIdx * 4 + 3] = bogW;
       }
     }
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.setAttribute('aSplat', new THREE.BufferAttribute(splats, 4));
     geo.setIndex(this.sharedIndices[lod]);
     geo.computeBoundingSphere();
 
@@ -277,6 +359,11 @@ export class TerrainChunkManager {
       if (d < 56) this.getOrCreateLodGeo(slot.vcx, slot.vcz, 0);
       else if (d < 96) this.getOrCreateLodGeo(slot.vcx, slot.vcz, 1);
     }
+  }
+
+  setLightingState(dayFactor: number, elapsed: number): void {
+    this.sunDayUniform.value = dayFactor;
+    this.timeUniform.value = elapsed;
   }
 
   update(camera: THREE.PerspectiveCamera, stats?: ChunkVisibilityStats): void {

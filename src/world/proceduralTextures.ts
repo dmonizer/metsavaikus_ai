@@ -233,6 +233,9 @@ export interface WorldTextures {
   plankNormal: THREE.CanvasTexture;
   groundDetail: THREE.CanvasTexture;
   groundNormal: THREE.CanvasTexture;
+  terrainForestTex: THREE.CanvasTexture;
+  terrainMeadowTex: THREE.CanvasTexture;
+  terrainRoadTex: THREE.CanvasTexture;
   boulderGranite: THREE.CanvasTexture;
   boleteCap: THREE.CanvasTexture;
   boleteNormal: THREE.CanvasTexture;
@@ -249,6 +252,7 @@ export interface WorldTextures {
   pineNeedleCard: THREE.CanvasTexture;
   spruceBoughCard: THREE.CanvasTexture;
   fernFrondCard: THREE.CanvasTexture;
+  grassClumpCard: THREE.CanvasTexture;
   bogMistTex: THREE.CanvasTexture;
   contactShadowTex: THREE.CanvasTexture;
   dispose: () => void;
@@ -476,10 +480,64 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     },
     { repeatX: 12, repeatY: 12, anisotropy: aniso }
   );
-  const groundNormal = makeSobelNormalTex(groundDetail.image as HTMLCanvasElement, 256, 256, 2.8, {
+  const groundNormal = makeSobelNormalTex(groundDetail.image as HTMLCanvasElement, 256, 256, 3.2, {
     repeatX: 12,
     repeatY: 12,
   });
+
+  // Full-color photographic biome splat maps (preserve authentic Baltic color, contrast & micro-litter!)
+  const terrainForestTex = makePhotoTex(imgForestFloor, 512, 512, {
+    repeatX: 1,
+    repeatY: 1,
+    anisotropy: aniso,
+    brightnessBoost: 1.06,
+    saturation: 1.08,
+  });
+  const terrainMeadowTex = makePhotoTex(imgMeadowGrass, 512, 512, {
+    repeatX: 1,
+    repeatY: 1,
+    anisotropy: aniso,
+    brightnessBoost: 1.04,
+    saturation: 1.06,
+  });
+  const terrainRoadTex = makeCanvasTex(
+    512,
+    512,
+    (ctx, w, h) => {
+      const rand = seededRand(477);
+      // Base real Estonian trail & crushed limestone gravel tone
+      ctx.drawImage(imgTrailNeedles, 0, 0, w, h);
+      ctx.fillStyle = 'rgba(136,128,114,0.44)';
+      ctx.fillRect(0, 0, w, h);
+      // Fine photographic limestone gravel pebbles & sand grains
+      for (let i = 0; i < 1800; i++) {
+        const px = rand() * w;
+        const py = rand() * h;
+        const r = 1.0 + rand() * 2.8;
+        const v = 98 + Math.floor(rand() * 92);
+        ctx.fillStyle =
+          rand() > 0.35
+            ? `rgba(${v},${v - 3},${v - 9},0.48)`
+            : `rgba(${Math.max(45, v - 50)},${Math.max(42, v - 54)},${Math.max(36, v - 58)},0.45)`;
+        ctx.beginPath();
+        ctx.ellipse(px, py, r * 1.25, r * 0.85, rand() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // Subtle scattered fallen pine needles on the road shoulder
+      for (let i = 0; i < 140; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const a = rand() * Math.PI * 2;
+        ctx.strokeStyle = 'rgba(110,76,42,0.38)';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * (8 + rand() * 12), y + Math.sin(a) * (8 + rand() * 12));
+        ctx.stroke();
+      }
+    },
+    { repeatX: 1, repeatY: 1, anisotropy: aniso }
+  );
 
   const boulderGranite = makeCanvasTex(
     256,
@@ -760,38 +818,38 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
         ctx.stroke();
       }
 
-      // 310 crisp triangular-ovate birch leaves with real photographic foliage fill & sunlit/shaded depth
-      for (let i = 0; i < 310; i++) {
+      // 255 crisp airy serrated birch leaves with sunlit chartreuse tips & sky-filtering micro-gaps
+      for (let i = 0; i < 255; i++) {
         const angle = rand() * Math.PI * 2;
-        const dist = Math.pow(rand(), 0.55) * 218;
+        const dist = Math.pow(rand(), 0.58) * 224;
         const cx = 256 + Math.cos(angle) * dist * 1.02;
-        const cy = 248 + Math.sin(angle) * dist * 0.94;
-        if (cx < 22 || cx > w - 22 || cy < 22 || cy > h - 24) continue;
-        const leafLen = 22 + rand() * 24;
-        const leafWid = leafLen * (0.68 + rand() * 0.22);
+        const cy = 246 + Math.sin(angle) * dist * 0.94;
+        if (cx < 20 || cx > w - 20 || cy < 20 || cy > h - 22) continue;
+        const leafLen = 19 + rand() * 21;
+        const leafWid = leafLen * (0.64 + rand() * 0.22);
         const rot = angle + (rand() - 0.5) * 0.95;
-        const outer = dist > 120;
+        const outer = dist > 112;
 
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(rot);
         ctx.fillStyle = leafPat;
         ctx.beginPath();
-        ctx.moveTo(0, -leafLen * 0.55);
-        ctx.quadraticCurveTo(leafWid * 0.86, -leafLen * 0.05, 0, leafLen * 0.56);
-        ctx.quadraticCurveTo(-leafWid * 0.86, -leafLen * 0.05, 0, -leafLen * 0.55);
+        ctx.moveTo(0, -leafLen * 0.56);
+        ctx.quadraticCurveTo(leafWid * 0.84, -leafLen * 0.04, 0, leafLen * 0.56);
+        ctx.quadraticCurveTo(-leafWid * 0.84, -leafLen * 0.04, 0, -leafLen * 0.56);
         ctx.fill();
 
-        // Depth AO: darker inner leaves, bright chartreuse-olive outer sunlit leaves
+        // Depth AO: rich mid-emerald inner leaves, bright sunlit golden-lime outer birch leaves
         ctx.fillStyle = outer
-          ? rand() > 0.4
-            ? 'rgba(148,188,62,0.28)'
-            : 'rgba(84,122,36,0.16)'
-          : 'rgba(22,46,16,0.38)';
+          ? rand() > 0.35
+            ? 'rgba(176,214,82,0.34)'
+            : 'rgba(104,148,48,0.2)'
+          : 'rgba(28,58,22,0.32)';
         ctx.fill();
 
         // Delicate central midrib highlight
-        ctx.strokeStyle = 'rgba(182,212,96,0.28)';
+        ctx.strokeStyle = 'rgba(202,232,118,0.32)';
         ctx.lineWidth = 1.0;
         ctx.beginPath();
         ctx.moveTo(0, -leafLen * 0.42);
@@ -800,7 +858,7 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
         ctx.restore();
       }
     },
-    { clamp: true, anisotropy: aniso, bleedRgb: [74, 112, 38] }
+    { clamp: true, anisotropy: aniso, bleedRgb: [86, 126, 48] }
   );
 
   // Dense Woodland Hazel / Alder Bush Spray (512x512)
@@ -875,34 +933,35 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
       ctx.lineTo(422, 260);
       ctx.stroke();
 
-      for (let c = 0; c < 115; c++) {
+      // Airy sunlit Scots pine needle rosettes (78 clusters instead of solid dark pancake!)
+      for (let c = 0; c < 78; c++) {
         const ang = rand() * Math.PI * 2;
-        const rad = Math.pow(rand(), 0.55) * 195;
+        const rad = Math.pow(rand(), 0.56) * 204;
         const cx = 256 + Math.cos(ang) * rad;
-        const cy = 228 + Math.sin(ang) * rad * 0.86;
+        const cy = 224 + Math.sin(ang) * rad * 0.86;
         if (cx < 32 || cx > w - 32 || cy < 32 || cy > h - 36) continue;
-        const inner = rad < 96;
-        for (let n = 0; n < 24; n++) {
-          const na = (n / 24) * Math.PI * 2 + rand() * 0.25;
-          const nLen = 28 + rand() * 24;
+        const inner = rad < 84;
+        for (let n = 0; n < 20; n++) {
+          const na = (n / 20) * Math.PI * 2 + rand() * 0.28;
+          const nLen = 24 + rand() * 22;
           ctx.strokeStyle = spPat;
-          ctx.lineWidth = 3.4;
+          ctx.lineWidth = 2.8;
           ctx.beginPath();
           ctx.moveTo(cx, cy);
           ctx.lineTo(cx + Math.cos(na) * nLen, cy + Math.sin(na) * nLen);
           ctx.stroke();
 
           ctx.strokeStyle = inner
-            ? 'rgba(14,32,14,0.44)'
-            : rand() > 0.5
-              ? 'rgba(92,132,52,0.26)'
-              : 'rgba(28,58,24,0.22)';
-          ctx.lineWidth = 2.0;
+            ? 'rgba(24,48,22,0.34)'
+            : rand() > 0.42
+              ? 'rgba(128,168,78,0.34)'
+              : 'rgba(56,94,42,0.22)';
+          ctx.lineWidth = 1.8;
           ctx.stroke();
         }
       }
     },
-    { clamp: true, anisotropy: aniso, bleedRgb: [42, 72, 32] }
+    { clamp: true, anisotropy: aniso, bleedRgb: [58, 92, 44] }
   );
 
   // Norway Spruce Feathered Bough (512x512 — dense drooping spruce branches matching kukeseened_metsas.jpg)
@@ -998,6 +1057,106 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     { clamp: true, anisotropy: aniso, bleedRgb: [68, 108, 36] }
   );
 
+  // Photorealistic Multi-Blade Estonian Meadow Grass, Forest Sedge & Wild Clover Clump (512x512)
+  const grassClumpCard = makeCanvasTex(
+    512,
+    512,
+    (ctx, w, h) => {
+      const rand = seededRand(317);
+      ctx.clearRect(0, 0, w, h);
+      const gPat = ctx.createPattern(grassPatternCanvas, 'repeat')!;
+
+      // 84 fine gracefully arched individual grass & sedge blades sprouting from a natural clump crown
+      for (let i = 0; i < 84; i++) {
+        const u = (i + rand()) / 84;
+        // Gaussian-like center clustering so outer blades arch out without forming a straight card wall
+        const centered = (u + rand()) * 0.5;
+        const bx = w * 0.18 + centered * (w * 0.64) + (rand() - 0.5) * 28;
+        const edgeFrac = Math.abs(bx - w * 0.5) / (w * 0.42);
+        const by = h - 2 - edgeFrac * edgeFrac * 26;
+        const bh = (155 + rand() * 295) * (1.0 - edgeFrac * 0.18);
+        const lean = (bx - w * 0.5) * 0.65 + (rand() - 0.5) * 145;
+        const bw = 3.8 + rand() * 4.6;
+        const isDryStraw = rand() < 0.14;
+        const isBrightTip = rand() < 0.48;
+
+        const cpx = bx + lean * 0.44;
+        const cpy = by - bh * 0.58;
+        const tx = Math.max(10, Math.min(w - 10, bx + lean));
+        const ty = Math.max(12, by - bh);
+
+        ctx.beginPath();
+        ctx.moveTo(bx - bw * 0.46, by);
+        ctx.quadraticCurveTo(cpx - bw * 0.22, cpy, tx, ty);
+        ctx.quadraticCurveTo(cpx + bw * 0.22, cpy, bx + bw * 0.46, by);
+        ctx.closePath();
+
+        // Fill with real meadow_grass photo texture, then shade root-to-tip depth
+        ctx.fillStyle = gPat;
+        ctx.fill();
+
+        const shade = ctx.createLinearGradient(bx, by, tx, ty);
+        if (isDryStraw) {
+          shade.addColorStop(0, 'rgba(34,40,18,0.52)');
+          shade.addColorStop(0.55, 'rgba(138,130,64,0.42)');
+          shade.addColorStop(1, 'rgba(196,178,94,0.58)');
+        } else if (isBrightTip) {
+          shade.addColorStop(0, 'rgba(26,46,18,0.48)');
+          shade.addColorStop(0.52, 'rgba(84,126,42,0.18)');
+          shade.addColorStop(1, 'rgba(164,198,74,0.44)');
+        } else {
+          shade.addColorStop(0, 'rgba(24,42,16,0.5)');
+          shade.addColorStop(0.6, 'rgba(52,88,28,0.22)');
+          shade.addColorStop(1, 'rgba(116,154,54,0.32)');
+        }
+        ctx.fillStyle = shade;
+        ctx.fill();
+      }
+
+      // Delicate woodland clover & bilberry leaves tucked near the clump base
+      for (let i = 0; i < 22; i++) {
+        const cx = 64 + rand() * (w - 128);
+        const cy = h - 38 - rand() * 140;
+        const r = 9 + rand() * 10;
+        for (let l = 0; l < 3; l++) {
+          const a = (l / 3) * Math.PI * 2 + rand() * 0.5;
+          ctx.fillStyle = rand() > 0.4 ? 'rgba(92,136,44,0.88)' : 'rgba(64,104,32,0.9)';
+          ctx.beginPath();
+          ctx.ellipse(
+            cx + Math.cos(a) * r * 0.75,
+            cy + Math.sin(a) * r * 0.6,
+            r * 0.65,
+            r * 0.48,
+            a,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
+      }
+
+      // A few wispy meadow grass seed heads
+      for (let i = 0; i < 7; i++) {
+        const sx = 90 + rand() * (w - 180);
+        const sy = 56 + rand() * 130;
+        ctx.strokeStyle = 'rgba(186,174,106,0.82)';
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.moveTo(sx, h - 10);
+        ctx.quadraticCurveTo(sx + (rand() - 0.5) * 44, (h + sy) * 0.5, sx + (rand() - 0.5) * 65, sy);
+        ctx.stroke();
+        const tipX = sx + (rand() - 0.5) * 42;
+        for (let k = 0; k < 6; k++) {
+          ctx.fillStyle = 'rgba(208,194,122,0.88)';
+          ctx.beginPath();
+          ctx.ellipse(tipX + (rand() - 0.5) * 14, sy + k * 7, 3.2, 5.5, (rand() - 0.5) * 0.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    },
+    { clamp: true, anisotropy: aniso, bleedRgb: [72, 108, 38] }
+  );
+
   // Bog Ground Mist Patch
   const bogMistTex = makeCanvasTex(
     256,
@@ -1048,6 +1207,9 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     plankNormal,
     groundDetail,
     groundNormal,
+    terrainForestTex,
+    terrainMeadowTex,
+    terrainRoadTex,
     boulderGranite,
     boleteCap,
     boleteNormal,
@@ -1064,6 +1226,7 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     pineNeedleCard,
     spruceBoughCard,
     fernFrondCard,
+    grassClumpCard,
     bogMistTex,
     contactShadowTex,
   ];
@@ -1088,6 +1251,9 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     plankNormal,
     groundDetail,
     groundNormal,
+    terrainForestTex,
+    terrainMeadowTex,
+    terrainRoadTex,
     boulderGranite,
     boleteCap,
     boleteNormal,
@@ -1104,6 +1270,7 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     pineNeedleCard,
     spruceBoughCard,
     fernFrondCard,
+    grassClumpCard,
     bogMistTex,
     contactShadowTex,
     dispose: () => {

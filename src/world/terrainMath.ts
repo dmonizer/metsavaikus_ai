@@ -221,6 +221,43 @@ export function getTerrainHeight(
   return evaluateTerrainFromNoise(x, z, nBase4, nDetail2, nBog, bp).y;
 }
 
+/**
+ * Verifies that (x, z) and its surrounding root/shoreline footing ring sit cleanly above
+ * SWAMP_WATER_Y so trees, shrubs, and deadfall never appear inside lakes, bog pools,
+ * or flooded shorelines.
+ */
+export function isDryLandForPlanting(
+  x: number,
+  z: number,
+  minClearance = 0.3,
+  footingRadius = 1.4,
+  bp: WorldBlueprint = activeBlueprint
+): boolean {
+  const centerMinY = SWAMP_WATER_Y + minClearance;
+  if (getTerrainHeight(x, z, bp) <= centerMinY) return false;
+  if (footingRadius > 0) {
+    const ringMinY = SWAMP_WATER_Y + Math.max(0.1, minClearance * 0.5);
+    if (
+      getTerrainHeight(x + footingRadius, z, bp) <= ringMinY ||
+      getTerrainHeight(x - footingRadius, z, bp) <= ringMinY ||
+      getTerrainHeight(x, z + footingRadius, bp) <= ringMinY ||
+      getTerrainHeight(x, z - footingRadius, bp) <= ringMinY
+    ) {
+      return false;
+    }
+    const diag = footingRadius * 0.72;
+    if (
+      getTerrainHeight(x + diag, z + diag, bp) <= ringMinY ||
+      getTerrainHeight(x - diag, z + diag, bp) <= ringMinY ||
+      getTerrainHeight(x + diag, z - diag, bp) <= ringMinY ||
+      getTerrainHeight(x - diag, z - diag, bp) <= ringMinY
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function getDistanceToNearestVillage(
   x: number,
   z: number,

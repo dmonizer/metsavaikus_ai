@@ -140,21 +140,21 @@ function createAtmosphericSkyDome(): {
         // Projected planar Baltic cloud layer above horizon
         if (dir.y > 0.015) {
           float planeT = 1.0 / (dir.y + 0.14);
-          vec2 cloudUv = dir.xz * planeT * 0.48 + vec2(uTime * 0.0055, uTime * 0.0022);
+          vec2 cloudUv = dir.xz * planeT * 0.46 + vec2(uTime * 0.0055, uTime * 0.0022);
           float cVal = cloudFbm(cloudUv);
-          float thresh = mix(0.64, 0.24, uCloudCover);
-          float density = smoothstep(thresh, thresh + 0.32, cVal);
+          float thresh = mix(0.55, 0.22, uCloudCover);
+          float density = smoothstep(thresh, thresh + 0.28, cVal);
 
           // Self-shadowing light offset toward sun for volumetric sunlit cloud rims
-          vec2 sunOff = uSunDir.xz * 0.12;
+          vec2 sunOff = uSunDir.xz * 0.14;
           float cLight = cloudFbm(cloudUv + sunOff);
-          float litFactor = clamp(0.55 + (cVal - cLight) * 2.2 + max(sunCos, 0.0) * 0.35, 0.0, 1.0);
+          float litFactor = clamp(0.58 + (cVal - cLight) * 2.5 + max(sunCos, 0.0) * 0.38, 0.0, 1.0);
           vec3 cloudCol = mix(uCloudDark, uCloudBright, litFactor);
-          cloudCol += uSunGlowColor * pow(max(sunCos, 0.0), 8.0) * 0.28 * (1.0 - density * 0.45) * max(uDayFactor, uGoldenFactor);
+          cloudCol += uSunGlowColor * pow(max(sunCos, 0.0), 7.0) * 0.34 * (1.0 - density * 0.4) * max(uDayFactor, uGoldenFactor);
 
           // Dissolve distant clouds smoothly into the horizon mist
-          float horizFade = smoothstep(0.015, 0.20, dir.y);
-          col = mix(col, cloudCol, density * horizFade * (0.72 + uCloudCover * 0.24));
+          float horizFade = smoothstep(0.015, 0.19, dir.y);
+          col = mix(col, cloudCol, density * horizFade * (0.82 + uCloudCover * 0.16));
         }
 
         // Below-horizon mirror blends cleanly into fog color
@@ -549,24 +549,24 @@ export class WeatherAndSkySystem {
   private elapsed = 0;
 
   private readonly isSoftwareGl: boolean;
-  private readonly shadowExtent = 46;
+  private readonly shadowExtent = 36;
   private readonly shadowTexelSize: number;
 
   // Reusable colors & vectors (zero per-frame GC allocation)
   private readonly sunDir = new THREE.Vector3(0.5, 0.55, 0.35).normalize();
   private readonly zenithDayClear = new THREE.Color(0x285d96);
   private readonly zenithDayOvercast = new THREE.Color(0x52626d);
-  private readonly zenithGolden = new THREE.Color(0x3a4f7c);
+  private readonly zenithGolden = new THREE.Color(0x2f5388);
   private readonly zenithNight = new THREE.Color(0x050912);
 
   private readonly midDayClear = new THREE.Color(0x6c9cc4);
   private readonly midDayOvercast = new THREE.Color(0x74828b);
-  private readonly midGolden = new THREE.Color(0xc58567);
+  private readonly midGolden = new THREE.Color(0xdf8f58);
   private readonly midNight = new THREE.Color(0x0c1422);
 
   private readonly horizDayClear = new THREE.Color(0xb9d1df);
   private readonly horizDayOvercast = new THREE.Color(0x909ca3);
-  private readonly horizGolden = new THREE.Color(0xebb07e);
+  private readonly horizGolden = new THREE.Color(0xf7be7c);
   private readonly horizNight = new THREE.Color(0x111a26);
 
   private readonly curZenith = new THREE.Color();
@@ -581,28 +581,28 @@ export class WeatherAndSkySystem {
 
   constructor(scene: THREE.Scene, isSoftwareGl: boolean, pixelRatio: number) {
     this.isSoftwareGl = isSoftwareGl;
-    const shadowRes = isSoftwareGl ? 1024 : 2048;
+    const shadowRes = isSoftwareGl ? 1024 : 1536;
     this.shadowTexelSize = (this.shadowExtent * 2) / shadowRes;
 
     scene.background = new THREE.Color(0xb9d1df);
     scene.fog = new THREE.FogExp2(0xb9d1df, 0.0068);
 
-    this.hemiLight = new THREE.HemisphereLight(0xbcd8ee, 0x38472b, 0.78);
+    this.hemiLight = new THREE.HemisphereLight(0xbcd8ee, 0x38472b, 0.72);
     this.group.add(this.hemiLight);
 
-    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 2.25);
+    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 3.0);
     this.sunLight.castShadow = !isSoftwareGl;
     this.sunLight.shadow.mapSize.set(shadowRes, shadowRes);
     this.sunLight.shadow.camera.near = 6;
-    this.sunLight.shadow.camera.far = 175;
+    this.sunLight.shadow.camera.far = 165;
     const dShadow = this.shadowExtent;
     this.sunLight.shadow.camera.left = -dShadow;
     this.sunLight.shadow.camera.right = dShadow;
     this.sunLight.shadow.camera.top = dShadow;
     this.sunLight.shadow.camera.bottom = -dShadow;
-    this.sunLight.shadow.bias = -0.00045;
-    this.sunLight.shadow.normalBias = 0.024;
-    this.sunLight.shadow.radius = 2.6;
+    this.sunLight.shadow.bias = -0.0005;
+    this.sunLight.shadow.normalBias = 0.026;
+    this.sunLight.shadow.radius = 2.0;
     this.group.add(this.sunLight);
     this.group.add(this.sunLight.target);
 
@@ -768,7 +768,7 @@ export class WeatherAndSkySystem {
     skyU.uCloudBright.value.copy(this.tmpCloudBright);
     skyU.uCloudDark.value.copy(this.tmpCloudDark);
     const targetCloud =
-      weather === 'clear' ? 0.34 : weather === 'mist' ? 0.64 : weather === 'rain' ? 0.86 : 0.96;
+      weather === 'clear' ? 0.46 : weather === 'mist' ? 0.68 : weather === 'rain' ? 0.88 : 0.96;
     skyU.uCloudCover.value = THREE.MathUtils.lerp(skyU.uCloudCover.value, targetCloud, Math.min(1, dt * 1.2));
     skyU.uDayFactor.value = dayFactor;
     skyU.uGoldenFactor.value = goldenFactor;
@@ -780,7 +780,7 @@ export class WeatherAndSkySystem {
     fog.color.copy(this.curHorizon);
 
     const swampHere = getSwampFactor(playerPos.x, playerPos.z);
-    let targetFog = 0.0046 + swampHere * 0.0095;
+    let targetFog = 0.0052 + swampHere * 0.0095;
     if (weather === 'mist') targetFog += 0.0135;
     else if (weather === 'rain') targetFog += 0.0085;
     else if (weather === 'storm') targetFog += 0.014;
@@ -788,8 +788,8 @@ export class WeatherAndSkySystem {
 
     const overcast = weather === 'rain' || weather === 'storm';
     const weatherDim =
-      weather === 'clear' ? 1.0 : weather === 'mist' ? 0.62 : weather === 'rain' ? 0.45 : 0.32;
-    this.sunLight.intensity = THREE.MathUtils.lerp(0.1, 2.35 * weatherDim, dayFactor);
+      weather === 'clear' ? 1.0 : weather === 'mist' ? 0.64 : weather === 'rain' ? 0.45 : 0.32;
+    this.sunLight.intensity = THREE.MathUtils.lerp(0.12, 3.15 * weatherDim, dayFactor);
     // Overcast rain/storm clouds diffuse sunlight; skip expensive shadow pass in overcast & deep dusk
     this.sunLight.castShadow = !this.isSoftwareGl && !overcast && dayFactor > 0.2;
 
@@ -801,16 +801,16 @@ export class WeatherAndSkySystem {
     this.sunLight.color.copy(this.curSunCol);
     skyU.uSunGlowColor.value.copy(this.curSunCol);
 
-    // Dynamic outdoor hemisphere sky/forest-bounce lighting
-    this.tmpHemiSky.copy(this.curMid).lerp(new THREE.Color(0xdcebf7), 0.32 * dayFactor);
+    // Dynamic outdoor hemisphere sky/forest-bounce lighting (crisp sunlit-vs-shadow contrast!)
+    this.tmpHemiSky.copy(this.curMid).lerp(new THREE.Color(0xdcebf7), 0.36 * dayFactor);
     this.tmpHemiGround
-      .setHex(0x3a472b)
-      .lerp(new THREE.Color(0x4f442c), goldenFactor * 0.45)
+      .setHex(0x303e22)
+      .lerp(new THREE.Color(0x4a3f26), goldenFactor * 0.45)
       .lerp(new THREE.Color(0x0b1014), 1 - dayFactor);
     this.hemiLight.color.copy(this.tmpHemiSky);
     this.hemiLight.groundColor.copy(this.tmpHemiGround);
-    this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.82 * weatherDim, dayFactor);
-    scene.environmentIntensity = THREE.MathUtils.lerp(0.1, 0.62 * weatherDim, dayFactor);
+    this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.72 * weatherDim, dayFactor);
+    scene.environmentIntensity = THREE.MathUtils.lerp(0.08, 0.44 * weatherDim, dayFactor);
 
     // Volumetric morning / golden-hour sunbeam shafts through forest pines
     const beamRaw =
