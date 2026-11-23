@@ -1066,7 +1066,9 @@ function addWindSway(
 
     shader.vertexShader =
       `uniform float uWindTime;\nuniform float uWindStrength;\nuniform vec2 uWindDir;\n` +
-      (sss > 0 ? `varying vec3 vSssWorldPos;\n` : '') +
+      (sss > 0
+        ? `uniform vec3 uSssSunDir;\nuniform vec3 uSssSunColor;\nvarying vec3 vSssAdd;\n`
+        : '') +
       shader.vertexShader;
 
     shader.vertexShader = shader.vertexShader.replace(
@@ -1103,6 +1105,7 @@ function addWindSway(
     );
 
     if (sss > 0) {
+      // Vertex-stage backlit SSS eliminates per-fragment normalize/dot/smoothstep across millions of overdrawn alpha-tested foliage pixels!
       shader.vertexShader = shader.vertexShader.replace(
         '#include <worldpos_vertex>',
         `#include <worldpos_vertex>
@@ -1110,21 +1113,20 @@ function addWindSway(
         #ifdef USE_INSTANCING
           sssWp = instanceMatrix * sssWp;
         #endif
-        vSssWorldPos = (modelMatrix * sssWp).xyz;`
+        vec3 sssWorldPos = (modelMatrix * sssWp).xyz;
+        vec3 sssViewDir = normalize(cameraPosition - sssWorldPos);
+        float sssAlign = max(dot(sssViewDir, -uSssSunDir), 0.0);
+        float sssDay = smoothstep(0.02, 0.26, uSssSunDir.y);
+        float sssBack = (sssAlign * sssAlign) * ${sss.toFixed(3)} * sssDay;
+        float sssWrap = ${(sss * 0.26).toFixed(3)} * sssDay;
+        vSssAdd = uSssSunColor * (sssBack + sssWrap) * vec3(1.14, 1.2, 0.72) + vec3(0.09, 0.13, 0.14) * sssDay;`
       );
 
       shader.fragmentShader =
-        `uniform vec3 uSssSunDir;\nuniform vec3 uSssSunColor;\nvarying vec3 vSssWorldPos;\n` +
+        `varying vec3 vSssAdd;\n` +
         shader.fragmentShader.replace(
           '#include <opaque_fragment>',
-          `// View-dependent sunlit foliage translucency (fast multiply instead of per-pixel pow!)
-          vec3 sssViewDir = normalize(cameraPosition - vSssWorldPos);
-          float sssAlign = max(dot(sssViewDir, -uSssSunDir), 0.0);
-          float sssDay = smoothstep(0.02, 0.26, uSssSunDir.y);
-          float sssBack = (sssAlign * sssAlign) * ${sss.toFixed(3)} * sssDay;
-          float sssWrap = ${(sss * 0.26).toFixed(3)} * sssDay;
-          outgoingLight += diffuseColor.rgb * uSssSunColor * (sssBack + sssWrap) * vec3(1.14, 1.2, 0.72);
-          outgoingLight += diffuseColor.rgb * vec3(0.09, 0.13, 0.14) * sssDay;
+          `outgoingLight += diffuseColor.rgb * vSssAdd;
           #include <opaque_fragment>`
         );
     }
@@ -1401,7 +1403,14 @@ export class WorldVegetationSystem {
   private diagVisRebuilds = 0;
   private diagGrassRebuilds = 0;
 
-  constructor(textures: WorldTextures, isSoftwareGl: boolean) {
+  private readonly isLowPowerGpu: boolean;
+  private readonly grassCap: number;
+  private lastGrassMaxRing = GRASS_TILE_RADIUS;
+  private readonly grassRingSortBuf: Array<{ tx: number; tz: number; dSq: number }> = [];
+
+  constructor(textures: WorldTextures, isSoftwareGl: boolean, isLowPowerGpu = false) {
+    this.isLowPowerGpu = isLowPowerGpu;
+    this.grassCap = isLowPowerGpu ? 1850 : GRASS_BLADE_CAP;
     this.buildingRects = buildExclusionRects();
     this.buildInstancedLayers(textures, isSoftwareGl);
   }
@@ -2220,7 +2229,7 @@ export class WorldVegetationSystem {
       leafFreq: 5.0,
       sssStrength: 0.44,
     });
-    this.grassBladeMesh = this.createInstanced(bladeGeo, bladeMat, GRASS_BLADE_CAP, false, false, false);
+    this.grassBladeMesh = this.createInstanced(bladeGeo, bladeMat, this.grassCap, false, false, false);
 
     const fernGeo = buildPhotoFernRosetteGeo();
     const fernMat = new THREE.MeshLambertMaterial({
@@ -2434,11 +2443,17 @@ export class WorldVegetationSystem {
     camZ: number,
     frustumPlanes?: Float32Array,
     camForward?: THREE.Vector3,
-    bakeBudget = 2
+    bakeBudget = 2,
+    maxRenderDist = 225
   ): void {
     const ptx = Math.floor(camX / GRASS_TILE_SIZE);
     const ptz = Math.floor(camZ / GRASS_TILE_SIZE);
-    const tileMoved = ptx !== this.lastGrassTileX || ptz !== this.lastGrassTileZ;
+    const maxRing =
+      this.isLowPowerGpu && maxRenderDist < 115 ? 1 : GRASS_TILE_RADIUS;
+    const tileMoved =
+      ptx !== this.lastGrassTileX ||
+      ptz !== this.lastGrassTileZ ||
+      maxRing !== this.lastGrassMaxRing;
 
     let rotChanged = false;
     if (camForward) {
@@ -2457,104 +2472,137 @@ export class WorldVegetationSystem {
 
     this.lastGrassTileX = ptx;
     this.lastGrassTileZ = ptz;
+    this.lastGrassMaxRing = maxRing;
 
     let bakedThisCall = 0;
     let missingTiles = 0;
     const matArr = this.grassBladeMesh.instanceMatrix.array as Float32Array;
     const colArr = this.grassBladeMesh.instanceColor!.array as Float32Array;
+    const grassCap = this.grassCap;
+    const lowPower = this.isLowPowerGpu;
+    const sortBuf = this.grassRingSortBuf;
     let count = 0;
 
-    for (let ring = 0; ring <= GRASS_TILE_RADIUS; ring++) {
+    for (let ring = 0; ring <= maxRing; ring++) {
+      sortBuf.length = 0;
       for (let dz = -ring; dz <= ring; dz++) {
         for (let dx = -ring; dx <= ring; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
           if (Math.abs(dx) === GRASS_TILE_RADIUS && Math.abs(dz) === GRASS_TILE_RADIUS) continue;
-
           const tx = ptx + dx;
           const tz = ptz + dz;
           const tileCx = (tx + 0.5) * GRASS_TILE_SIZE;
           const tileCz = (tz + 0.5) * GRASS_TILE_SIZE;
+          const dSq = (tileCx - camX) * (tileCx - camX) + (tileCz - camZ) * (tileCz - camZ);
+          sortBuf.push({ tx, tz, dSq });
+        }
+      }
+      if (sortBuf.length > 1) {
+        sortBuf.sort((a, b) => a.dSq - b.dSq);
+      }
 
-          // Custom Frustum Culling on outer grass tiles (tighter 1.4m margin eliminates wasted side/rear tiles)
-          if (ring > 0 && frustumPlanes) {
-            const cached = this.grassTileCache.get(`${tx}_${tz}`);
-            const cy = cached ? cached.cy : getTerrainHeight(tileCx, tileCz) + 0.4;
-            const r = (cached ? cached.r : 11.4) + 1.4;
-            if (!sphereIntersectsFrustum(frustumPlanes, tileCx, cy, tileCz, r)) {
-              continue;
-            }
-          }
+      for (let s = 0; s < sortBuf.length; s++) {
+        const tx = sortBuf[s].tx;
+        const tz = sortBuf[s].tz;
+        const tileCx = (tx + 0.5) * GRASS_TILE_SIZE;
+        const tileCz = (tz + 0.5) * GRASS_TILE_SIZE;
 
-          const key = `${tx}_${tz}`;
-          let tile = this.grassTileCache.get(key);
-          if (tile) {
-            this.grassTileCache.delete(key);
-            this.grassTileCache.set(key, tile);
-          } else if (bakedThisCall < bakeBudget) {
-            tile = this.bakeGrassTile(tx, tz);
-            this.grassTileCache.set(key, tile);
-            bakedThisCall++;
-            if (this.grassTileCache.size > MAX_GRASS_TILE_CACHE) {
-              const oldest = this.grassTileCache.keys().next().value;
-              if (oldest !== undefined) this.grassTileCache.delete(oldest);
-            }
-          } else {
-            missingTiles++;
+        // Custom Frustum Culling on outer grass tiles (tighter 1.4m margin eliminates wasted side/rear tiles)
+        if (ring > 0 && frustumPlanes) {
+          const cached = this.grassTileCache.get(`${tx}_${tz}`);
+          const cy = cached ? cached.cy : getTerrainHeight(tileCx, tileCz) + 0.4;
+          const r = (cached ? cached.r : 11.4) + 1.4;
+          if (!sphereIntersectsFrustum(frustumPlanes, tileCx, cy, tileCz, r)) {
             continue;
           }
+        }
 
-          const slab = tile.slab;
-          if (slab.count === 0) continue;
-          const avail = GRASS_BLADE_CAP - count;
-          if (avail <= 0) continue;
-
-          // On the underfoot tile (ring 0), cull behind-camera clumps >2.2m behind the player
-          if (ring === 0 && camForward) {
-            const fx = camForward.x;
-            const fz = camForward.z;
-            const srcM = slab.matrices;
-            const srcC = slab.colors;
-            for (let i = 0; i < slab.count && count < GRASS_BLADE_CAP; i++) {
-              const mOff = i * 16;
-              const gx = srcM[mOff + 12] - camX;
-              const gz = srcM[mOff + 14] - camZ;
-              if (gx * fx + gz * fz < -1.8 && gx * gx + gz * gz > 4.84) continue;
-              const dstM = count * 16;
-              for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
-              const cOff = i * 3;
-              const dstC = count * 3;
-              colArr[dstC] = srcC[cOff];
-              colArr[dstC + 1] = srcC[cOff + 1];
-              colArr[dstC + 2] = srcC[cOff + 2];
-              count++;
-            }
-          } else if (ring >= 2) {
-            // Outer ring (24-40m): 50% LOD thinning merges seamlessly into photographic meadow ground with half the overdraw!
-            const srcM = slab.matrices;
-            const srcC = slab.colors;
-            for (let i = 0; i < slab.count && count < GRASS_BLADE_CAP; i += 2) {
-              const mOff = i * 16;
-              const dstM = count * 16;
-              for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
-              const cOff = i * 3;
-              const dstC = count * 3;
-              colArr[dstC] = srcC[cOff];
-              colArr[dstC + 1] = srcC[cOff + 1];
-              colArr[dstC + 2] = srcC[cOff + 2];
-              count++;
-            }
-          } else {
-            const take = slab.count <= avail ? slab.count : avail;
-            matArr.set(
-              take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16),
-              count * 16
-            );
-            colArr.set(
-              take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3),
-              count * 3
-            );
-            count += take;
+        const key = `${tx}_${tz}`;
+        let tile = this.grassTileCache.get(key);
+        if (tile) {
+          this.grassTileCache.delete(key);
+          this.grassTileCache.set(key, tile);
+        } else if (bakedThisCall < bakeBudget) {
+          tile = this.bakeGrassTile(tx, tz);
+          this.grassTileCache.set(key, tile);
+          bakedThisCall++;
+          if (this.grassTileCache.size > MAX_GRASS_TILE_CACHE) {
+            const oldest = this.grassTileCache.keys().next().value;
+            if (oldest !== undefined) this.grassTileCache.delete(oldest);
           }
+        } else {
+          missingTiles++;
+          continue;
+        }
+
+        const slab = tile.slab;
+        if (slab.count === 0) continue;
+        const avail = grassCap - count;
+        if (avail <= 0) continue;
+
+        // Ring 0 (underfoot 0-16m): 100% lush density, culling behind-camera clumps >2.2m behind player
+        if (ring === 0 && camForward) {
+          const fx = camForward.x;
+          const fz = camForward.z;
+          const srcM = slab.matrices;
+          const srcC = slab.colors;
+          for (let i = 0; i < slab.count && count < grassCap; i++) {
+            const mOff = i * 16;
+            const gx = srcM[mOff + 12] - camX;
+            const gz = srcM[mOff + 14] - camZ;
+            if (gx * fx + gz * fz < -1.8 && gx * gx + gz * gz > 4.84) continue;
+            const dstM = count * 16;
+            for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
+            const cOff = i * 3;
+            const dstC = count * 3;
+            colArr[dstC] = srcC[cOff];
+            colArr[dstC + 1] = srcC[cOff + 1];
+            colArr[dstC + 2] = srcC[cOff + 2];
+            count++;
+          }
+        } else if (ring === 1 && lowPower) {
+          // Integrated GPU midground ring (16-24m): keep 2/3 density to cut alpha-tested overdraw without bald patches
+          const srcM = slab.matrices;
+          const srcC = slab.colors;
+          for (let i = 0; i < slab.count && count < grassCap; i++) {
+            if (i % 3 === 2) continue;
+            const mOff = i * 16;
+            const dstM = count * 16;
+            for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
+            const cOff = i * 3;
+            const dstC = count * 3;
+            colArr[dstC] = srcC[cOff];
+            colArr[dstC + 1] = srcC[cOff + 1];
+            colArr[dstC + 2] = srcC[cOff + 2];
+            count++;
+          }
+        } else if (ring >= 2) {
+          // Outer ring (24-40m): LOD thinning merges seamlessly into photographic meadow ground with far less overdraw
+          const step = lowPower ? 3 : 2;
+          const srcM = slab.matrices;
+          const srcC = slab.colors;
+          for (let i = 0; i < slab.count && count < grassCap; i += step) {
+            const mOff = i * 16;
+            const dstM = count * 16;
+            for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
+            const cOff = i * 3;
+            const dstC = count * 3;
+            colArr[dstC] = srcC[cOff];
+            colArr[dstC + 1] = srcC[cOff + 1];
+            colArr[dstC + 2] = srcC[cOff + 2];
+            count++;
+          }
+        } else {
+          const take = slab.count <= avail ? slab.count : avail;
+          matArr.set(
+            take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16),
+            count * 16
+          );
+          colArr.set(
+            take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3),
+            count * 3
+          );
+          count += take;
         }
       }
     }
@@ -2704,7 +2752,7 @@ export class WorldVegetationSystem {
     if (sunDir) this.sunDirUniform.value.copy(sunDir);
     if (sunColor) this.sunColorUniform.value.copy(sunColor);
 
-    this.updateGrassCarpet(camPos.x, camPos.z, frustumPlanes, camForward);
+    this.updateGrassCarpet(camPos.x, camPos.z, frustumPlanes, camForward, 2, maxRenderDist);
 
     const fogDist = Math.max(96, Math.min(225, maxRenderDist));
     const fogChunkCutoffSq = (fogDist + 32) * (fogDist + 32);

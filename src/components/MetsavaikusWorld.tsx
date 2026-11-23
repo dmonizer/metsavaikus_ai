@@ -229,16 +229,21 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       460
     );
 
-    const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    const outdoorEnv = createOutdoorEnvScene();
-    const envTarget = pmremGenerator.fromScene(outdoorEnv, 0.03);
-    scene.environment = envTarget.texture;
-    outdoorEnv.traverse((obj) => {
-      const m = obj as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
-      if (m.material) (m.material as THREE.Material).dispose();
-    });
-    pmremGenerator.dispose();
+    // On integrated GPUs (e.g. Intel UHD 630), skip full PMREM cubeUV IBL (saves 6-8 texture fetches/pixel on matte terrain & bark!)
+    // HemisphereLight intensity is boosted proportionally in WeatherAndSkySystem to keep ambient lighting rich and balanced.
+    let envTarget: THREE.WebGLRenderTarget | null = null;
+    if (!isLowPowerGpu) {
+      const pmremGenerator = new THREE.PMREMGenerator(renderer);
+      const outdoorEnv = createOutdoorEnvScene();
+      envTarget = pmremGenerator.fromScene(outdoorEnv, 0.03);
+      scene.environment = envTarget.texture;
+      outdoorEnv.traverse((obj) => {
+        const m = obj as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        if (m.material) (m.material as THREE.Material).dispose();
+      });
+      pmremGenerator.dispose();
+    }
 
     const flashlight = new THREE.SpotLight(0xfff1cc, 0, 38, Math.PI / 5.5, 0.45, 1.4);
     flashlight.visible = false;
@@ -695,7 +700,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       } else {
         player.stamina = Math.min(100, player.stamina + 16 * dt);
       }
-      if (hudRefs.staminaFillEl.current) {
+      if (hudRefs.staminaFillEl.current && Math.abs(player.stamina - lastRenderedStamina) > 0.2) {
+        lastRenderedStamina = player.stamina;
         hudRefs.staminaFillEl.current.style.transform = `scaleX(${(player.stamina / 100).toFixed(3)})`;
       }
 
@@ -880,6 +886,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let lastMinimapX = 99999;
     let lastMinimapZ = 99999;
     let lastMinimapYaw = 999;
+    let lastRenderedStamina = -1;
     let titleOrbit = 0;
 
     const perfSample: FramePerfSample = {
@@ -1047,12 +1054,21 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             camera.position.z,
             skyInfo,
             terrainMgr.frustumPlanes,
-            maxRenderDist
+            maxRenderDist,
+            weatherSky.currentWeather
           );
           const tp4 = performance.now();
           propsMs += tp4 - tp3;
         } else {
-          propsCtx?.updateDynamicProps(elapsed, camera.position.x, camera.position.z, skyInfo);
+          propsCtx?.updateDynamicProps(
+            elapsed,
+            camera.position.x,
+            camera.position.z,
+            skyInfo,
+            undefined,
+            225,
+            weatherSky.currentWeather
+          );
           propsMs += performance.now() - tp1;
         }
 
@@ -1075,10 +1091,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
-        // Hysteresis-guarded discrete DRS to protect GPU fillrate without swapchain thrashing
+        // Hysteresis-guarded discrete DRS using real wall-clock rawDt so low-FPS stalls trigger step-down immediately!
         if (!isSoftwareGl && curPhase === 'playing') {
-          drsCheckTimer += dt;
-          if (drsCheckTimer >= 2.5) {
+          drsCheckTimer += Math.min(0.5, rawDt);
+          const drsInterval = fpsEma < 22 ? 1.2 : 2.5;
+          if (drsCheckTimer >= drsInterval) {
             drsCheckTimer = 0;
             if (fpsEma < 44 && dprStepIdx < dprSteps.length - 1) {
               dprStepIdx++;
@@ -1356,7 +1373,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         player.pitch = -0.14;
       }
 
-      vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl);
+      vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl, isLowPowerGpu);
       vegetation.prewarmAround(player.pos.x, player.pos.z);
       scene.add(vegetation.group);
 
@@ -1414,7 +1431,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       propsCtx?.dispose();
       minimap?.dispose();
       textures?.dispose();
-      envTarget.dispose();
+      envTarget?.dispose();
       sound.dispose();
       renderer.dispose();
       void computeEngine;

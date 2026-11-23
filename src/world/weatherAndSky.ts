@@ -169,7 +169,9 @@ function createAtmosphericSkyDome(): {
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
-  mesh.renderOrder = -10;
+  // Render LAST in the opaque pass (after terrain, water, cabins & foliage fill Z-buffer)
+  // so Hardware Early-Z skips 60-75% of procedural sky/cloud fragment shading!
+  mesh.renderOrder = 500;
   return { mesh, material, geometry };
 }
 
@@ -560,6 +562,7 @@ export class WeatherAndSkySystem {
   private elapsed = 0;
 
   private readonly isSoftwareGl: boolean;
+  private readonly isLowPowerGpu: boolean;
   private readonly shadowExtent = 36;
   private readonly shadowTexelSize: number;
 
@@ -597,6 +600,7 @@ export class WeatherAndSkySystem {
     isLowPowerGpu = false
   ) {
     this.isSoftwareGl = isSoftwareGl;
+    this.isLowPowerGpu = isLowPowerGpu;
     const shadowRes = isLowPowerGpu ? 768 : 1024;
     this.shadowTexelSize = (this.shadowExtent * 2) / shadowRes;
 
@@ -871,7 +875,8 @@ export class WeatherAndSkySystem {
       .lerp(this.cHemiGroundNight, 1 - dayFactor);
     this.hemiLight.color.copy(this.tmpHemiSky);
     this.hemiLight.groundColor.copy(this.tmpHemiGround);
-    this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.72 * weatherDim, dayFactor);
+    const hemiBoost = this.isLowPowerGpu ? 1.24 : 1.0;
+    this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.72 * weatherDim, dayFactor) * hemiBoost;
     scene.environmentIntensity = THREE.MathUtils.lerp(0.08, 0.44 * weatherDim, dayFactor);
 
     // Volumetric morning / golden-hour sunbeam shafts (disabled in clear midday to avoid zero-value additive overdraw!)
@@ -916,7 +921,9 @@ export class WeatherAndSkySystem {
     const rainVisible = curRainAlpha > 0.015;
     this.rain.mesh.visible = rainVisible;
     if (rainVisible) {
-      this.rain.geometry.instanceCount = weather === 'storm' ? this.rain.maxCount : 480;
+      const stormCap = this.isLowPowerGpu ? 460 : this.rain.maxCount;
+      const rainCap = this.isLowPowerGpu ? 320 : 480;
+      this.rain.geometry.instanceCount = weather === 'storm' ? stormCap : rainCap;
       const rainU = this.rain.material.uniforms;
       rainU.uOpacity.value = curRainAlpha;
       rainU.uTime.value = this.elapsed;

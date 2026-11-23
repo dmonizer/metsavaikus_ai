@@ -115,7 +115,7 @@ test('computeAdaptiveDprSteps enforces integrated GPU pixel budget while keeping
   assert.ok(uhdSteps[0] <= 0.66 && uhdSteps[0] >= 0.62, `Expected ~0.64x start DPR, got ${uhdSteps[0]}`);
   const startPixels = 2155 * uhdSteps[0] * (1287 * uhdSteps[0]);
   assert.ok(startPixels <= 1_250_000, `Expected <=1.25M pixels, got ${Math.round(startPixels)}`);
-  assert.equal(uhdSteps[uhdSteps.length - 1], 0.48);
+  assert.equal(uhdSteps[uhdSteps.length - 1], 0.45);
   for (let i = 1; i < uhdSteps.length; i++) {
     assert.ok(uhdSteps[i] < uhdSteps[i - 1], 'DPR steps must be strictly descending');
   }

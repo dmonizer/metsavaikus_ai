@@ -177,10 +177,10 @@ export function computeAdaptiveDprSteps(
   const pixelBudget = isLowPowerGpu ? 1_150_000 : 2_300_000;
   const budgetDpr = Math.sqrt(pixelBudget / pixelsAt1x);
   const startDpr = Math.max(0.5, Math.min(hardMaxDpr, Math.round(budgetDpr * 100) / 100));
-  const floorDpr = isLowPowerGpu ? 0.48 : 0.62;
+  const floorDpr = isLowPowerGpu ? 0.45 : 0.62;
 
   const steps: number[] = [startDpr];
-  const multipliers = [0.86, 0.74, 0.64];
+  const multipliers = [0.85, 0.7, 0.58];
   for (const m of multipliers) {
     const candidate = Math.max(floorDpr, Math.round(startDpr * m * 100) / 100);
     if (candidate < steps[steps.length - 1] - 0.03) {

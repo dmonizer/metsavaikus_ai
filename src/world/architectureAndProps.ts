@@ -79,7 +79,8 @@ export interface WorldPropsContext {
     camZ: number,
     skyState?: SkyFrameState,
     frustumPlanes?: Float32Array,
-    maxRenderDist?: number
+    maxRenderDist?: number,
+    weather?: string
   ) => void;
   gatherMushroom: (entry: InteractiveEntry) => MushroomSpecies | null;
   isWaterVisible: () => boolean;
@@ -314,8 +315,10 @@ export function buildArchitectureAndProps(
         vec3 viewDir = toCam / max(dist, 0.001);
 
         float ndv = clamp(dot(nrm, viewDir), 0.0, 1.0);
-        // Schlick Fresnel: rich dark humic peat looking down, crisp sky mirror at grazing angles
-        float fresnel = 0.06 + 0.78 * pow(1.0 - ndv, 3.6);
+        // Fast polynomial Schlick Fresnel (zero per-pixel pow() transcendentals!)
+        float f1 = 1.0 - ndv;
+        float f2 = f1 * f1;
+        float fresnel = 0.06 + 0.78 * (f2 * f2);
 
         vec3 reflDir = reflect(-viewDir, nrm);
         float reflElev = clamp(reflDir.y, 0.0, 1.0);
@@ -328,11 +331,19 @@ export function buildArchitectureAndProps(
         vec3 peatDeep = vec3(0.022, 0.036, 0.034);
         vec3 col = mix(peatDeep, skyRefl, fresnel);
 
-        // Solar specular glints across ripples
-        vec3 halfVec = normalize(uSunDir + viewDir);
-        float spec = pow(max(dot(nrm, halfVec), 0.0), 150.0) * smoothstep(0.02, 0.22, uSunDir.y);
-        float broadSpec = pow(max(dot(nrm, halfVec), 0.0), 26.0) * 0.16 * smoothstep(0.02, 0.22, uSunDir.y);
-        col += uSunColor * (spec * 1.6 + broadSpec);
+        // Fast polynomial solar specular glints across ripples
+        float sunVis = smoothstep(0.02, 0.22, uSunDir.y);
+        if (sunVis > 0.005) {
+          vec3 halfVec = normalize(uSunDir + viewDir);
+          float ndh = max(dot(nrm, halfVec), 0.0);
+          float s2 = ndh * ndh;
+          float s4 = s2 * s2;
+          float s16 = s4 * s4 * s4 * s4;
+          float broadSpec = (s16 * s4 * s4) * 0.16 * sunVis;
+          float s64 = s16 * s16 * s16 * s16;
+          float spec = (s64 * s64) * sunVis;
+          col += uSunColor * (spec * 1.6 + broadSpec);
+        }
 
         // Exponential fog matching Three.js FogExp2
         float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
@@ -351,26 +362,26 @@ export function buildArchitectureAndProps(
   scene.add(swampWater);
   disposables.push(waterGeo, waterMat);
 
-  const mistGeo = new THREE.PlaneGeometry(18, 18);
+  const mistGeo = new THREE.PlaneGeometry(12, 12);
   mistGeo.rotateX(-Math.PI / 2);
   const mistMat = new THREE.MeshBasicMaterial({
     map: textures.bogMistTex,
     transparent: true,
-    opacity: 0.28,
+    opacity: 0.26,
     depthWrite: false,
   });
-  const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, 10);
+  const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, 6);
   const mistDummy = new THREE.Object3D();
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2 + rand() * 0.4;
-    const rad = 18 + rand() * (bp.bogRadius * 0.72);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + rand() * 0.45;
+    const rad = 20 + rand() * (bp.bogRadius * 0.68);
     mistDummy.position.set(
       bp.bogCenterX + Math.cos(a) * rad,
       SWAMP_WATER_Y + 0.36 + rand() * 0.42,
       bp.bogCenterZ + Math.sin(a) * rad
     );
     mistDummy.rotation.set(0, rand() * Math.PI, 0);
-    mistDummy.scale.set(0.85 + rand() * 0.45, 1, 0.85 + rand() * 0.45);
+    mistDummy.scale.set(0.85 + rand() * 0.4, 1, 0.85 + rand() * 0.4);
     mistDummy.updateMatrix();
     mistInst.setMatrixAt(i, mistDummy.matrix);
   }
@@ -2255,7 +2266,8 @@ export function buildArchitectureAndProps(
       camZ: number,
       skyState?: SkyFrameState,
       frustumPlanes?: Float32Array,
-      maxRenderDist = 225
+      maxRenderDist = 225,
+      weather?: string
     ) => {
       if (fireLit) {
         fireLight.intensity = 2.5 + Math.sin(elapsed * 15.0) * 0.45;
@@ -2278,7 +2290,10 @@ export function buildArchitectureAndProps(
         );
       }
       swampWater.visible = nearBog;
-      mistInst.visible = nearBog && bogDistSq <= (bp.bogRadius + 75) * (bp.bogRadius + 75);
+      // Heavy rain/storm beats down low ground mist & already uses dense FogExp2 — avoids stacking transparent sheets over rain!
+      const isPrecip = weather === 'rain' || weather === 'storm';
+      mistInst.visible =
+        !isPrecip && nearBog && bogDistSq <= (bp.bogRadius + 75) * (bp.bogRadius + 75);
 
       // Sync Fresnel reflective bog water & day/night cottage window glow with live sky state
       if (nearBog) {
