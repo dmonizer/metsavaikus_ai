@@ -55,6 +55,8 @@ export default function App() {
   const biomeEl = useRef<HTMLDivElement | null>(null);
   const timeWeatherEl = useRef<HTMLDivElement | null>(null);
   const flashEl = useRef<HTMLDivElement | null>(null);
+  const minimapCanvasEl = useRef<HTMLCanvasElement | null>(null);
+  const compassHeadingEl = useRef<HTMLDivElement | null>(null);
 
   const hudRefs = useMemo<WorldHudRefs>(
     () => ({
@@ -63,6 +65,8 @@ export default function App() {
       biomeEl,
       timeWeatherEl,
       flashEl,
+      minimapCanvasEl,
+      compassHeadingEl,
     }),
     []
   );
@@ -327,14 +331,34 @@ export default function App() {
             </div>
           )}
 
-          {/* Bottom-Left: Stamina & Carry State */}
-          <div className="absolute bottom-5 left-5 flex flex-col gap-1.5">
+          {/* Bottom-Left: Compass, Round Minimap & Stamina */}
+          <div className="absolute bottom-5 left-5 flex flex-col items-center gap-1.5">
             {carryLabel && (
-              <div className="text-xs font-medium text-[#f0dfb4] drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
+              <div className="self-start text-xs font-medium text-[#f0dfb4] bg-[#0c120e]/80 border border-white/10 rounded px-2.5 py-1 drop-shadow-[0_1px_3px_rgba(0,0,0,0.85)]">
                 {carryLabel}
               </div>
             )}
-            <div className="w-44 h-1.5 bg-black/60 border border-white/15 rounded overflow-hidden">
+            <div
+              data-testid="minimap-compass"
+              aria-label="Compass and minimap"
+              className="relative w-[148px] h-[148px] rounded-full bg-[#0c120e]/85 border border-white/15 shadow-[0_6px_22px_rgba(0,0,0,0.55)] flex items-center justify-center"
+            >
+              <canvas
+                ref={minimapCanvasEl}
+                data-testid="minimap-canvas"
+                width={148}
+                height={148}
+                className="w-[148px] h-[148px] rounded-full block"
+              />
+            </div>
+            <div
+              ref={compassHeadingEl}
+              data-testid="compass-heading"
+              className="px-2.5 py-0.5 rounded bg-[#0c120e]/90 border border-white/12 font-mono tabular-nums text-[10px] tracking-wider text-[#e5ede3] whitespace-nowrap"
+            >
+              N · 357°
+            </div>
+            <div className="w-[148px] h-1.5 bg-black/60 border border-white/15 rounded overflow-hidden">
               <div
                 ref={staminaFillEl}
                 className="w-full h-full origin-left bg-[#7fb382] transition-transform duration-75"

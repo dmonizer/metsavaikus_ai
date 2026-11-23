@@ -23,6 +23,13 @@ import { generateWorldBlueprint } from './worldBlueprint';
 import { ComputeEngine } from './wasmCompute';
 import { TerrainChunkManager } from './terrainChunkManager';
 import { buildConnectedTube, createBogPineSegments } from './foliageFactory';
+import {
+  buildMinimapTerrainPixels,
+  computeCompassHeadingDeg,
+  formatCardinalDirection,
+  formatCompassLabel,
+  projectPointOnHeadingMinimap,
+} from './minimapMath';
 
 test('World constants scale to 1200x1200m procedural streaming', () => {
   assert.equal(WORLD_SIZE, 1200);
@@ -258,4 +265,43 @@ test('Bog pine trunk spine and side branches remain strictly connected with no f
     );
     geo.dispose();
   }
+});
+
+test('Compass heading conversion matches Three.js yaw across all cardinal directions', () => {
+  assert.equal(Math.round(computeCompassHeadingDeg(0)), 0);
+  assert.equal(formatCompassLabel(0), 'N · 000°');
+  assert.equal(formatCompassLabel(-Math.PI / 2), 'E · 090°');
+  assert.equal(formatCompassLabel(Math.PI), 'S · 180°');
+  assert.equal(formatCompassLabel(Math.PI / 2), 'W · 270°');
+  assert.equal(formatCardinalDirection(44), 'NE');
+  assert.equal(formatCardinalDirection(225), 'SW');
+  assert.equal(formatCompassLabel(0.05), 'N · 357°');
+});
+
+test('Heading-up minimap projects North/East targets accurately and rasterizes world terrain', () => {
+  const r = 60;
+  // Facing North (yaw = 0): target due North (0, -50) sits straight ahead (up)
+  const northFacingNorth = projectPointOnHeadingMinimap(0, -50, 0, 0, 0, r, 100);
+  assert.ok(Math.abs(northFacingNorth.x - r) < 1e-6);
+  assert.ok(northFacingNorth.y < r - 25);
+
+  // Facing East (yaw = -PI/2): target due East (50, 0) sits straight ahead (up),
+  // and target due North (0, -50) sits directly to the left (9 o'clock)
+  const eastFacingEast = projectPointOnHeadingMinimap(50, 0, 0, 0, -Math.PI / 2, r, 100);
+  assert.ok(Math.abs(eastFacingEast.x - r) < 1e-6);
+  assert.ok(eastFacingEast.y < r - 25);
+
+  const northFacingEast = projectPointOnHeadingMinimap(0, -50, 0, 0, -Math.PI / 2, r, 100);
+  assert.ok(northFacingEast.x < r - 25);
+  assert.ok(Math.abs(northFacingEast.y - r) < 1e-6);
+
+  const bp = setActiveWorldSeed(2026);
+  const pixels = buildMinimapTerrainPixels(64, bp);
+  assert.equal(pixels.length, 64 * 64 * 4);
+  const uniqueColors = new Set<string>();
+  for (let i = 0; i < pixels.length; i += 4) {
+    assert.equal(pixels[i + 3], 255);
+    uniqueColors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
+  }
+  assert.ok(uniqueColors.size > 15, 'Rasterized terrain map should contain varied biome shades');
 });

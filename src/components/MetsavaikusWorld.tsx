@@ -11,6 +11,7 @@ import {
   MushroomSpecies,
   smoothFps,
 } from '../game/gameLogic';
+import { FpsDropLogger, FramePerfSample } from '../game/perfLogger';
 import {
   buildArchitectureAndProps,
   CircleCollider,
@@ -26,13 +27,20 @@ import {
 } from '../world/terrainChunkManager';
 import {
   distToRoadDetail,
+  getActiveBlueprint,
   getBiomeInfo,
   getTerrainHeight,
   roadCenterX,
   setActiveWorldSeed,
   SWAMP_WATER_Y,
   WORLD_HALF,
+  worldToVirtualChunk,
 } from '../world/terrainMath';
+import {
+  createMinimapRenderer,
+  formatCompassLabel,
+  MinimapRenderer,
+} from '../world/minimapMath';
 import { ComputeEngine } from '../world/wasmCompute';
 import { WEATHER_LABELS, WeatherAndSkySystem } from '../world/weatherAndSky';
 
@@ -44,6 +52,8 @@ export interface WorldHudRefs {
   biomeEl: React.RefObject<HTMLDivElement | null>;
   timeWeatherEl: React.RefObject<HTMLDivElement | null>;
   flashEl: React.RefObject<HTMLDivElement | null>;
+  minimapCanvasEl: React.RefObject<HTMLCanvasElement | null>;
+  compassHeadingEl: React.RefObject<HTMLDivElement | null>;
 }
 
 export interface WorldCallbacks {
@@ -174,7 +184,32 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let propsCtx: WorldPropsContext | null = null;
     let propCircleColliders: CircleCollider[] = [];
     let terrainMgr: TerrainChunkManager | null = null;
+    let minimap: MinimapRenderer | null = null;
     let computeEngine: ComputeEngine | null = null;
+
+    const perfLogger = new FpsDropLogger(performance.now());
+    (window as unknown as { dumpMetsavaikusPerf?: () => string }).dumpMetsavaikusPerf = () => {
+      const dump = perfLogger.dumpText();
+      console.log(dump);
+      return dump;
+    };
+    let lastObservedWeather = weatherSky.currentWeather;
+    let lastObservedChunkKey = '';
+    const onWebGlContextLost = (ev: Event) => {
+      ev.preventDefault();
+      perfLogger.recordEvent('webglcontextlost', performance.now());
+      console.log('[METSAVAIKUS_PERF:WEBGL_CONTEXT_LOST]', {
+        pos: `${player.pos.x.toFixed(1)},${player.pos.z.toFixed(1)}`,
+        weather: weatherSky.currentWeather,
+        hour: weatherSky.timeOfDay.toFixed(2),
+      });
+    };
+    const onWebGlContextRestored = () => {
+      perfLogger.recordEvent('webglcontextrestored', performance.now());
+      console.log('[METSAVAIKUS_PERF:WEBGL_CONTEXT_RESTORED]');
+    };
+    renderer.domElement.addEventListener('webglcontextlost', onWebGlContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', onWebGlContextRestored);
 
     // Spawn player on open gravel road facing north toward the homestead
     const spawnZ = 6;
@@ -404,16 +439,20 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       },
       cycleWeather: () => {
         const w = weatherSky.cycleWeather();
+        lastObservedWeather = w;
+        perfLogger.recordEvent(`keyWeather->${w}`, performance.now());
         callbacksRef.current.onToast(`Weather: ${WEATHER_LABELS[w]}`);
       },
       advanceTime: () => {
         weatherSky.advanceTime(2);
+        perfLogger.recordEvent(`keyTime->${weatherSky.timeOfDay.toFixed(1)}h`, performance.now());
         callbacksRef.current.onToast('Time advanced +2 hours.');
       },
       toggleFlashlight: () => {
         flashlightOn = !flashlightOn;
         flashlight.visible = flashlightOn;
         flashlight.intensity = flashlightOn ? 3.5 : 0;
+        perfLogger.recordEvent(`flashlight->${flashlightOn ? 'on' : 'off'}`, performance.now());
         sound.playImpact(0.3);
       },
       toggleMute: () => {
@@ -723,20 +762,84 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let elapsed = 0;
     let fpsEma = 60;
     let hudTimer = 0;
+    let minimapTimer = 0;
+    let diagResetTimer = 0;
+    let prevTickCpuMs = 0;
+    let lastMinimapCanvas: HTMLCanvasElement | null = null;
     let titleOrbit = 0;
+
+    const perfSample: FramePerfSample = {
+      nowMs: 0,
+      rawDtMs: 0,
+      fpsEma: 60,
+      fpsInstant: 60,
+      playerMs: 0,
+      propsMs: 0,
+      skyMs: 0,
+      terrainMs: 0,
+      vegMs: 0,
+      minimapMs: 0,
+      renderMs: 0,
+      tickCpuMs: 0,
+      externalWaitMs: 0,
+      pos: [0, 0, 0],
+      chunk: [0, 0],
+      biome: '',
+      heading: '',
+      timeOfDay: '09:15',
+      weather: 'clear',
+      wind: 0,
+      flashlightOn: false,
+      sunCastShadow: false,
+      isSoftwareGl,
+      calls: 0,
+      triangles: 0,
+      points: 0,
+      geometries: 0,
+      textures: 0,
+      programs: 0,
+      visibleChunks: 0,
+      lodCounts: [0, 0, 0],
+      treesRendered: 0,
+      foliageRendered: 0,
+      terrainCacheSize: 0,
+      terrainBuilds: 0,
+      terrainEvictions: 0,
+      terrainRecenters: 0,
+      foliageCacheSize: 0,
+      foliageBakes: 0,
+      foliageEvictions: 0,
+      foliageVisRebuilds: 0,
+      grassRebuilds: 0,
+      grassCount: 0,
+      colliderCells: 0,
+      jsHeapMB: null,
+    };
 
     function tick(): void {
       if (disposed) return;
       const now = performance.now();
-      const rawDt = (now - lastTime) / 1000;
+      const rawDtMs = Math.max(0.1, now - lastTime);
+      const rawDt = rawDtMs / 1000;
       const dt = Math.min(0.05, Math.max(0.001, rawDt));
       lastTime = now;
       elapsed += dt;
 
       fpsEma = smoothFps(fpsEma, rawDt);
       hudTimer += rawDt;
+      minimapTimer += rawDt;
+      diagResetTimer += rawDt;
 
       const curPhase = phaseRef.current;
+
+      let playerMs = 0;
+      let propsMs = 0;
+      let skyMs = 0;
+      let terrainMs = 0;
+      let vegMs = 0;
+      let minimapMs = 0;
+      let skyTimeLabel = '';
+      let skyWindStrength = 0;
 
       if (curPhase === 'title') {
         titleOrbit += dt * 0.08;
@@ -746,16 +849,25 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         camera.position.set(camX, camY, camZ);
         camera.lookAt(spawnX + 2, getTerrainHeight(spawnX + 2, -22) + 2.2, -22);
       } else if (curPhase === 'playing') {
+        const t0 = performance.now();
         updatePlayer(dt);
+        const t1 = performance.now();
         updateDynamicObjects(dt);
         updateInteractionHover();
+        const t2 = performance.now();
+        playerMs = t1 - t0;
+        propsMs = t2 - t1;
       } else {
         camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
         camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
       }
 
       if (curPhase !== 'paused') {
+        const tp0 = performance.now();
         propsCtx?.updateDynamicProps(elapsed, camera.position.x, camera.position.z);
+        const tp1 = performance.now();
+        propsMs += tp1 - tp0;
+
         const skyInfo = weatherSky.update(
           dt,
           player.pos,
@@ -763,9 +875,21 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           sound,
           hudRefs.flashEl.current
         );
+        const tp2 = performance.now();
+        skyMs = tp2 - tp1;
+        skyTimeLabel = skyInfo.timeLabel;
+        skyWindStrength = skyInfo.windStrength;
+
+        if (weatherSky.currentWeather !== lastObservedWeather) {
+          lastObservedWeather = weatherSky.currentWeather;
+          perfLogger.recordEvent(`autoWeather->${lastObservedWeather}`, tp2);
+        }
 
         if (terrainMgr && vegetation) {
           terrainMgr.update(camera, chunkStats);
+          const tp3 = performance.now();
+          terrainMs = tp3 - tp2;
+
           vegetation.update(
             terrainMgr.activeSlots,
             terrainMgr.chunkLods,
@@ -775,6 +899,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             skyInfo.windStrength,
             vegStats
           );
+          const tp4 = performance.now();
+          vegMs = tp4 - tp3;
         }
 
         if (hudTimer >= 0.25) {
@@ -802,10 +928,128 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           renderer.domElement.dataset.playerX = player.pos.x.toFixed(2);
           renderer.domElement.dataset.playerY = player.pos.y.toFixed(2);
           renderer.domElement.dataset.playerZ = player.pos.z.toFixed(2);
+          renderer.domElement.dataset.heading = formatCompassLabel(player.yaw);
+
+          const vc = worldToVirtualChunk(player.pos.x, player.pos.z);
+          const cKey = `${vc.vcx},${vc.vcz}`;
+          if (lastObservedChunkKey && cKey !== lastObservedChunkKey) {
+            perfLogger.recordEvent(`chunk(${cKey})`, now);
+          }
+          lastObservedChunkKey = cKey;
+        }
+
+        const mmCanvas = hudRefs.minimapCanvasEl.current;
+        if (mmCanvas && minimap && (mmCanvas !== lastMinimapCanvas || minimapTimer >= 0.033)) {
+          const tm0 = performance.now();
+          minimapTimer = 0;
+          lastMinimapCanvas = mmCanvas;
+          minimap.draw(mmCanvas, player.pos.x, player.pos.z, player.yaw);
+          if (hudRefs.compassHeadingEl.current) {
+            hudRefs.compassHeadingEl.current.textContent = formatCompassLabel(player.yaw);
+          }
+          minimapMs = performance.now() - tm0;
         }
       }
 
+      const tr0 = performance.now();
       renderer.render(scene, camera);
+      const tr1 = performance.now();
+      const renderMs = tr1 - tr0;
+      const tickCpuMs = tr1 - now;
+      const externalWaitMs = Math.max(0, rawDtMs - prevTickCpuMs);
+      prevTickCpuMs = tickCpuMs;
+
+      if (curPhase === 'playing') {
+        const fpsInstant = 1000 / rawDtMs;
+        const mightReport = fpsEma < 15 || fpsInstant < 15 || fpsEma >= 22;
+        if (mightReport) {
+          const isLowNow = fpsEma < 15 || fpsInstant < 15;
+          const tDiag = isLowNow && terrainMgr ? terrainMgr.consumeDiagnostics() : null;
+          const vDiag = isLowNow && vegetation ? vegetation.consumeDiagnostics() : null;
+          const vc = worldToVirtualChunk(player.pos.x, player.pos.z);
+
+          perfSample.nowMs = tr1;
+          perfSample.rawDtMs = rawDtMs;
+          perfSample.fpsEma = fpsEma;
+          perfSample.fpsInstant = fpsInstant;
+          perfSample.playerMs = playerMs;
+          perfSample.propsMs = propsMs;
+          perfSample.skyMs = skyMs;
+          perfSample.terrainMs = terrainMs;
+          perfSample.vegMs = vegMs;
+          perfSample.minimapMs = minimapMs;
+          perfSample.renderMs = renderMs;
+          perfSample.tickCpuMs = tickCpuMs;
+          perfSample.externalWaitMs = externalWaitMs;
+          perfSample.pos[0] = player.pos.x;
+          perfSample.pos[1] = player.pos.y;
+          perfSample.pos[2] = player.pos.z;
+          perfSample.chunk[0] = vc.vcx;
+          perfSample.chunk[1] = vc.vcz;
+          perfSample.biome = getBiomeInfo(player.pos.x, player.pos.z).id;
+          perfSample.heading = formatCompassLabel(player.yaw);
+          perfSample.timeOfDay = skyTimeLabel;
+          perfSample.weather = weatherSky.currentWeather;
+          perfSample.wind = skyWindStrength;
+          perfSample.flashlightOn = flashlightOn;
+          perfSample.sunCastShadow = weatherSky.isSunCastingShadow;
+          perfSample.calls = renderer.info.render.calls;
+          perfSample.triangles = renderer.info.render.triangles;
+          perfSample.points = renderer.info.render.points;
+          perfSample.geometries = renderer.info.memory.geometries;
+          perfSample.textures = renderer.info.memory.textures;
+          perfSample.programs = renderer.info.programs ? renderer.info.programs.length : 0;
+          perfSample.visibleChunks = chunkStats.visibleChunks;
+          perfSample.lodCounts[0] = chunkStats.lod0;
+          perfSample.lodCounts[1] = chunkStats.lod1;
+          perfSample.lodCounts[2] = chunkStats.lod2;
+          perfSample.treesRendered = vegStats.treesRendered;
+          perfSample.foliageRendered = vegStats.foliageRendered;
+
+          if (tDiag) {
+            perfSample.terrainCacheSize = tDiag.cacheSize;
+            perfSample.terrainBuilds += tDiag.geoBuilds;
+            perfSample.terrainEvictions += tDiag.geoEvictions;
+            perfSample.terrainRecenters += tDiag.recenters;
+          }
+          if (vDiag) {
+            perfSample.foliageCacheSize = vDiag.chunkCacheSize;
+            perfSample.foliageBakes += vDiag.chunkBakes;
+            perfSample.foliageEvictions += vDiag.chunkEvictions;
+            perfSample.foliageVisRebuilds += vDiag.visRebuilds;
+            perfSample.grassRebuilds += vDiag.grassRebuilds;
+            perfSample.grassCount = vDiag.grassCount;
+            perfSample.colliderCells = vDiag.colliderCells;
+          }
+
+          const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
+          perfSample.jsHeapMB = mem ? mem.usedJSHeapSize / (1024 * 1024) : null;
+
+          const emitted = perfLogger.observe(perfSample, document.hidden);
+          if (emitted) {
+            perfSample.terrainBuilds = 0;
+            perfSample.terrainEvictions = 0;
+            perfSample.terrainRecenters = 0;
+            perfSample.foliageBakes = 0;
+            perfSample.foliageEvictions = 0;
+            perfSample.foliageVisRebuilds = 0;
+            perfSample.grassRebuilds = 0;
+          }
+        }
+
+        if (diagResetTimer >= 1.5 && fpsEma >= 18) {
+          diagResetTimer = 0;
+          terrainMgr?.consumeDiagnostics();
+          vegetation?.consumeDiagnostics();
+          perfSample.terrainBuilds = 0;
+          perfSample.terrainEvictions = 0;
+          perfSample.terrainRecenters = 0;
+          perfSample.foliageBakes = 0;
+          perfSample.foliageEvictions = 0;
+          perfSample.foliageVisRebuilds = 0;
+          perfSample.grassRebuilds = 0;
+        }
+      }
 
       if (isSoftwareGl) {
         afterDraw(tick);
@@ -838,6 +1082,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         isSoftwareGl
       );
       propCircleColliders = propsCtx.circleColliders;
+      minimap = createMinimapRenderer(getActiveBlueprint(), propsCtx.boardwalkZones);
 
       terrainMgr = new TerrainChunkManager(engine, loadedTextures.groundDetail);
       terrainMgr.prewarmAround(spawnX, spawnZ);
@@ -866,6 +1111,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       else cancelAnimationFrame(frameId);
 
       document.removeEventListener('pointerlockchange', onPointerLockChange);
+      renderer.domElement.removeEventListener('webglcontextlost', onWebGlContextLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', onWebGlContextRestored);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('mousemove', onMouseMove);
@@ -879,6 +1126,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       vegetation?.dispose();
       weatherSky.dispose();
       propsCtx?.dispose();
+      minimap?.dispose();
       textures?.dispose();
       envTarget.dispose();
       sound.dispose();

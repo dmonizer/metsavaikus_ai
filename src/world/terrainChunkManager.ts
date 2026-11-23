@@ -65,6 +65,9 @@ export class TerrainChunkManager {
 
   private centerVcx = 99999;
   private centerVcz = 99999;
+  private diagGeoBuilds = 0;
+  private diagGeoEvictions = 0;
+  private diagRecenters = 0;
 
   constructor(
     compute: ComputeEngine,
@@ -139,6 +142,7 @@ export class TerrainChunkManager {
     geo.computeBoundingSphere();
 
     this.geoCache.set(key, geo);
+    this.diagGeoBuilds++;
     if (this.geoCache.size > MAX_GEO_CACHE) {
       for (const [oldKey, oldGeo] of this.geoCache) {
         if (this.geoCache.size <= MAX_GEO_CACHE) break;
@@ -146,6 +150,7 @@ export class TerrainChunkManager {
         if (!inUse) {
           this.geoCache.delete(oldKey);
           oldGeo.dispose();
+          this.diagGeoEvictions++;
         }
       }
     }
@@ -156,6 +161,7 @@ export class TerrainChunkManager {
     if (pcx === this.centerVcx && pcz === this.centerVcz) return;
     this.centerVcx = pcx;
     this.centerVcz = pcz;
+    this.diagRecenters++;
 
     const half = Math.floor(ACTIVE_GRID / 2); // 5 -> 11x11 around player
     let idx = 0;
@@ -306,6 +312,28 @@ export class TerrainChunkManager {
       stats.lod1 = lod1;
       stats.lod2 = lod2;
     }
+  }
+
+  consumeDiagnostics(): {
+    cacheSize: number;
+    geoBuilds: number;
+    geoEvictions: number;
+    recenters: number;
+    centerVcx: number;
+    centerVcz: number;
+  } {
+    const out = {
+      cacheSize: this.geoCache.size,
+      geoBuilds: this.diagGeoBuilds,
+      geoEvictions: this.diagGeoEvictions,
+      recenters: this.diagRecenters,
+      centerVcx: this.centerVcx,
+      centerVcz: this.centerVcz,
+    };
+    this.diagGeoBuilds = 0;
+    this.diagGeoEvictions = 0;
+    this.diagRecenters = 0;
+    return out;
   }
 
   dispose(): void {

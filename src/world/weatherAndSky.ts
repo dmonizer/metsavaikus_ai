@@ -373,6 +373,10 @@ export class WeatherAndSkySystem {
     return WEATHER_ORDER[this.weatherIdx];
   }
 
+  get isSunCastingShadow(): boolean {
+    return this.sunLight.castShadow;
+  }
+
   advanceTime(hours = 2): void {
     this.timeOfDay = (this.timeOfDay + hours) % 24;
   }

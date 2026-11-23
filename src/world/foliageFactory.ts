@@ -1223,6 +1223,10 @@ export class WorldVegetationSystem {
   private allChunkMeshes: THREE.InstancedMesh[] = [];
   private cachedTreesCount = 0;
   private cachedFoliageCount = 0;
+  private diagChunkBakes = 0;
+  private diagChunkEvictions = 0;
+  private diagVisRebuilds = 0;
+  private diagGrassRebuilds = 0;
 
   constructor(textures: WorldTextures, isSoftwareGl: boolean) {
     this.buildingRects = buildExclusionRects();
@@ -1647,9 +1651,13 @@ export class WorldVegetationSystem {
       this.indexChunkColliders(colliders);
     }
     this.chunkCache.set(key, baked);
+    this.diagChunkBakes++;
     if (this.chunkCache.size > MAX_CHUNK_CACHE) {
       const oldestKey = this.chunkCache.keys().next().value;
-      if (oldestKey !== undefined) this.chunkCache.delete(oldestKey);
+      if (oldestKey !== undefined) {
+        this.chunkCache.delete(oldestKey);
+        this.diagChunkEvictions++;
+      }
     }
 
     return baked;
@@ -1950,6 +1958,7 @@ export class WorldVegetationSystem {
     if (ax === this.lastGrassAnchorX && az === this.lastGrassAnchorZ) return;
     this.lastGrassAnchorX = ax;
     this.lastGrassAnchorZ = az;
+    this.diagGrassRebuilds++;
 
     const spacing = 0.46;
     const halfGrid = 28.5; // 57m x 57m continuous carpet around player
@@ -2096,6 +2105,7 @@ export class WorldVegetationSystem {
       return;
     }
     this.lastVisibilitySig = sig;
+    this.diagVisRebuilds++;
 
     for (let i = 0; i < this.allChunkMeshes.length; i++) {
       this.allChunkMeshes[i].count = 0;
@@ -2182,6 +2192,31 @@ export class WorldVegetationSystem {
       stats.treesRendered = this.cachedTreesCount;
       stats.foliageRendered = this.cachedFoliageCount + this.grassBladeMesh.count;
     }
+  }
+
+  consumeDiagnostics(): {
+    chunkCacheSize: number;
+    chunkBakes: number;
+    chunkEvictions: number;
+    visRebuilds: number;
+    grassRebuilds: number;
+    grassCount: number;
+    colliderCells: number;
+  } {
+    const out = {
+      chunkCacheSize: this.chunkCache.size,
+      chunkBakes: this.diagChunkBakes,
+      chunkEvictions: this.diagChunkEvictions,
+      visRebuilds: this.diagVisRebuilds,
+      grassRebuilds: this.diagGrassRebuilds,
+      grassCount: this.grassBladeMesh.count,
+      colliderCells: this.colliderGrid.size,
+    };
+    this.diagChunkBakes = 0;
+    this.diagChunkEvictions = 0;
+    this.diagVisRebuilds = 0;
+    this.diagGrassRebuilds = 0;
+    return out;
   }
 
   dispose(): void {

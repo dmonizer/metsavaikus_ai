@@ -210,11 +210,15 @@ export function evaluateTerrainFromNoise(
   return { y: h, swamp, islandMask };
 }
 
-export function getTerrainHeight(x: number, z: number): number {
+export function getTerrainHeight(
+  x: number,
+  z: number,
+  bp: WorldBlueprint = activeBlueprint
+): number {
   const nBase4 = fbm(x * 0.008, z * 0.008, 4);
   const nDetail2 = fbm(x * 0.03, z * 0.03, 2);
   const nBog = smoothNoise(x * 0.09, z * 0.09);
-  return evaluateTerrainFromNoise(x, z, nBase4, nDetail2, nBog).y;
+  return evaluateTerrainFromNoise(x, z, nBase4, nDetail2, nBog, bp).y;
 }
 
 export function getDistanceToNearestVillage(
