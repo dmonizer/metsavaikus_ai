@@ -47,10 +47,19 @@ export interface FramePerfSample {
   grassCount: number;
   colliderCells: number;
   jsHeapMB: number | null;
+  gpuRenderer?: string;
+  pixelRatio?: number;
+  backbufferPx?: [number, number];
+  antialias?: boolean;
+  shadowUpdates?: number;
+  fogCullDist?: number;
+  culledInstances?: number;
+  candidateInstances?: number;
+  overlays?: string;
 }
 
 export interface PerfReportEntry {
-  severity: PerfSeverity;
+  severity: PerfSeverity | 'SNAPSHOT';
   tSec: number;
   fpsEma: number;
   fpsInstant: number;
@@ -82,18 +91,25 @@ export interface PerfReportEntry {
     softwareGl: boolean;
   };
   renderer: {
+    gpu: string;
+    res: string;
+    aa: boolean;
     calls: number;
     tris: number;
     pts: number;
     geos: number;
     texs: number;
     progs: number;
+    shadowUpd: number;
   };
   streaming: {
     visChunks: string;
     trees: number;
     foliage: number;
     grass: number;
+    cull: string;
+    fogCullM: number;
+    overlays: string;
     tCache: number;
     tBuild: number;
     tEvict: number;
@@ -129,11 +145,31 @@ const r1 = (n: number): number => Math.round(n * 10) / 10;
 
 export function classifyBottleneck(s: FramePerfSample): string {
   const cpuShare = s.rawDtMs > 0 ? s.tickCpuMs / s.rawDtMs : 0;
+  const nonRenderCpuMs =
+    s.terrainMs + s.vegMs + s.skyMs + s.propsMs + s.playerMs + s.minimapMs;
+
   if (cpuShare < 0.45 && s.externalWaitMs > 30) {
     if (s.weather === 'rain' || s.weather === 'storm') {
       return 'GPU_FILLRATE_OR_SYNC_DURING_PRECIP';
     }
+    if (s.triangles < 55000 && s.calls < 45) {
+      return 'GPU_DRIVER_OR_THERMAL_THROTTLE';
+    }
+    if (
+      s.overlays &&
+      s.overlays !== 'none' &&
+      (s.overlays.includes('water') ||
+        s.overlays.includes('mist') ||
+        s.overlays.includes('sunbeams'))
+    ) {
+      return 'GPU_FILLRATE_BOG_OR_OVERLAYS';
+    }
     return 'GPU_OR_COMPOSITOR_STALL';
+  }
+
+  // renderer.render() blocking for >16ms with modest draw calls & low JS CPU work is WebGL command-queue backpressure
+  if (s.renderMs >= 16 && s.calls <= 180 && nonRenderCpuMs < 10) {
+    return 'GPU_BACKPRESSURE_RENDER_SYNC';
   }
 
   const buckets: Array<[string, number]> = [
@@ -201,13 +237,24 @@ export class FpsDropLogger {
     return this.history;
   }
 
-  dumpText(): string {
-    if (this.history.length === 0) {
-      return '[METSAVAIKUS_PERF] No FPS drops (<15 FPS) recorded in this session.';
+  formatSnapshot(sample: FramePerfSample): string {
+    const entry = this.buildEntry('SNAPSHOT', sample);
+    return `[METSAVAIKUS_PERF:SNAPSHOT] ${JSON.stringify(entry)}`;
+  }
+
+  dumpText(liveSample?: FramePerfSample): string {
+    const lines: string[] = [];
+    if (liveSample) {
+      lines.push(this.formatSnapshot(liveSample));
     }
-    return this.history
-      .map((entry) => `[METSAVAIKUS_PERF:${entry.severity}] ${JSON.stringify(entry)}`)
-      .join('\n');
+    if (this.history.length === 0) {
+      lines.push('[METSAVAIKUS_PERF] No FPS drops (<15 FPS) recorded in this session.');
+    } else {
+      for (const entry of this.history) {
+        lines.push(`[METSAVAIKUS_PERF:${entry.severity}] ${JSON.stringify(entry)}`);
+      }
+    }
+    return lines.join('\n');
   }
 
   observe(sample: FramePerfSample, tabHidden = false): PerfReportEntry | null {
@@ -273,19 +320,30 @@ export class FpsDropLogger {
     return null;
   }
 
-  private emit(severity: PerfSeverity, s: FramePerfSample): PerfReportEntry {
-    this.lastLogMs = s.nowMs;
+  private buildEntry(
+    severity: PerfSeverity | 'SNAPSHOT',
+    s: FramePerfSample
+  ): PerfReportEntry {
     const recent = this.events
       .slice(-6)
       .map((ev) => `${ev.label}@-${((s.nowMs - ev.atMs) / 1000).toFixed(1)}s`);
 
-    const entry: PerfReportEntry = {
+    const cand = s.candidateInstances ?? 0;
+    const culled = s.culledInstances ?? 0;
+    const cullPct = cand > 0 ? Math.round((culled / cand) * 100) : 0;
+    const bb = s.backbufferPx ?? [0, 0];
+    const dpr = s.pixelRatio ?? 1;
+
+    return {
       severity,
       tSec: r1((s.nowMs - this.startMs) / 1000),
       fpsEma: r1(s.fpsEma),
       fpsInstant: r1(s.fpsInstant),
       rawDtMs: r1(s.rawDtMs),
-      dominantCause: severity === 'RECOVERED' ? 'OK' : classifyBottleneck(s),
+      dominantCause:
+        severity === 'RECOVERED' || severity === 'SNAPSHOT'
+          ? 'OK'
+          : classifyBottleneck(s),
       timingsMs: {
         cpuTotal: r1(s.tickCpuMs),
         externalWait: r1(s.externalWaitMs),
@@ -312,18 +370,25 @@ export class FpsDropLogger {
         softwareGl: s.isSoftwareGl,
       },
       renderer: {
+        gpu: s.gpuRenderer || (s.isSoftwareGl ? 'SoftwareGL' : 'unknown'),
+        res: `${bb[0]}x${bb[1]}@${dpr.toFixed(2)}x`,
+        aa: s.antialias ?? false,
         calls: s.calls,
         tris: s.triangles,
         pts: s.points,
         geos: s.geometries,
         texs: s.textures,
         progs: s.programs,
+        shadowUpd: s.shadowUpdates ?? 0,
       },
       streaming: {
         visChunks: `${s.visibleChunks}(${s.lodCounts[0]}/${s.lodCounts[1]}/${s.lodCounts[2]})`,
         trees: s.treesRendered,
         foliage: s.foliageRendered,
         grass: s.grassCount,
+        cull: `${culled}/${cand}(${cullPct}%)`,
+        fogCullM: r1(s.fogCullDist ?? 225),
+        overlays: s.overlays || 'none',
         tCache: s.terrainCacheSize,
         tBuild: s.terrainBuilds,
         tEvict: s.terrainEvictions,
@@ -338,6 +403,11 @@ export class FpsDropLogger {
       },
       recentEvents: recent,
     };
+  }
+
+  private emit(severity: PerfSeverity, s: FramePerfSample): PerfReportEntry {
+    this.lastLogMs = s.nowMs;
+    const entry = this.buildEntry(severity, s);
 
     this.windowPeakCpuMs = 0;
     this.windowPeakFrameMs = 0;

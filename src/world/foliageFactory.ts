@@ -854,12 +854,13 @@ function buildGrassTuftGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
   const rootCol = new THREE.Color(0x6c7a52);
   const tipCol = new THREE.Color(0xeef4cc);
-  const hw = 0.42;
+  const hw = 0.45;
   const h = 0.42;
 
-  for (let p = 0; p < 3; p++) {
-    const ang = (p / 3) * Math.PI + (p === 1 ? 0.14 : p === 2 ? -0.12 : 0);
-    const tilt = 0.12;
+  // 2 crossed photo-card planes (4 tris total, 33% less alpha-tested Early-Z overdraw than 3 planes!)
+  for (let p = 0; p < 2; p++) {
+    const ang = p * (Math.PI * 0.5) + (p === 1 ? 0.16 : -0.1);
+    const tilt = 0.11;
     const positions = new Float32Array([
       -hw, -0.02, 0,
        hw, -0.02, 0,
@@ -1116,11 +1117,11 @@ function addWindSway(
         `uniform vec3 uSssSunDir;\nuniform vec3 uSssSunColor;\nvarying vec3 vSssWorldPos;\n` +
         shader.fragmentShader.replace(
           '#include <opaque_fragment>',
-          `// View-dependent sunlit foliage translucency (backlit chartreuse-gold glow + cool Baltic sky bounce)
+          `// View-dependent sunlit foliage translucency (fast multiply instead of per-pixel pow!)
           vec3 sssViewDir = normalize(cameraPosition - vSssWorldPos);
-          float sssAlign = clamp(dot(sssViewDir, -uSssSunDir), 0.0, 1.0);
+          float sssAlign = max(dot(sssViewDir, -uSssSunDir), 0.0);
           float sssDay = smoothstep(0.02, 0.26, uSssSunDir.y);
-          float sssBack = pow(sssAlign, 2.6) * ${sss.toFixed(3)} * sssDay;
+          float sssBack = (sssAlign * sssAlign) * ${sss.toFixed(3)} * sssDay;
           float sssWrap = ${(sss * 0.26).toFixed(3)} * sssDay;
           outgoingLight += diffuseColor.rgb * uSssSunColor * (sssBack + sssWrap) * vec3(1.14, 1.2, 0.72);
           outgoingLight += diffuseColor.rgb * vec3(0.09, 0.13, 0.14) * sssDay;
@@ -2474,11 +2475,11 @@ export class WorldVegetationSystem {
           const tileCx = (tx + 0.5) * GRASS_TILE_SIZE;
           const tileCz = (tz + 0.5) * GRASS_TILE_SIZE;
 
-          // Custom Frustum Culling on grass tiles (always retain ring 0 underfoot so looking down never clips!)
+          // Custom Frustum Culling on outer grass tiles (tighter 1.4m margin eliminates wasted side/rear tiles)
           if (ring > 0 && frustumPlanes) {
             const cached = this.grassTileCache.get(`${tx}_${tz}`);
             const cy = cached ? cached.cy : getTerrainHeight(tileCx, tileCz) + 0.4;
-            const r = (cached ? cached.r : 12.6) + 3.2;
+            const r = (cached ? cached.r : 11.4) + 1.4;
             if (!sphereIntersectsFrustum(frustumPlanes, tileCx, cy, tileCz, r)) {
               continue;
             }
@@ -2506,16 +2507,39 @@ export class WorldVegetationSystem {
           if (slab.count === 0) continue;
           const avail = GRASS_BLADE_CAP - count;
           if (avail <= 0) continue;
-          const take = slab.count <= avail ? slab.count : avail;
-          matArr.set(
-            take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16),
-            count * 16
-          );
-          colArr.set(
-            take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3),
-            count * 3
-          );
-          count += take;
+
+          // On the underfoot tile (ring 0), cull behind-camera clumps >2.2m behind the player
+          if (ring === 0 && camForward) {
+            const fx = camForward.x;
+            const fz = camForward.z;
+            const srcM = slab.matrices;
+            const srcC = slab.colors;
+            for (let i = 0; i < slab.count && count < GRASS_BLADE_CAP; i++) {
+              const mOff = i * 16;
+              const gx = srcM[mOff + 12] - camX;
+              const gz = srcM[mOff + 14] - camZ;
+              if (gx * fx + gz * fz < -1.8 && gx * gx + gz * gz > 4.84) continue;
+              const dstM = count * 16;
+              for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
+              const cOff = i * 3;
+              const dstC = count * 3;
+              colArr[dstC] = srcC[cOff];
+              colArr[dstC + 1] = srcC[cOff + 1];
+              colArr[dstC + 2] = srcC[cOff + 2];
+              count++;
+            }
+          } else {
+            const take = slab.count <= avail ? slab.count : avail;
+            matArr.set(
+              take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16),
+              count * 16
+            );
+            colArr.set(
+              take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3),
+              count * 3
+            );
+            count += take;
+          }
         }
       }
     }

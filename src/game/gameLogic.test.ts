@@ -401,3 +401,76 @@ test('SoundEngine keeps AudioParam timelines bounded across 12,000 frames (200s)
   assert.ok(disconnectedNodes >= 10);
   sound.dispose();
 });
+
+test('FpsDropLogger classifies GPU backpressure, thermal throttles, bog overlays, and formats live snapshots', () => {
+  assert.equal(
+    classifyBottleneck(
+      makePerfSample({
+        rawDtMs: 250,
+        tickCpuMs: 145,
+        renderMs: 132,
+        externalWaitMs: 105,
+        calls: 22,
+        triangles: 28840,
+        terrainMs: 1.0,
+        vegMs: 0.2,
+        minimapMs: 1.0,
+        weather: 'clear',
+      })
+    ),
+    'GPU_BACKPRESSURE_RENDER_SYNC'
+  );
+
+  assert.equal(
+    classifyBottleneck(
+      makePerfSample({
+        rawDtMs: 620,
+        tickCpuMs: 26,
+        externalWaitMs: 590,
+        calls: 19,
+        triangles: 27748,
+        weather: 'clear',
+      })
+    ),
+    'GPU_DRIVER_OR_THERMAL_THROTTLE'
+  );
+
+  assert.equal(
+    classifyBottleneck(
+      makePerfSample({
+        rawDtMs: 180,
+        tickCpuMs: 18,
+        externalWaitMs: 162,
+        calls: 68,
+        triangles: 82000,
+        weather: 'clear',
+        overlays: 'water+mist',
+      })
+    ),
+    'GPU_FILLRATE_BOG_OR_OVERLAYS'
+  );
+
+  const logger = new FpsDropLogger(0, { sink: () => {} });
+  const snap = logger.dumpText(
+    makePerfSample({
+      nowMs: 12000,
+      gpuRenderer: 'ANGLE (Intel Iris Xe)',
+      pixelRatio: 1.15,
+      backbufferPx: [1656, 1035],
+      antialias: false,
+      shadowUpdates: 2,
+      fogCullDist: 151.8,
+      culledInstances: 3200,
+      candidateInstances: 4400,
+      overlays: 'rain',
+    })
+  );
+  assert.ok(snap.includes('[METSAVAIKUS_PERF:SNAPSHOT]'));
+  assert.ok(snap.includes('"gpu":"ANGLE (Intel Iris Xe)"'));
+  assert.ok(snap.includes('"res":"1656x1035@1.15x"'));
+  assert.ok(snap.includes('"aa":false'));
+  assert.ok(snap.includes('"cull":"3200/4400(73%)"'));
+  assert.ok(snap.includes('"fogCullM":151.8'));
+  assert.ok(snap.includes('"overlays":"rain"'));
+});
+

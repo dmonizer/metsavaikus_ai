@@ -592,7 +592,7 @@ export class WeatherAndSkySystem {
 
   constructor(scene: THREE.Scene, isSoftwareGl: boolean, pixelRatio: number) {
     this.isSoftwareGl = isSoftwareGl;
-    const shadowRes = isSoftwareGl ? 1024 : 1536;
+    const shadowRes = 1024;
     this.shadowTexelSize = (this.shadowExtent * 2) / shadowRes;
 
     scene.background = new THREE.Color(0xb9d1df);
@@ -613,7 +613,7 @@ export class WeatherAndSkySystem {
     this.sunLight.shadow.camera.bottom = -dShadow;
     this.sunLight.shadow.bias = -0.0005;
     this.sunLight.shadow.normalBias = 0.026;
-    this.sunLight.shadow.radius = 2.0;
+    this.sunLight.shadow.radius = 1.5;
     this.group.add(this.sunLight);
     this.group.add(this.sunLight.target);
 
@@ -661,6 +661,14 @@ export class WeatherAndSkySystem {
 
   get isSunCastingShadow(): boolean {
     return this.sunLight.castShadow;
+  }
+
+  get isSunbeamsVisible(): boolean {
+    return this.sunbeams.mesh.visible;
+  }
+
+  get isRainVisible(): boolean {
+    return this.rain.mesh.visible;
   }
 
   advanceTime(hours = 2): void {
@@ -856,10 +864,10 @@ export class WeatherAndSkySystem {
     this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.72 * weatherDim, dayFactor);
     scene.environmentIntensity = THREE.MathUtils.lerp(0.08, 0.44 * weatherDim, dayFactor);
 
-    // Volumetric morning / golden-hour sunbeam shafts through forest pines
+    // Volumetric morning / golden-hour sunbeam shafts (disabled in clear midday to avoid zero-value additive overdraw!)
     const beamRaw =
-      !overcast && sunY > 0.05
-        ? (goldenFactor * 0.078 + (weather === 'mist' ? 0.055 : 0.022) * dayFactor) *
+      !overcast && sunY > 0.05 && (goldenFactor > 0.24 || weather === 'mist')
+        ? (goldenFactor * 0.08 + (weather === 'mist' ? 0.055 : 0.0) * dayFactor) *
           (0.65 + swampHere * 0.55)
         : 0;
     const beamU = this.sunbeams.material.uniforms;
@@ -867,7 +875,7 @@ export class WeatherAndSkySystem {
     beamU.uSunDir.value.copy(this.sunDir);
     beamU.uColor.value.copy(this.curSunCol);
     beamU.uTime.value = this.elapsed;
-    this.sunbeams.mesh.visible = beamU.uOpacity.value > 0.004;
+    this.sunbeams.mesh.visible = beamU.uOpacity.value > 0.008;
 
     // Stars & fireflies at dusk/night (hidden behind heavy rain/storm clouds to cut overdraw)
     const starVis = overcast

@@ -82,6 +82,8 @@ export interface WorldPropsContext {
     maxRenderDist?: number
   ) => void;
   gatherMushroom: (entry: InteractiveEntry) => MushroomSpecies | null;
+  isWaterVisible: () => boolean;
+  isMistVisible: () => boolean;
   dispose: () => void;
 }
 
@@ -336,14 +338,12 @@ export function buildArchitectureAndProps(
         float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
         col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
 
-        float radialFrac = length(p - uCenter) / max(1.0, uRadius);
-        float edgeAlpha = (1.0 - smoothstep(0.86, 1.0, radialFrac)) * 0.94;
-        gl_FragColor = vec4(col, edgeAlpha);
+        gl_FragColor = vec4(col, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }
     `,
-    transparent: true,
+    transparent: false,
     depthWrite: true,
   });
   const swampWater = new THREE.Mesh(waterGeo, waterMat);
@@ -351,26 +351,26 @@ export function buildArchitectureAndProps(
   scene.add(swampWater);
   disposables.push(waterGeo, waterMat);
 
-  const mistGeo = new THREE.PlaneGeometry(28, 28);
+  const mistGeo = new THREE.PlaneGeometry(18, 18);
   mistGeo.rotateX(-Math.PI / 2);
   const mistMat = new THREE.MeshBasicMaterial({
     map: textures.bogMistTex,
     transparent: true,
-    opacity: 0.42,
+    opacity: 0.28,
     depthWrite: false,
   });
-  const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, 22);
+  const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, 10);
   const mistDummy = new THREE.Object3D();
-  for (let i = 0; i < 22; i++) {
-    const a = (i / 22) * Math.PI * 2 + rand() * 0.5;
-    const rad = 14 + rand() * (bp.bogRadius * 0.78);
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2 + rand() * 0.4;
+    const rad = 18 + rand() * (bp.bogRadius * 0.72);
     mistDummy.position.set(
       bp.bogCenterX + Math.cos(a) * rad,
-      SWAMP_WATER_Y + 0.38 + rand() * 0.48,
+      SWAMP_WATER_Y + 0.36 + rand() * 0.42,
       bp.bogCenterZ + Math.sin(a) * rad
     );
     mistDummy.rotation.set(0, rand() * Math.PI, 0);
-    mistDummy.scale.set(0.95 + rand() * 1.1, 1, 0.95 + rand() * 1.1);
+    mistDummy.scale.set(0.85 + rand() * 0.45, 1, 0.85 + rand() * 0.45);
     mistDummy.updateMatrix();
     mistInst.setMatrixAt(i, mistDummy.matrix);
   }
@@ -2262,16 +2262,27 @@ export function buildArchitectureAndProps(
         fireFlames.scale.y = 0.85 + Math.sin(elapsed * 20.0) * 0.2;
       }
 
-      // Sync Fresnel reflective bog water & day/night cottage window glow with live sky state
-      waterMat.uniforms.uTime.value = elapsed;
-      if (skyState) {
-        waterMat.uniforms.uSunDir.value.copy(skyState.sunDir);
-        waterMat.uniforms.uSunColor.value.copy(skyState.sunColor);
-        waterMat.uniforms.uSkyTop.value.copy(skyState.skyTopColor);
-        waterMat.uniforms.uSkyHorizon.value.copy(skyState.skyHorizonColor);
-        waterMat.uniforms.uFogColor.value.copy(skyState.skyHorizonColor);
-        waterMat.uniforms.uFogDensity.value = skyState.fogDensity;
+      // Distance-cull bog water & mist when player is far outside the peat bog basin
+      const bogDx = camX - bp.bogCenterX;
+      const bogDz = camZ - bp.bogCenterZ;
+      const bogVisLimit = waterRadius + maxRenderDist + 24;
+      const nearBog = bogDx * bogDx + bogDz * bogDz <= bogVisLimit * bogVisLimit;
+      swampWater.visible = nearBog;
+      mistInst.visible = nearBog && bogDx * bogDx + bogDz * bogDz <= (bp.bogRadius + 95) * (bp.bogRadius + 95);
 
+      // Sync Fresnel reflective bog water & day/night cottage window glow with live sky state
+      if (nearBog) {
+        waterMat.uniforms.uTime.value = elapsed;
+        if (skyState) {
+          waterMat.uniforms.uSunDir.value.copy(skyState.sunDir);
+          waterMat.uniforms.uSunColor.value.copy(skyState.sunColor);
+          waterMat.uniforms.uSkyTop.value.copy(skyState.skyTopColor);
+          waterMat.uniforms.uSkyHorizon.value.copy(skyState.skyHorizonColor);
+          waterMat.uniforms.uFogColor.value.copy(skyState.skyHorizonColor);
+          waterMat.uniforms.uFogDensity.value = skyState.fogDensity;
+        }
+      }
+      if (skyState) {
         // Dark reflective glass during bright daytime; warm amber hearth light at golden hour, dusk & night!
         const duskGlow = THREE.MathUtils.clamp((0.86 - skyState.dayFactor) / 0.36, 0, 1);
         activeWinMat.emissiveIntensity = 0.02 + duskGlow * 1.65;
@@ -2321,6 +2332,8 @@ export function buildArchitectureAndProps(
       }
     },
     gatherMushroom,
+    isWaterVisible: () => swampWater.visible,
+    isMistVisible: () => mistInst.visible,
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

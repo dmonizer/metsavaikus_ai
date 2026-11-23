@@ -122,18 +122,22 @@ interface MetsavaikusWorldProps {
   basket: MushroomBasket;
 }
 
-function detectSoftwareGl(): boolean {
+function detectGpuInfo(): { isSoftwareGl: boolean; gpuRenderer: string } {
   try {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-    if (!gl) return true;
+    if (!gl) return { isSoftwareGl: true, gpuRenderer: 'NoWebGL' };
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
     const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-    const gpu = String(gl.getParameter(param) || '');
+    const raw = String(gl.getParameter(param) || 'unknown').trim();
     gl.getExtension('WEBGL_lose_context')?.loseContext();
-    return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+    const gpuRenderer = raw.length > 72 ? `${raw.slice(0, 69)}...` : raw;
+    return {
+      isSoftwareGl: /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(raw),
+      gpuRenderer,
+    };
   } catch {
-    return false;
+    return { isSoftwareGl: false, gpuRenderer: 'unknown' };
   }
 }
 
@@ -172,13 +176,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let frameId = 0;
     let isTimeoutFrame = false;
 
-    const isSoftwareGl = detectSoftwareGl();
-    const maxDpr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.25);
-    let currentDpr = maxDpr;
+    const { isSoftwareGl, gpuRenderer } = detectGpuInfo();
+    const maxDpr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.15);
+    const dprSteps = [1.15, 1.0, 0.85, 0.72].filter((v) => v <= maxDpr + 0.001);
+    if (dprSteps.length === 0 || dprSteps[0] < maxDpr) dprSteps.unshift(maxDpr);
+    let dprStepIdx = 0;
+    let currentDpr = dprSteps[0];
     let drsCheckTimer = 0;
+    let drsHighFpsStreak = 0;
 
+    // antialias: false eliminates 4x MSAA fillrate explosion & ANGLE blit-resolve compositor stalls
     const renderer = new THREE.WebGLRenderer({
-      antialias: !isSoftwareGl,
+      antialias: false,
       powerPreference: 'high-performance',
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -239,8 +248,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let computeEngine: ComputeEngine | null = null;
 
     const perfLogger = new FpsDropLogger(performance.now());
+    let hasLivePerfSample = false;
     (window as unknown as { dumpMetsavaikusPerf?: () => string }).dumpMetsavaikusPerf = () => {
-      const dump = perfLogger.dumpText();
+      const dump = perfLogger.dumpText(hasLivePerfSample ? perfSample : undefined);
       console.log(dump);
       return dump;
     };
@@ -606,7 +616,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
-      const nextMax = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.25);
+      const nextMax = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.15);
       currentDpr = Math.min(currentDpr, nextMax);
       renderer.setPixelRatio(currentDpr);
       weatherSky.setPixelRatio(currentDpr);
@@ -844,6 +854,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let diagResetTimer = 0;
     let prevTickCpuMs = 0;
     let lastMinimapCanvas: HTMLCanvasElement | null = null;
+    let lastMinimapX = 99999;
+    let lastMinimapZ = 99999;
+    let lastMinimapYaw = 999;
     let titleOrbit = 0;
 
     const perfSample: FramePerfSample = {
@@ -892,7 +905,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       grassCount: 0,
       colliderCells: 0,
       jsHeapMB: null,
+      gpuRenderer,
+      pixelRatio: currentDpr,
+      backbufferPx: [0, 0],
+      antialias: false,
+      shadowUpdates: 0,
+      fogCullDist: 225,
+      culledInstances: 0,
+      candidateInstances: 0,
+      overlays: 'none',
     };
+    let lastFogCullDist = 225;
+    let shadowUpdatesWindow = 0;
 
     function tick(): void {
       if (disposed) return;
@@ -959,8 +983,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         skyTimeLabel = skyInfo.timeLabel;
         skyWindStrength = skyInfo.windStrength;
 
-        // Fog-aware dynamic horizon cutoff: in rain/mist/storm, geometry past 99.4% fog is culled
+        // Fog-aware dynamic horizon cutoff: in rain/mist/storm, geometry past 98.7% fog is culled
         const maxRenderDist = computeFogCullDistance(skyInfo.fogDensity);
+        lastFogCullDist = maxRenderDist;
 
         if (weatherSky.currentWeather !== lastObservedWeather) {
           lastObservedWeather = weatherSky.currentWeather;
@@ -1014,6 +1039,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           const sunMoved = Math.abs(skyInfo.sunDir.y - lastShadowSunY) > 0.004;
           if ((movedSq > 0.14 || sunMoved) && shadowFrameSkip >= 2) {
             renderer.shadowMap.needsUpdate = true;
+            shadowUpdatesWindow++;
             lastShadowX = player.pos.x;
             lastShadowZ = player.pos.z;
             lastShadowSunY = skyInfo.sunDir.y;
@@ -1021,20 +1047,30 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
-        // Reactive Automatic Dynamic Resolution Scaling (DRS) to keep real GPUs locked at 50-60+ FPS even in rain/storm
+        // Hysteresis-guarded discrete DRS to protect GPU fillrate without swapchain thrashing
         if (!isSoftwareGl && curPhase === 'playing') {
           drsCheckTimer += dt;
-          if (drsCheckTimer >= 0.9) {
+          if (drsCheckTimer >= 2.5) {
             drsCheckTimer = 0;
-            if (fpsEma < 48 && currentDpr > 0.72) {
-              const step = fpsEma < 32 ? 0.16 : 0.1;
-              currentDpr = Math.max(0.72, +(currentDpr - step).toFixed(2));
+            if (fpsEma < 44 && dprStepIdx < dprSteps.length - 1) {
+              dprStepIdx++;
+              currentDpr = dprSteps[dprStepIdx];
+              drsHighFpsStreak = 0;
               renderer.setPixelRatio(currentDpr);
               weatherSky.setPixelRatio(currentDpr);
-            } else if (fpsEma > 57 && currentDpr < maxDpr) {
-              currentDpr = Math.min(maxDpr, +(currentDpr + 0.06).toFixed(2));
-              renderer.setPixelRatio(currentDpr);
-              weatherSky.setPixelRatio(currentDpr);
+              perfLogger.recordEvent(`drs->${currentDpr.toFixed(2)}x`, now);
+            } else if (fpsEma > 57 && dprStepIdx > 0) {
+              drsHighFpsStreak++;
+              if (drsHighFpsStreak >= 2) {
+                dprStepIdx--;
+                currentDpr = dprSteps[dprStepIdx];
+                drsHighFpsStreak = 0;
+                renderer.setPixelRatio(currentDpr);
+                weatherSky.setPixelRatio(currentDpr);
+                perfLogger.recordEvent(`drs->${currentDpr.toFixed(2)}x`, now);
+              }
+            } else {
+              drsHighFpsStreak = 0;
             }
           }
         }
@@ -1078,16 +1114,27 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           lastObservedChunkKey = cKey;
         }
 
+        // Only redraw 2D minimap canvas when player moves or turns (0 Skia-over-WebGL compositor stalls while idle!)
         const mmCanvas = hudRefs.minimapCanvasEl.current;
-        if (mmCanvas && minimap && (mmCanvas !== lastMinimapCanvas || minimapTimer >= 0.033)) {
-          const tm0 = performance.now();
-          minimapTimer = 0;
-          lastMinimapCanvas = mmCanvas;
-          minimap.draw(mmCanvas, player.pos.x, player.pos.z, player.yaw);
-          if (hudRefs.compassHeadingEl.current) {
-            hudRefs.compassHeadingEl.current.textContent = formatCompassLabel(player.yaw);
+        if (mmCanvas && minimap) {
+          const mmMoved =
+            mmCanvas !== lastMinimapCanvas ||
+            Math.abs(player.pos.x - lastMinimapX) > 0.2 ||
+            Math.abs(player.pos.z - lastMinimapZ) > 0.2 ||
+            Math.abs(player.yaw - lastMinimapYaw) > 0.012;
+          if (mmMoved && (mmCanvas !== lastMinimapCanvas || minimapTimer >= 0.066)) {
+            const tm0 = performance.now();
+            minimapTimer = 0;
+            lastMinimapCanvas = mmCanvas;
+            lastMinimapX = player.pos.x;
+            lastMinimapZ = player.pos.z;
+            lastMinimapYaw = player.yaw;
+            minimap.draw(mmCanvas, player.pos.x, player.pos.z, player.yaw);
+            if (hudRefs.compassHeadingEl.current) {
+              hudRefs.compassHeadingEl.current.textContent = formatCompassLabel(player.yaw);
+            }
+            minimapMs = performance.now() - tm0;
           }
-          minimapMs = performance.now() - tm0;
         }
       }
 
@@ -1104,9 +1151,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (curPhase === 'playing') {
         const fpsInstant = 1000 / rawDtMs;
-        const mightReport = fpsEma < 15 || fpsInstant < 15 || fpsEma >= 22;
+        const isLowNow = fpsEma < 15 || fpsInstant < 15;
+        const mightReport = isLowNow || fpsEma >= 22 || !hasLivePerfSample;
         if (mightReport) {
-          const isLowNow = fpsEma < 15 || fpsInstant < 15;
           const tDiag = isLowNow && terrainMgr ? terrainMgr.consumeDiagnostics() : null;
           const vDiag = isLowNow && vegetation ? vegetation.consumeDiagnostics() : null;
           const vc = worldToVirtualChunk(player.pos.x, player.pos.z);
@@ -1148,6 +1195,20 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfSample.lodCounts[2] = chunkStats.lod2;
           perfSample.treesRendered = vegStats.treesRendered;
           perfSample.foliageRendered = vegStats.foliageRendered;
+          perfSample.culledInstances = vegStats.culledInstances ?? 0;
+          perfSample.candidateInstances = vegStats.candidateInstances ?? 0;
+          perfSample.fogCullDist = lastFogCullDist;
+          perfSample.pixelRatio = currentDpr;
+          perfSample.backbufferPx![0] = renderer.domElement.width;
+          perfSample.backbufferPx![1] = renderer.domElement.height;
+          perfSample.shadowUpdates = shadowUpdatesWindow;
+
+          const activeOv: string[] = [];
+          if (propsCtx?.isWaterVisible()) activeOv.push('water');
+          if (propsCtx?.isMistVisible()) activeOv.push('mist');
+          if (weatherSky.isSunbeamsVisible) activeOv.push('sunbeams');
+          if (weatherSky.isRainVisible) activeOv.push('rain');
+          perfSample.overlays = activeOv.length > 0 ? activeOv.join('+') : 'none';
 
           if (tDiag) {
             perfSample.terrainCacheSize = tDiag.cacheSize;
@@ -1167,6 +1228,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
           const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
           perfSample.jsHeapMB = mem ? mem.usedJSHeapSize / (1024 * 1024) : null;
+          hasLivePerfSample = true;
 
           const emitted = perfLogger.observe(perfSample, document.hidden);
           if (emitted) {
@@ -1177,6 +1239,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             perfSample.foliageEvictions = 0;
             perfSample.foliageVisRebuilds = 0;
             perfSample.grassRebuilds = 0;
+            shadowUpdatesWindow = 0;
           }
         }
 
@@ -1191,6 +1254,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfSample.foliageEvictions = 0;
           perfSample.foliageVisRebuilds = 0;
           perfSample.grassRebuilds = 0;
+          shadowUpdatesWindow = 0;
         }
       }
 
@@ -1204,7 +1268,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
     void Promise.all([
       ComputeEngine.create(),
-      createWorldTextures(renderer.capabilities.getMaxAnisotropy()),
+      createWorldTextures(Math.min(4, renderer.capabilities.getMaxAnisotropy())),
     ]).then(([engine, loadedTextures]) => {
       if (disposed) {
         loadedTextures.dispose();

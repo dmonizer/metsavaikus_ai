@@ -140,16 +140,10 @@ export class TerrainChunkManager {
           .replace(
             '#include <map_fragment>',
             `#ifdef USE_MAP
-              // World-space dual-scale rotated UVs eliminate visible chunk/tile repetition
+              // World-space UVs with conditional biome splat sampling (1-2 fetches/pixel instead of 6!)
               vec2 uvFine = vTerrainWorldPos.xz * 0.24;
-              vec2 uvMacro = mat2(0.819, -0.574, 0.574, 0.819) * (vTerrainWorldPos.xz * 0.072);
 
-              vec3 colForest = mix(texture2D(map, uvFine).rgb, texture2D(map, uvMacro).rgb, 0.34);
-              vec3 colMeadow = mix(texture2D(uMeadowTex, uvFine * 1.12).rgb, texture2D(uMeadowTex, uvMacro * 1.05).rgb, 0.32);
-              vec3 colRoad = mix(texture2D(uRoadTex, uvFine * 1.18).rgb, texture2D(uRoadTex, uvMacro * 0.95).rgb, 0.28);
-              vec3 colBog = mix(colForest * vec3(0.46, 0.40, 0.24), vec3(0.085, 0.068, 0.038), 0.48);
-
-              // High-frequency organic noise breaks up road verges and meadow boundaries cleanly
+              // Fast organic edge break-up & macro anti-tiling modulation
               float edgeNoise = sin(vTerrainWorldPos.x * 1.35 + vTerrainWorldPos.z * 0.95) * 0.14
                               + cos(vTerrainWorldPos.x * 2.8 - vTerrainWorldPos.z * 2.1) * 0.08;
               float wRoad = smoothstep(0.18, 0.72, vSplat.x + edgeNoise);
@@ -157,14 +151,24 @@ export class TerrainChunkManager {
               float wMeadow = clamp(vSplat.y + edgeNoise * 0.45, 0.0, 1.0);
               float wForest = clamp(vSplat.z, 0.0, 1.0);
 
-              vec3 baseGround = mix(colForest, colMeadow, wMeadow / max(0.001, wMeadow + wForest));
-              baseGround = mix(baseGround, colBog, wBog);
-              baseGround = mix(baseGround, colRoad, wRoad);
+              vec3 baseGround = texture2D(map, uvFine).rgb;
+              if (wMeadow > 0.02 && wRoad < 0.98) {
+                vec3 colMeadow = texture2D(uMeadowTex, uvFine * 1.12).rgb;
+                baseGround = mix(baseGround, colMeadow, wMeadow / max(0.001, wMeadow + wForest));
+              }
+              if (wBog > 0.02) {
+                vec3 colBog = mix(baseGround * vec3(0.46, 0.40, 0.24), vec3(0.085, 0.068, 0.038), 0.48);
+                baseGround = mix(baseGround, colBog, wBog);
+              }
+              if (wRoad > 0.02) {
+                vec3 colRoad = texture2D(uRoadTex, uvFine * 1.18).rgb;
+                baseGround = mix(baseGround, colRoad, wRoad);
+              }
 
-              // Subtle macro organic variation across the landscape
-              float macroVar = 0.91
-                + 0.07 * sin(vTerrainWorldPos.x * 0.16 + vTerrainWorldPos.z * 0.11)
-                + 0.06 * cos(vTerrainWorldPos.x * 0.39 - vTerrainWorldPos.z * 0.33);
+              // Subtle macro organic variation eliminates visible tile repetition with zero extra texture reads
+              float macroVar = 0.89
+                + 0.08 * sin(vTerrainWorldPos.x * 0.16 + vTerrainWorldPos.z * 0.11)
+                + 0.07 * cos(vTerrainWorldPos.x * 0.39 - vTerrainWorldPos.z * 0.33);
               baseGround *= macroVar;
 
               // Photographic dappled sunlight filtering through Estonian pine & birch crowns onto forest floor!
