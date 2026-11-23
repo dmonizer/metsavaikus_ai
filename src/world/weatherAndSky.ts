@@ -102,14 +102,10 @@ function createAtmosphericSkyDome(): {
       }
 
       float cloudFbm(vec2 p) {
-        float v = 0.0;
-        float amp = 0.54;
         mat2 rot = mat2(0.80, -0.60, 0.60, 0.80);
-        for (int i = 0; i < 3; i++) {
-          v += amp * noise2(p);
-          p = rot * p * 2.04 + vec2(1.7, 3.1);
-          amp *= 0.48;
-        }
+        float v = 0.62 * noise2(p);
+        p = rot * p * 2.04 + vec2(1.7, 3.1);
+        v += 0.34 * noise2(p);
         return v;
       }
 
@@ -137,7 +133,7 @@ function createAtmosphericSkyDome(): {
         float moonHalo = pow(max(moonCos, 0.0), 28.0) * 0.22 * nightVis;
         col += vec3(0.76, 0.86, 1.0) * (moonDisk + moonHalo);
 
-        // Projected planar Baltic cloud layer above horizon
+        // Projected planar Baltic cloud layer above horizon (fast 2+1 octave shading)
         if (dir.y > 0.015) {
           float planeT = 1.0 / (dir.y + 0.14);
           vec2 cloudUv = dir.xz * planeT * 0.46 + vec2(uTime * 0.0055, uTime * 0.0022);
@@ -145,10 +141,10 @@ function createAtmosphericSkyDome(): {
           float thresh = mix(0.55, 0.22, uCloudCover);
           float density = smoothstep(thresh, thresh + 0.28, cVal);
 
-          // Self-shadowing light offset toward sun for volumetric sunlit cloud rims
+          // Single-tap light offset toward sun for volumetric sunlit cloud rims
           vec2 sunOff = uSunDir.xz * 0.14;
-          float cLight = cloudFbm(cloudUv + sunOff);
-          float litFactor = clamp(0.58 + (cVal - cLight) * 2.5 + max(sunCos, 0.0) * 0.38, 0.0, 1.0);
+          float cLight = noise2(cloudUv + sunOff);
+          float litFactor = clamp(0.58 + (cVal - cLight) * 2.2 + max(sunCos, 0.0) * 0.38, 0.0, 1.0);
           vec3 cloudCol = mix(uCloudDark, uCloudBright, litFactor);
           cloudCol += uSunGlowColor * pow(max(sunCos, 0.0), 7.0) * 0.34 * (1.0 - density * 0.4) * max(uDayFactor, uGoldenFactor);
 
@@ -423,8 +419,10 @@ function createRainStreakSystem(): {
   mesh: THREE.Mesh;
   material: THREE.ShaderMaterial;
   geometry: THREE.InstancedBufferGeometry;
+  maxCount: number;
 } {
-  const RAIN_COUNT = 1500;
+  // Concentrated forward-frustum rain volume: denser in view with ~75% less GPU overdraw!
+  const RAIN_MAX_COUNT = 760;
   const rand = seededRand(4099);
 
   const baseGeo = new THREE.PlaneGeometry(1, 1, 1, 1);
@@ -432,19 +430,19 @@ function createRainStreakSystem(): {
   instGeo.index = baseGeo.index;
   instGeo.attributes.position = baseGeo.attributes.position;
   instGeo.attributes.uv = baseGeo.attributes.uv;
-  instGeo.instanceCount = RAIN_COUNT;
+  instGeo.instanceCount = 480;
 
-  const seeds = new Float32Array(RAIN_COUNT * 4);
-  const scales = new Float32Array(RAIN_COUNT * 3);
+  const seeds = new Float32Array(RAIN_MAX_COUNT * 4);
+  const scales = new Float32Array(RAIN_MAX_COUNT * 3);
 
-  for (let i = 0; i < RAIN_COUNT; i++) {
-    seeds[i * 4] = rand() * 22;
-    seeds[i * 4 + 1] = rand() * 16;
-    seeds[i * 4 + 2] = rand() * 22;
-    seeds[i * 4 + 3] = 0.82 + rand() * 0.45;
+  for (let i = 0; i < RAIN_MAX_COUNT; i++) {
+    seeds[i * 4] = rand() * 16.0;
+    seeds[i * 4 + 1] = rand() * 13.0;
+    seeds[i * 4 + 2] = rand() * 16.0;
+    seeds[i * 4 + 3] = 0.84 + rand() * 0.42;
 
-    scales[i * 3] = 0.02 + rand() * 0.016;
-    scales[i * 3 + 1] = 0.62 + rand() * 0.78;
+    scales[i * 3] = 0.015 + rand() * 0.011;
+    scales[i * 3 + 1] = 0.56 + rand() * 0.64;
     scales[i * 3 + 2] = 0.55 + rand() * 0.45;
   }
 
@@ -454,7 +452,8 @@ function createRainStreakSystem(): {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uTime: { value: 0 },
-      uPlayerPos: { value: new THREE.Vector3() },
+      uRainCenter: { value: new THREE.Vector3() },
+      uCamFwd: { value: new THREE.Vector3(0, 0, -1) },
       uWindX: { value: 1.8 },
       uFallSpeed: { value: 22.0 },
       uOpacity: { value: 0.0 },
@@ -464,7 +463,8 @@ function createRainStreakSystem(): {
       attribute vec4 aSeed;
       attribute vec3 aScale;
       uniform float uTime;
-      uniform vec3 uPlayerPos;
+      uniform vec3 uRainCenter;
+      uniform vec3 uCamFwd;
       uniform float uWindX;
       uniform float uFallSpeed;
       varying vec2 vUv;
@@ -473,31 +473,40 @@ function createRainStreakSystem(): {
       void main() {
         vUv = uv;
         float speed = uFallSpeed * aSeed.w;
-        float boxXZ = 22.0;
-        float boxY = 16.0;
+        float boxXZ = 16.0;
+        float boxY = 13.0;
 
         vec3 rel = vec3(
-          mod(aSeed.x + uTime * uWindX - uPlayerPos.x, boxXZ) - boxXZ * 0.5,
-          mod(aSeed.y - uTime * speed - uPlayerPos.y, boxY) - 3.0,
-          mod(aSeed.z - uPlayerPos.z, boxXZ) - boxXZ * 0.5
+          mod(aSeed.x + uTime * uWindX - uRainCenter.x, boxXZ) - boxXZ * 0.5,
+          mod(aSeed.y - uTime * speed - uRainCenter.y, boxY) - 2.4,
+          mod(aSeed.z - uRainCenter.z, boxXZ) - boxXZ * 0.5
         );
-        vec3 worldCenter = uPlayerPos + rel;
+        vec3 worldCenter = uRainCenter + rel;
 
+        // Early vertex-stage frustum cull: collapse streaks behind camera or outside forward cone
+        vec3 fromCam = worldCenter - cameraPosition;
+        float fwdDot = dot(fromCam, uCamFwd);
+        if (fwdDot < 0.75) {
+          vFade = 0.0;
+          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+          return;
+        }
+
+        float camDist = max(length(fromCam), 0.1);
+        vec3 toCam = -fromCam / camDist;
         vec3 streakDir = normalize(vec3(-uWindX, speed, 0.0));
-        vec3 camDelta = cameraPosition - worldCenter;
-        float camDist = max(length(camDelta), 0.05);
-        vec3 toCam = camDelta / camDist;
         vec3 rawSide = cross(streakDir, toCam);
         float sideLen = length(rawSide);
         vec3 side = sideLen > 0.001 ? rawSide / sideLen : vec3(1.0, 0.0, 0.0);
 
+        // Keep close drops crisp and narrow so they never create giant screen-filling overdraw ribbons
+        float closeThin = mix(0.65, 1.0, smoothstep(1.2, 4.5, camDist));
         vec3 vertexWorld = worldCenter
-          + side * (position.x * aScale.x)
+          + side * (position.x * aScale.x * closeThin)
           + streakDir * (position.y * aScale.y);
 
-        float dist = length(rel.xz);
-        float nearFade = smoothstep(0.7, 2.0, dist);
-        float farFade = 1.0 - smoothstep(8.0, 12.2, dist);
+        float nearFade = smoothstep(0.95, 2.4, camDist);
+        float farFade = 1.0 - smoothstep(10.0, 15.2, camDist);
         vFade = aScale.z * nearFade * farFade;
 
         gl_Position = projectionMatrix * viewMatrix * vec4(vertexWorld, 1.0);
@@ -510,16 +519,18 @@ function createRainStreakSystem(): {
       varying float vFade;
 
       void main() {
-        float taperY = sin(vUv.y * 3.14159265);
-        float dx = (vUv.x - 0.5) * 3.0;
-        float profileX = exp(-dx * dx);
-        float alpha = taperY * profileX * vFade * uOpacity;
+        // Pure polynomial streak taper (zero exp/sin per fragment!)
+        float taperY = vUv.y * (1.0 - vUv.y) * 4.0;
+        float dx = (vUv.x - 0.5) * 2.0;
+        float profileX = max(0.0, 1.0 - dx * dx);
+        float alpha = taperY * profileX * profileX * vFade * uOpacity;
+        if (alpha < 0.025) discard;
         gl_FragColor = vec4(uColor, alpha);
       }
     `,
     transparent: true,
     depthWrite: false,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
   });
 
   const mesh = new THREE.Mesh(instGeo, material);
@@ -527,7 +538,7 @@ function createRainStreakSystem(): {
   mesh.visible = false;
   baseGeo.dispose();
 
-  return { mesh, material, geometry: instGeo };
+  return { mesh, material, geometry: instGeo, maxCount: RAIN_MAX_COUNT };
 }
 
 export class WeatherAndSkySystem {
@@ -656,6 +667,33 @@ export class WeatherAndSkySystem {
     this.timeOfDay = (this.timeOfDay + hours) % 24;
   }
 
+  private readonly cCloudGold = new THREE.Color(0xffcfa0);
+  private readonly cCloudOvercastBright = new THREE.Color(0x9ca7b0);
+  private readonly cCloudNightBright = new THREE.Color(0x162030);
+  private readonly cCloudGoldDark = new THREE.Color(0x8c6258);
+  private readonly cCloudOvercastDark = new THREE.Color(0x525d66);
+  private readonly cCloudNightDark = new THREE.Color(0x090f18);
+  private readonly cHemiSkyDay = new THREE.Color(0xdcebf7);
+  private readonly cHemiGroundGold = new THREE.Color(0x4a3f26);
+  private readonly cHemiGroundNight = new THREE.Color(0x0b1014);
+
+  private snapFogNextFrame = false;
+
+  setWeather(weather: WeatherId, instant = false): WeatherId {
+    const idx = WEATHER_ORDER.indexOf(weather);
+    if (idx >= 0) {
+      this.weatherIdx = idx;
+      this.weatherTimer = 85;
+      if (instant) {
+        const targetRain = weather === 'storm' ? 0.84 : weather === 'rain' ? 0.66 : 0.0;
+        this.rain.material.uniforms.uOpacity.value = targetRain;
+        this.rain.mesh.visible = targetRain > 0.015;
+        this.snapFogNextFrame = true;
+      }
+    }
+    return this.currentWeather;
+  }
+
   cycleWeather(): WeatherId {
     this.weatherIdx = (this.weatherIdx + 1) % WEATHER_ORDER.length;
     this.weatherTimer = 85;
@@ -678,7 +716,8 @@ export class WeatherAndSkySystem {
     playerPos: THREE.Vector3,
     scene: THREE.Scene,
     sound: SoundEngine,
-    flashEl: HTMLElement | null
+    flashEl: HTMLElement | null,
+    camForward?: THREE.Vector3
   ): SkyFrameState {
     this.elapsed += dt;
     this.timeOfDay = (this.timeOfDay + dt * 0.06) % 24;
@@ -744,17 +783,17 @@ export class WeatherAndSkySystem {
       this.curHorizon.multiplyScalar(0.62);
     }
 
-    // Cloud shading colors
+    // Cloud shading colors (zero per-frame allocations)
     this.tmpCloudBright
       .setHex(0xf8fafc)
-      .lerp(new THREE.Color(0xffcfa0), goldenFactor * (1 - overcastAmt * 0.5) * 0.75)
-      .lerp(new THREE.Color(0x9ca7b0), overcastAmt * 0.6)
-      .lerp(new THREE.Color(0x162030), 1 - dayFactor);
+      .lerp(this.cCloudGold, goldenFactor * (1 - overcastAmt * 0.5) * 0.75)
+      .lerp(this.cCloudOvercastBright, overcastAmt * 0.6)
+      .lerp(this.cCloudNightBright, 1 - dayFactor);
     this.tmpCloudDark
       .setHex(0x889cb0)
-      .lerp(new THREE.Color(0x8c6258), goldenFactor * (1 - overcastAmt * 0.5) * 0.55)
-      .lerp(new THREE.Color(0x525d66), overcastAmt * 0.75)
-      .lerp(new THREE.Color(0x090f18), 1 - dayFactor);
+      .lerp(this.cCloudGoldDark, goldenFactor * (1 - overcastAmt * 0.5) * 0.55)
+      .lerp(this.cCloudOvercastDark, overcastAmt * 0.75)
+      .lerp(this.cCloudNightDark, 1 - dayFactor);
     if (weather === 'storm') {
       this.tmpCloudBright.multiplyScalar(0.56);
       this.tmpCloudDark.multiplyScalar(0.5);
@@ -784,7 +823,12 @@ export class WeatherAndSkySystem {
     if (weather === 'mist') targetFog += 0.0135;
     else if (weather === 'rain') targetFog += 0.0085;
     else if (weather === 'storm') targetFog += 0.014;
-    fog.density = THREE.MathUtils.lerp(fog.density, targetFog, Math.min(1, dt * 1.4));
+    if (this.snapFogNextFrame) {
+      fog.density = targetFog;
+      this.snapFogNextFrame = false;
+    } else {
+      fog.density = THREE.MathUtils.lerp(fog.density, targetFog, Math.min(1, dt * 1.4));
+    }
 
     const overcast = weather === 'rain' || weather === 'storm';
     const weatherDim =
@@ -802,11 +846,11 @@ export class WeatherAndSkySystem {
     skyU.uSunGlowColor.value.copy(this.curSunCol);
 
     // Dynamic outdoor hemisphere sky/forest-bounce lighting (crisp sunlit-vs-shadow contrast!)
-    this.tmpHemiSky.copy(this.curMid).lerp(new THREE.Color(0xdcebf7), 0.36 * dayFactor);
+    this.tmpHemiSky.copy(this.curMid).lerp(this.cHemiSkyDay, 0.36 * dayFactor);
     this.tmpHemiGround
       .setHex(0x303e22)
-      .lerp(new THREE.Color(0x4a3f26), goldenFactor * 0.45)
-      .lerp(new THREE.Color(0x0b1014), 1 - dayFactor);
+      .lerp(this.cHemiGroundGold, goldenFactor * 0.45)
+      .lerp(this.cHemiGroundNight, 1 - dayFactor);
     this.hemiLight.color.copy(this.tmpHemiSky);
     this.hemiLight.groundColor.copy(this.tmpHemiGround);
     this.hemiLight.intensity = THREE.MathUtils.lerp(0.14, 0.72 * weatherDim, dayFactor);
@@ -844,19 +888,35 @@ export class WeatherAndSkySystem {
           Math.sin(this.elapsed * windProfile.gustSpeed * 2.13 + 1.4) * 0.35);
     const windStrength = windProfile.baseStrength + windProfile.gustAmplitude * gustMod;
 
-    // GPU-animated rain streaks
-    const targetRainAlpha = weather === 'storm' ? 0.82 : weather === 'rain' ? 0.64 : 0.0;
+    // Forward-frustum GPU-animated rain streaks (dense in view, zero behind-camera waste!)
+    const targetRainAlpha = weather === 'storm' ? 0.84 : weather === 'rain' ? 0.66 : 0.0;
     const curRainAlpha = THREE.MathUtils.lerp(
       this.rain.material.uniforms.uOpacity.value,
       targetRainAlpha,
       Math.min(1, dt * 2.2)
     );
-    this.rain.material.uniforms.uOpacity.value = curRainAlpha;
-    this.rain.material.uniforms.uTime.value = this.elapsed;
-    this.rain.material.uniforms.uPlayerPos.value.copy(playerPos);
-    this.rain.material.uniforms.uWindX.value = (weather === 'storm' ? 2.4 : 1.1) * windStrength;
-    this.rain.material.uniforms.uFallSpeed.value = weather === 'storm' ? 28.0 : 21.0;
-    this.rain.mesh.visible = curRainAlpha > 0.015;
+    const rainVisible = curRainAlpha > 0.015;
+    this.rain.mesh.visible = rainVisible;
+    if (rainVisible) {
+      this.rain.geometry.instanceCount = weather === 'storm' ? this.rain.maxCount : 480;
+      const rainU = this.rain.material.uniforms;
+      rainU.uOpacity.value = curRainAlpha;
+      rainU.uTime.value = this.elapsed;
+      if (camForward) {
+        rainU.uCamFwd.value.copy(camForward);
+        rainU.uRainCenter.value.set(
+          playerPos.x + camForward.x * 6.2,
+          playerPos.y + 1.5,
+          playerPos.z + camForward.z * 6.2
+        );
+      } else {
+        rainU.uRainCenter.value.set(playerPos.x, playerPos.y + 1.5, playerPos.z);
+      }
+      rainU.uWindX.value = (weather === 'storm' ? 2.4 : 1.1) * windStrength;
+      rainU.uFallSpeed.value = weather === 'storm' ? 28.0 : 21.0;
+    } else {
+      this.rain.material.uniforms.uOpacity.value = curRainAlpha;
+    }
 
     if (weather === 'storm' && Math.random() < dt * 0.12) {
       this.lightningFlash = 0.85;

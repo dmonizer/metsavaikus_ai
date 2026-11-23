@@ -79,7 +79,8 @@ import {
   MinimapRenderer,
 } from '../world/minimapMath';
 import { ComputeEngine } from '../world/wasmCompute';
-import { WEATHER_LABELS, WeatherAndSkySystem } from '../world/weatherAndSky';
+import { computeFogCullDistance } from '../world/forestFrustumCuller';
+import { WEATHER_LABELS, WeatherAndSkySystem, WeatherId } from '../world/weatherAndSky';
 
 export type GamePhase = 'title' | 'playing' | 'paused';
 
@@ -140,6 +141,7 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _move = new THREE.Vector3();
 const _lookDir = new THREE.Vector3();
+const _camForward = new THREE.Vector3(0, 0, -1);
 const _holdPos = new THREE.Vector3();
 const _euler = new THREE.Euler(0, 0, 0, 'YXZ');
 const _rayCenter = new THREE.Vector2(0, 0);
@@ -171,7 +173,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let isTimeoutFrame = false;
 
     const isSoftwareGl = detectSoftwareGl();
-    const maxDpr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.35);
+    const maxDpr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.25);
     let currentDpr = maxDpr;
     let drsCheckTimer = 0;
 
@@ -291,7 +293,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     raycaster.far = 3.8;
 
     const chunkStats: ChunkVisibilityStats = { visibleChunks: 0, lod0: 0, lod1: 0, lod2: 0 };
-    const vegStats: VegetationStats = { treesRendered: 0, foliageRendered: 0 };
+    const vegStats: VegetationStats = {
+      treesRendered: 0,
+      foliageRendered: 0,
+      culledInstances: 0,
+      candidateInstances: 0,
+    };
 
     function getSurfaceHeightAt(x: number, z: number): number {
       let h = getTerrainHeight(x, z);
@@ -599,9 +606,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
-      const pr = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
-      renderer.setPixelRatio(pr);
-      weatherSky.setPixelRatio(pr);
+      const nextMax = isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.25);
+      currentDpr = Math.min(currentDpr, nextMax);
+      renderer.setPixelRatio(currentDpr);
+      weatherSky.setPixelRatio(currentDpr);
     };
 
     document.addEventListener('pointerlockchange', onPointerLockChange);
@@ -918,6 +926,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         const camY = getTerrainHeight(camX, camZ) + 6.5;
         camera.position.set(camX, camY, camZ);
         camera.lookAt(spawnX + 2, getTerrainHeight(spawnX + 2, -22) + 2.2, -22);
+        camera.updateMatrixWorld();
       } else if (curPhase === 'playing') {
         const t0 = performance.now();
         updatePlayer(dt);
@@ -930,36 +939,39 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       } else {
         camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
         camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
       }
 
       if (curPhase !== 'paused') {
+        camera.getWorldDirection(_camForward);
+
         const tp0 = performance.now();
         const skyInfo = weatherSky.update(
           dt,
           player.pos,
           scene,
           sound,
-          hudRefs.flashEl.current
+          hudRefs.flashEl.current,
+          _camForward
         );
         const tp1 = performance.now();
         skyMs = tp1 - tp0;
         skyTimeLabel = skyInfo.timeLabel;
         skyWindStrength = skyInfo.windStrength;
 
-        propsCtx?.updateDynamicProps(elapsed, camera.position.x, camera.position.z, skyInfo);
-        const tp2 = performance.now();
-        propsMs += tp2 - tp1;
+        // Fog-aware dynamic horizon cutoff: in rain/mist/storm, geometry past 99.4% fog is culled
+        const maxRenderDist = computeFogCullDistance(skyInfo.fogDensity);
 
         if (weatherSky.currentWeather !== lastObservedWeather) {
           lastObservedWeather = weatherSky.currentWeather;
-          perfLogger.recordEvent(`autoWeather->${lastObservedWeather}`, tp2);
+          perfLogger.recordEvent(`autoWeather->${lastObservedWeather}`, tp1);
         }
 
         if (terrainMgr && vegetation) {
           terrainMgr.setLightingState(skyInfo.dayFactor, elapsed);
-          terrainMgr.update(camera, chunkStats);
-          const tp3 = performance.now();
-          terrainMs = tp3 - tp2;
+          terrainMgr.update(camera, chunkStats, maxRenderDist);
+          const tp2 = performance.now();
+          terrainMs = tp2 - tp1;
 
           vegetation.update(
             terrainMgr.activeSlots,
@@ -970,10 +982,27 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             skyInfo.windStrength,
             vegStats,
             skyInfo.sunDir,
-            skyInfo.sunColor
+            skyInfo.sunColor,
+            terrainMgr.frustumPlanes,
+            _camForward,
+            maxRenderDist
+          );
+          const tp3 = performance.now();
+          vegMs = tp3 - tp2;
+
+          propsCtx?.updateDynamicProps(
+            elapsed,
+            camera.position.x,
+            camera.position.z,
+            skyInfo,
+            terrainMgr.frustumPlanes,
+            maxRenderDist
           );
           const tp4 = performance.now();
-          vegMs = tp4 - tp3;
+          propsMs += tp4 - tp3;
+        } else {
+          propsCtx?.updateDynamicProps(elapsed, camera.position.x, camera.position.z, skyInfo);
+          propsMs += performance.now() - tp1;
         }
 
         // Smart on-demand shadow map updates: 0 GPU shadow passes while standing still, throttled to every 2nd frame while sprinting!
@@ -992,17 +1021,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
-        // Smooth Automatic Dynamic Resolution Scaling (DRS) to keep real GPUs locked above 50-60 FPS
+        // Reactive Automatic Dynamic Resolution Scaling (DRS) to keep real GPUs locked at 50-60+ FPS even in rain/storm
         if (!isSoftwareGl && curPhase === 'playing') {
           drsCheckTimer += dt;
-          if (drsCheckTimer >= 1.8) {
+          if (drsCheckTimer >= 0.9) {
             drsCheckTimer = 0;
-            if (fpsEma < 47 && currentDpr > 0.92) {
-              currentDpr = Math.max(0.92, +(currentDpr - 0.12).toFixed(2));
+            if (fpsEma < 48 && currentDpr > 0.72) {
+              const step = fpsEma < 32 ? 0.16 : 0.1;
+              currentDpr = Math.max(0.72, +(currentDpr - step).toFixed(2));
               renderer.setPixelRatio(currentDpr);
               weatherSky.setPixelRatio(currentDpr);
             } else if (fpsEma > 57 && currentDpr < maxDpr) {
-              currentDpr = Math.min(maxDpr, +(currentDpr + 0.08).toFixed(2));
+              currentDpr = Math.min(maxDpr, +(currentDpr + 0.06).toFixed(2));
               renderer.setPixelRatio(currentDpr);
               weatherSky.setPixelRatio(currentDpr);
             }
@@ -1026,6 +1056,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           renderer.domElement.dataset.visibleChunks = String(chunkStats.visibleChunks);
           renderer.domElement.dataset.treesRendered = String(vegStats.treesRendered);
           renderer.domElement.dataset.foliageRendered = String(vegStats.foliageRendered);
+          renderer.domElement.dataset.culledInstances = String(vegStats.culledInstances ?? 0);
+          renderer.domElement.dataset.candidateInstances = String(vegStats.candidateInstances ?? 0);
+          renderer.domElement.dataset.fogCullDist = maxRenderDist.toFixed(1);
+          renderer.domElement.dataset.pixelRatio = currentDpr.toFixed(2);
           renderer.domElement.dataset.drawCalls = String(renderer.info.render.calls);
           renderer.domElement.dataset.triangles = String(renderer.info.render.triangles);
           renderer.domElement.dataset.weather = weatherSky.currentWeather;
@@ -1190,7 +1224,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const activeBp = getActiveBlueprint();
       minimap = createMinimapRenderer(activeBp, propsCtx.boardwalkZones);
 
-      const viewParam = new URLSearchParams(window.location.search).get('view');
+      const searchParams = new URLSearchParams(window.location.search);
+      const viewParam = searchParams.get('view');
+      const weatherParam = searchParams.get('weather') as WeatherId | null;
+      if (
+        weatherParam === 'clear' ||
+        weatherParam === 'mist' ||
+        weatherParam === 'rain' ||
+        weatherParam === 'storm'
+      ) {
+        weatherSky.setWeather(weatherParam, true);
+        lastObservedWeather = weatherParam;
+      }
       if (viewParam === 'mushrooms' && propsCtx.heroMushroomPos) {
         const hx = propsCtx.heroMushroomPos.x;
         const hz = propsCtx.heroMushroomPos.z;

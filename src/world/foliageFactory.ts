@@ -20,6 +20,12 @@ import {
 import { ActiveChunkSlot } from './terrainChunkManager';
 import { WorldTextures } from './proceduralTextures';
 import { CircleCollider } from './architectureAndProps';
+import {
+  classifySphereFrustum,
+  commitCompactedInstancedMesh,
+  FrustumCullStatus,
+  sphereIntersectsFrustum,
+} from './forestFrustumCuller';
 
 function seededRand(seed: number): () => number {
   let s = (seed | 0) ^ 0x85ebca6b;
@@ -1143,21 +1149,29 @@ interface BakedSlab {
   count: number;
   matrices: Float32Array;
   colors: Float32Array;
+  // Packed [cx, cy, cz, radius] per instance for exact per-instance frustum culling
+  bounds: Float32Array;
 }
 
 const EMPTY_SLAB: BakedSlab = {
   count: 0,
   matrices: new Float32Array(0),
   colors: new Float32Array(0),
+  bounds: new Float32Array(0),
 };
 
 const _bakeDummy = new THREE.Object3D();
 
-function bakeRecords(records: InstanceRecord[]): BakedSlab {
+function bakeRecords(
+  records: InstanceRecord[],
+  centerYOffset: number,
+  boundRadius: number
+): BakedSlab {
   const n = records.length;
   if (n === 0) return EMPTY_SLAB;
   const matrices = new Float32Array(n * 16);
   const colors = new Float32Array(n * 3);
+  const bounds = new Float32Array(n * 4);
   for (let i = 0; i < n; i++) {
     const rec = records[i];
     _bakeDummy.position.set(rec.x, rec.y, rec.z);
@@ -1168,11 +1182,20 @@ function bakeRecords(records: InstanceRecord[]): BakedSlab {
     colors[i * 3] = rec.r;
     colors[i * 3 + 1] = rec.g;
     colors[i * 3 + 2] = rec.b;
+    const bOff = i * 4;
+    bounds[bOff] = rec.x;
+    bounds[bOff + 1] = rec.y + centerYOffset * rec.scale;
+    bounds[bOff + 2] = rec.z;
+    bounds[bOff + 3] = boundRadius * rec.scale;
   }
-  return { count: n, matrices, colors };
+  return { count: n, matrices, colors, bounds };
 }
 
-interface ChunkBucketBaked {
+interface SubCellBaked {
+  cx: number;
+  cy: number;
+  cz: number;
+  r: number;
   birch: BakedSlab;
   pine: BakedSlab;
   bogPine: BakedSlab;
@@ -1186,30 +1209,73 @@ interface ChunkBucketBaked {
   reed: BakedSlab;
   boulder: BakedSlab;
   deadfall: BakedSlab;
+  totalInstances: number;
+}
+
+interface ChunkBucketBaked {
+  cells: SubCellBaked[];
   colliders: CircleCollider[];
+}
+
+interface GrassTileBaked {
+  slab: BakedSlab;
+  cx: number;
+  cy: number;
+  cz: number;
+  r: number;
+}
+
+const EMPTY_GRASS_TILE: GrassTileBaked = {
+  slab: EMPTY_SLAB,
+  cx: 0,
+  cy: 0,
+  cz: 0,
+  r: 0,
+};
+
+function partitionByQuadrant(
+  records: InstanceRecord[],
+  midX: number,
+  midZ: number
+): [InstanceRecord[], InstanceRecord[], InstanceRecord[], InstanceRecord[]] {
+  const q: [InstanceRecord[], InstanceRecord[], InstanceRecord[], InstanceRecord[]] = [
+    [],
+    [],
+    [],
+    [],
+  ];
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const idx = (rec.z >= midZ ? 2 : 0) + (rec.x >= midX ? 1 : 0);
+    q[idx].push(rec);
+  }
+  return q;
 }
 
 export interface VegetationStats {
   treesRendered: number;
   foliageRendered: number;
+  culledInstances?: number;
+  candidateInstances?: number;
 }
 
-const CAP_LOD0 = 560;
-const CAP_LOD1 = 980;
-const CAP_LOD2 = 1600;
-const CAP_BOG_PINE = 360;
-const CAP_SAPLING = 950;
-const CAP_HAZEL = 1150;
-const CAP_JUNIPER = 800;
-const CAP_FERN = 1400;
-const CAP_SHRUB = 2400;
-const CAP_MOSS = 900;
-const CAP_REED = 1200;
-const CAP_BOULDER = 260;
-const CAP_DEADFALL = 200;
+const CAP_LOD0 = 420;
+const CAP_LOD1 = 760;
+const CAP_LOD2 = 1280;
+const CAP_BOG_PINE = 300;
+const CAP_SAPLING = 720;
+const CAP_HAZEL = 880;
+const CAP_JUNIPER = 640;
+const CAP_FERN = 1040;
+const CAP_SHRUB = 1800;
+const CAP_MOSS = 680;
+const CAP_REED = 960;
+const CAP_BOULDER = 220;
+const CAP_DEADFALL = 180;
 
 // Each instanced photographic grass clump renders 3 crossed curved photo-cards (6 tris!)
-const GRASS_BLADE_CAP = 7200;
+// Frustum culling trims 360-degree carpet to only camera-visible tiles (~65% fewer GPU instances!)
+const GRASS_BLADE_CAP = 5200;
 const GRASS_TILE_SIZE = 16;
 const GRASS_TILE_RADIUS = 2; // 5x5 minus 4 far corners = 21 tiles (~34-42m carpet radius)
 const GRASS_BLADE_SPACING = 0.68;
@@ -1265,17 +1331,24 @@ export class WorldVegetationSystem {
   readonly sunColorUniform = { value: new THREE.Color(0xfff1d6) };
 
   private readonly chunkCache = new Map<string, ChunkBucketBaked>();
-  private readonly grassTileCache = new Map<string, BakedSlab>();
+  private readonly grassTileCache = new Map<string, GrassTileBaked>();
   private readonly indexedColliderChunks = new Set<string>();
   private readonly colliderGrid = new Map<string, CircleCollider[]>();
   private readonly buildingRects: BuildingRect[];
   private readonly disposables: Array<{ dispose: () => void }> = [];
   private lastVisibilitySig = '';
+  private lastCullCamX = 999999;
+  private lastCullCamZ = 999999;
+  private lastCullFwdX = 0;
+  private lastCullFwdZ = 0;
+  private lastFogCullDist = 225;
   private lastGrassTileX = 999999;
   private lastGrassTileZ = 999999;
+  private lastGrassFwdX = 0;
+  private lastGrassFwdZ = 0;
   private grassHasPendingTiles = true;
 
-  // Tree LOD InstancedMeshes
+  // Tree LOD InstancedMeshes (paired trunk+crown share identical instanceMatrix & instanceColor buffers!)
   private birchTrunk0!: THREE.InstancedMesh;
   private birchCrown0!: THREE.InstancedMesh;
   private birchTrunk1!: THREE.InstancedMesh;
@@ -1308,7 +1381,7 @@ export class WorldVegetationSystem {
   private hazelLeafMesh!: THREE.InstancedMesh;
   private juniperMesh!: THREE.InstancedMesh;
 
-  // Ground Coverage + Player-Centered Continuous Tufted Grass Carpet
+  // Ground Coverage + Player-Centered Frustum-Culled Grass Carpet
   private grassBladeMesh!: THREE.InstancedMesh;
   private fernMesh!: THREE.InstancedMesh;
   private shrubMesh!: THREE.InstancedMesh;
@@ -1316,9 +1389,12 @@ export class WorldVegetationSystem {
   private reedMesh!: THREE.InstancedMesh;
   private boulderMesh!: THREE.InstancedMesh;
 
-  private allChunkMeshes: THREE.InstancedMesh[] = [];
+  private primaryChunkMeshes: THREE.InstancedMesh[] = [];
+  private pairedFollowers: Array<{ primary: THREE.InstancedMesh; follower: THREE.InstancedMesh }> = [];
   private cachedTreesCount = 0;
   private cachedFoliageCount = 0;
+  private cachedCulledCount = 0;
+  private cachedCandidateCount = 0;
   private diagChunkBakes = 0;
   private diagChunkEvictions = 0;
   private diagVisRebuilds = 0;
@@ -1408,19 +1484,7 @@ export class WorldVegetationSystem {
       Math.abs(centerZ) > WORLD_HALF + CHUNK_SIZE * 0.5
     ) {
       const empty: ChunkBucketBaked = {
-        birch: EMPTY_SLAB,
-        pine: EMPTY_SLAB,
-        bogPine: EMPTY_SLAB,
-        spruce: EMPTY_SLAB,
-        sapling: EMPTY_SLAB,
-        hazelBush: EMPTY_SLAB,
-        juniperBush: EMPTY_SLAB,
-        fern: EMPTY_SLAB,
-        shrub: EMPTY_SLAB,
-        mossHummock: EMPTY_SLAB,
-        reed: EMPTY_SLAB,
-        boulder: EMPTY_SLAB,
-        deadfall: EMPTY_SLAB,
+        cells: [],
         colliders: [],
       };
       this.chunkCache.set(key, empty);
@@ -1728,20 +1792,86 @@ export class WorldVegetationSystem {
       if (s > 0.72) colliders.push({ x: bx, z: bz, r: s * 0.65 });
     }
 
+    // Partition into 2x2 spatial sub-cells (24x24m quadrants) for hierarchical frustum culling!
+    const qBirch = partitionByQuadrant(birch, centerX, centerZ);
+    const qPine = partitionByQuadrant(pine, centerX, centerZ);
+    const qBogPine = partitionByQuadrant(bogPine, centerX, centerZ);
+    const qSpruce = partitionByQuadrant(spruce, centerX, centerZ);
+    const qSapling = partitionByQuadrant(sapling, centerX, centerZ);
+    const qHazel = partitionByQuadrant(hazelBush, centerX, centerZ);
+    const qJuniper = partitionByQuadrant(juniperBush, centerX, centerZ);
+    const qFern = partitionByQuadrant(fern, centerX, centerZ);
+    const qShrub = partitionByQuadrant(shrub, centerX, centerZ);
+    const qMoss = partitionByQuadrant(mossHummock, centerX, centerZ);
+    const qReed = partitionByQuadrant(reed, centerX, centerZ);
+    const qBoulder = partitionByQuadrant(boulder, centerX, centerZ);
+    const qDeadfall = partitionByQuadrant(deadfall, centerX, centerZ);
+
+    const quarter = CHUNK_SIZE * 0.25;
+    const cells: SubCellBaked[] = [];
+    for (let q = 0; q < 4; q++) {
+      const sBirch = bakeRecords(qBirch[q], 6.0, 7.6);
+      const sPine = bakeRecords(qPine[q], 7.4, 8.6);
+      const sBogPine = bakeRecords(qBogPine[q], 1.6, 2.5);
+      const sSpruce = bakeRecords(qSpruce[q], 5.6, 6.8);
+      const sSapling = bakeRecords(qSapling[q], 1.1, 1.8);
+      const sHazel = bakeRecords(qHazel[q], 1.1, 1.9);
+      const sJuniper = bakeRecords(qJuniper[q], 0.9, 1.6);
+      const sFern = bakeRecords(qFern[q], 0.4, 1.2);
+      const sShrub = bakeRecords(qShrub[q], 0.35, 1.1);
+      const sMoss = bakeRecords(qMoss[q], 0.25, 1.2);
+      const sReed = bakeRecords(qReed[q], 0.7, 1.4);
+      const sBoulder = bakeRecords(qBoulder[q], 0.3, 1.3);
+      const sDeadfall = bakeRecords(qDeadfall[q], 0.35, 2.2);
+
+      const totalInstances =
+        sBirch.count +
+        sPine.count +
+        sBogPine.count +
+        sSpruce.count +
+        sSapling.count +
+        sHazel.count +
+        sJuniper.count +
+        sFern.count +
+        sShrub.count +
+        sMoss.count +
+        sReed.count +
+        sBoulder.count +
+        sDeadfall.count;
+      if (totalInstances === 0) continue;
+
+      const qx = minX + ((q & 1) ? quarter * 3 : quarter);
+      const qz = minZ + ((q & 2) ? quarter * 3 : quarter);
+      const baseH = getTerrainHeight(qx, qz);
+      const hasTallTrees = sBirch.count + sPine.count + sSpruce.count > 0;
+      const cy = baseH + (hasTallTrees ? 6.5 : 1.5);
+      // Half-diagonal of 24x24m quadrant (~17m) + crown overhang
+      const r = hasTallTrees ? 21.5 : 18.5;
+
+      cells.push({
+        cx: qx,
+        cy,
+        cz: qz,
+        r,
+        birch: sBirch,
+        pine: sPine,
+        bogPine: sBogPine,
+        spruce: sSpruce,
+        sapling: sSapling,
+        hazelBush: sHazel,
+        juniperBush: sJuniper,
+        fern: sFern,
+        shrub: sShrub,
+        mossHummock: sMoss,
+        reed: sReed,
+        boulder: sBoulder,
+        deadfall: sDeadfall,
+        totalInstances,
+      });
+    }
+
     const baked: ChunkBucketBaked = {
-      birch: bakeRecords(birch),
-      pine: bakeRecords(pine),
-      bogPine: bakeRecords(bogPine),
-      spruce: bakeRecords(spruce),
-      sapling: bakeRecords(sapling),
-      hazelBush: bakeRecords(hazelBush),
-      juniperBush: bakeRecords(juniperBush),
-      fern: bakeRecords(fern),
-      shrub: bakeRecords(shrub),
-      mossHummock: bakeRecords(mossHummock),
-      reed: bakeRecords(reed),
-      boulder: bakeRecords(boulder),
-      deadfall: bakeRecords(deadfall),
+      cells,
       colliders,
     };
 
@@ -1772,6 +1902,7 @@ export class WorldVegetationSystem {
   ): THREE.InstancedMesh {
     const mesh = new THREE.InstancedMesh(geo, mat, maxCapacity);
     mesh.count = 0;
+    mesh.visible = false;
     mesh.frustumCulled = false;
     mesh.castShadow = castShadow;
     mesh.receiveShadow = receiveShadow;
@@ -1781,9 +1912,36 @@ export class WorldVegetationSystem {
     mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
     mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
     this.group.add(mesh);
-    if (registerInChunkMeshes) this.allChunkMeshes.push(mesh);
+    if (registerInChunkMeshes) this.primaryChunkMeshes.push(mesh);
     this.disposables.push(geo, mat);
     return mesh;
+  }
+
+  /**
+   * Creates a paired InstancedMesh (e.g. crown sharing trunk's instanceMatrix & instanceColor GPU buffers)
+   * cutting CPU matrix/color copies, VRAM, and WebGL bufferSubData uploads in half!
+   */
+  private createPairedFollower(
+    primary: THREE.InstancedMesh,
+    geo: THREE.BufferGeometry,
+    mat: THREE.Material,
+    maxCapacity: number,
+    castShadow = false,
+    receiveShadow = false
+  ): THREE.InstancedMesh {
+    const follower = new THREE.InstancedMesh(geo, mat, maxCapacity);
+    follower.count = 0;
+    follower.visible = false;
+    follower.frustumCulled = false;
+    follower.castShadow = castShadow;
+    follower.receiveShadow = receiveShadow;
+    // Share exact GPU InstancedBufferAttributes with primary trunk/stem mesh
+    follower.instanceMatrix = primary.instanceMatrix;
+    follower.instanceColor = primary.instanceColor;
+    this.group.add(follower);
+    this.pairedFollowers.push({ primary, follower });
+    this.disposables.push(geo, mat);
+    return follower;
   }
 
   private buildInstancedLayers(textures: WorldTextures, isSoftwareGl: boolean): void {
@@ -2004,30 +2162,30 @@ export class WorldVegetationSystem {
       map: textures.spruceBark,
     });
 
-    // Trees: ONLY close LOD0 trunks cast & receive shadows; all alpha-tested crowns & distant LODs skip heavy shadow sampling!
+    // Trees: ONLY close LOD0 trunks cast & receive shadows; paired crowns share trunk GPU buffers (0 duplicate uploads)!
     this.birchTrunk0 = this.createInstanced(birch.trunkLod0, birchBarkMat, CAP_LOD0, shadows, true);
-    this.birchCrown0 = this.createInstanced(birch.crownLod0, birchLeafMat, CAP_LOD0, false, false);
+    this.birchCrown0 = this.createPairedFollower(this.birchTrunk0, birch.crownLod0, birchLeafMat, CAP_LOD0);
     this.birchTrunk1 = this.createInstanced(birch.trunkLod1, birchBarkFarMat, CAP_LOD1, false, false);
-    this.birchCrown1 = this.createInstanced(birch.crownLod1, birchLeafMat, CAP_LOD1, false, false);
+    this.birchCrown1 = this.createPairedFollower(this.birchTrunk1, birch.crownLod1, birchLeafMat, CAP_LOD1);
     this.birchTrunk2 = this.createInstanced(birch.trunkLod2, birchBarkFarMat, CAP_LOD2, false, false);
-    this.birchCrown2 = this.createInstanced(birch.crownLod2, birchLeafMat, CAP_LOD2, false, false);
+    this.birchCrown2 = this.createPairedFollower(this.birchTrunk2, birch.crownLod2, birchLeafMat, CAP_LOD2);
 
     this.pineTrunk0 = this.createInstanced(pine.trunkLod0, pineBarkMat, CAP_LOD0, shadows, true);
-    this.pineCrown0 = this.createInstanced(pine.crownLod0, pineLeafMat, CAP_LOD0, false, false);
+    this.pineCrown0 = this.createPairedFollower(this.pineTrunk0, pine.crownLod0, pineLeafMat, CAP_LOD0);
     this.pineTrunk1 = this.createInstanced(pine.trunkLod1, pineBarkFarMat, CAP_LOD1, false, false);
-    this.pineCrown1 = this.createInstanced(pine.crownLod1, pineLeafMat, CAP_LOD1, false, false);
+    this.pineCrown1 = this.createPairedFollower(this.pineTrunk1, pine.crownLod1, pineLeafMat, CAP_LOD1);
     this.pineTrunk2 = this.createInstanced(pine.trunkLod2, pineBarkFarMat, CAP_LOD2, false, false);
-    this.pineCrown2 = this.createInstanced(pine.crownLod2, pineLeafMat, CAP_LOD2, false, false);
+    this.pineCrown2 = this.createPairedFollower(this.pineTrunk2, pine.crownLod2, pineLeafMat, CAP_LOD2);
 
     this.bogPineTrunk = this.createInstanced(bogPine.trunk, bogPineBarkMat, CAP_BOG_PINE, shadows, true);
-    this.bogPineCrown = this.createInstanced(bogPine.crown, bogPineLeafMat, CAP_BOG_PINE, false, false);
+    this.bogPineCrown = this.createPairedFollower(this.bogPineTrunk, bogPine.crown, bogPineLeafMat, CAP_BOG_PINE);
 
     this.spruceTrunk0 = this.createInstanced(spruce.trunkLod0, spruceBarkMat, CAP_LOD0, shadows, true);
-    this.spruceCrown0 = this.createInstanced(spruce.crownLod0, spruceLeafMat, CAP_LOD0, false, false);
+    this.spruceCrown0 = this.createPairedFollower(this.spruceTrunk0, spruce.crownLod0, spruceLeafMat, CAP_LOD0);
     this.spruceTrunk1 = this.createInstanced(spruce.trunkLod1, spruceBarkFarMat, CAP_LOD1, false, false);
-    this.spruceCrown1 = this.createInstanced(spruce.crownLod1, spruceLeafMat, CAP_LOD1, false, false);
+    this.spruceCrown1 = this.createPairedFollower(this.spruceTrunk1, spruce.crownLod1, spruceLeafMat, CAP_LOD1);
     this.spruceTrunk2 = this.createInstanced(spruce.trunkLod2, spruceBarkFarMat, CAP_LOD2, false, false);
-    this.spruceCrown2 = this.createInstanced(spruce.crownLod2, spruceLeafMat, CAP_LOD2, false, false);
+    this.spruceCrown2 = this.createPairedFollower(this.spruceTrunk2, spruce.crownLod2, spruceLeafMat, CAP_LOD2);
 
     this.saplingMesh = this.createInstanced(saplingGeo, saplingMat, CAP_SAPLING, false, false);
     const deadfallMat = new THREE.MeshStandardMaterial({
@@ -2040,9 +2198,9 @@ export class WorldVegetationSystem {
     });
     this.deadfallMesh = this.createInstanced(deadfallGeo, deadfallMat, CAP_DEADFALL, false, true);
 
-    // Solid Woodland Bushes (skip shadow-map reads on overdrawn leaf sprays for massive GPU speedup!)
+    // Solid Woodland Bushes (hazel leaves share hazel stem GPU buffers!)
     this.hazelStemMesh = this.createInstanced(hazel.stems, hazelStemMat, CAP_HAZEL, false, false);
-    this.hazelLeafMesh = this.createInstanced(hazel.leaves, hazelLeafMat, CAP_HAZEL, false, false);
+    this.hazelLeafMesh = this.createPairedFollower(this.hazelStemMesh, hazel.leaves, hazelLeafMat, CAP_HAZEL);
     this.juniperMesh = this.createInstanced(juniperGeo, juniperMat, CAP_JUNIPER, false, false);
 
     // Photorealistic Multi-Blade Grass, Sedge & Wild Clover Carpet (6 tris/clump, 1 draw call, backlit SSS!)
@@ -2135,7 +2293,7 @@ export class WorldVegetationSystem {
     this.boulderMesh = this.createInstanced(boulderGeo, boulderMat, CAP_BOULDER, shadows, true);
   }
 
-  private bakeGrassTile(tx: number, tz: number): BakedSlab {
+  private bakeGrassTile(tx: number, tz: number): GrassTileBaked {
     const minX = tx * GRASS_TILE_SIZE;
     const minZ = tz * GRASS_TILE_SIZE;
     const maxX = minX + GRASS_TILE_SIZE;
@@ -2143,7 +2301,7 @@ export class WorldVegetationSystem {
     const minWorld = -WORLD_HALF + 2;
     const maxWorld = WORLD_HALF - 2;
     if (maxX < minWorld || minX > maxWorld || maxZ < minWorld || minZ > maxWorld) {
-      return EMPTY_SLAB;
+      return EMPTY_GRASS_TILE;
     }
 
     const tileCx = minX + GRASS_TILE_SIZE * 0.5;
@@ -2168,6 +2326,8 @@ export class WorldVegetationSystem {
     const baseIz = tz * cellsPerSide;
 
     let count = 0;
+    let minY = Infinity;
+    let maxY = -Infinity;
     for (let gz = 0; gz < cellsPerSide; gz++) {
       const bz = minZ + (gz + 0.5) * GRASS_BLADE_SPACING;
       if (bz >= maxZ || bz < minWorld || bz > maxWorld) continue;
@@ -2205,6 +2365,9 @@ export class WorldVegetationSystem {
 
         const py = getTerrainHeight(px, pz);
         if (py < SWAMP_WATER_Y + 0.12) continue;
+
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
 
         const isl = getNearestSwampIsland(px, pz);
         const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
@@ -2247,19 +2410,49 @@ export class WorldVegetationSystem {
       }
     }
 
-    if (count === 0) return EMPTY_SLAB;
+    if (count === 0) return EMPTY_GRASS_TILE;
+    const cy = (minY + maxY) * 0.5 + 0.35;
+    const halfY = (maxY - minY) * 0.5 + 0.8;
+    const halfXZ = GRASS_TILE_SIZE * 0.5 + 0.6;
     return {
-      count,
-      matrices: tmpMat.slice(0, count * 16),
-      colors: tmpCol.slice(0, count * 3),
+      slab: {
+        count,
+        matrices: tmpMat.slice(0, count * 16),
+        colors: tmpCol.slice(0, count * 3),
+        bounds: new Float32Array(0),
+      },
+      cx: tileCx,
+      cy,
+      cz: tileCz,
+      r: Math.hypot(halfXZ, halfY, halfXZ),
     };
   }
 
-  private updateGrassCarpet(camX: number, camZ: number, bakeBudget = 2): void {
+  private updateGrassCarpet(
+    camX: number,
+    camZ: number,
+    frustumPlanes?: Float32Array,
+    camForward?: THREE.Vector3,
+    bakeBudget = 2
+  ): void {
     const ptx = Math.floor(camX / GRASS_TILE_SIZE);
     const ptz = Math.floor(camZ / GRASS_TILE_SIZE);
     const tileMoved = ptx !== this.lastGrassTileX || ptz !== this.lastGrassTileZ;
-    if (!tileMoved && !this.grassHasPendingTiles) return;
+
+    let rotChanged = false;
+    if (camForward) {
+      const fl = Math.hypot(camForward.x, camForward.z) || 1;
+      const fx = camForward.x / fl;
+      const fz = camForward.z / fl;
+      const dot = fx * this.lastGrassFwdX + fz * this.lastGrassFwdZ;
+      if (dot < 0.99) {
+        rotChanged = true;
+        this.lastGrassFwdX = fx;
+        this.lastGrassFwdZ = fz;
+      }
+    }
+
+    if (!tileMoved && !rotChanged && !this.grassHasPendingTiles) return;
 
     this.lastGrassTileX = ptx;
     this.lastGrassTileZ = ptz;
@@ -2278,14 +2471,27 @@ export class WorldVegetationSystem {
 
           const tx = ptx + dx;
           const tz = ptz + dz;
+          const tileCx = (tx + 0.5) * GRASS_TILE_SIZE;
+          const tileCz = (tz + 0.5) * GRASS_TILE_SIZE;
+
+          // Custom Frustum Culling on grass tiles (always retain ring 0 underfoot so looking down never clips!)
+          if (ring > 0 && frustumPlanes) {
+            const cached = this.grassTileCache.get(`${tx}_${tz}`);
+            const cy = cached ? cached.cy : getTerrainHeight(tileCx, tileCz) + 0.4;
+            const r = (cached ? cached.r : 12.6) + 3.2;
+            if (!sphereIntersectsFrustum(frustumPlanes, tileCx, cy, tileCz, r)) {
+              continue;
+            }
+          }
+
           const key = `${tx}_${tz}`;
-          let slab = this.grassTileCache.get(key);
-          if (slab) {
+          let tile = this.grassTileCache.get(key);
+          if (tile) {
             this.grassTileCache.delete(key);
-            this.grassTileCache.set(key, slab);
+            this.grassTileCache.set(key, tile);
           } else if (bakedThisCall < bakeBudget) {
-            slab = this.bakeGrassTile(tx, tz);
-            this.grassTileCache.set(key, slab);
+            tile = this.bakeGrassTile(tx, tz);
+            this.grassTileCache.set(key, tile);
             bakedThisCall++;
             if (this.grassTileCache.size > MAX_GRASS_TILE_CACHE) {
               const oldest = this.grassTileCache.keys().next().value;
@@ -2296,6 +2502,7 @@ export class WorldVegetationSystem {
             continue;
           }
 
+          const slab = tile.slab;
           if (slab.count === 0) continue;
           const avail = GRASS_BLADE_CAP - count;
           if (avail <= 0) continue;
@@ -2316,36 +2523,114 @@ export class WorldVegetationSystem {
     this.grassHasPendingTiles = missingTiles > 0;
     this.diagGrassRebuilds++;
     this.grassBladeMesh.count = count;
-    this.grassBladeMesh.instanceMatrix.needsUpdate = true;
-    this.grassBladeMesh.instanceColor!.needsUpdate = true;
+    commitCompactedInstancedMesh(this.grassBladeMesh);
   }
 
-  private appendSlab(
+  /**
+   * Fast-path bulk memcpy when a 24x24m sub-cell is completely INSIDE all 6 frustum planes.
+   * Only writes to `primary` (paired crowns share primary's GPU buffers!).
+   */
+  private appendSlabBulk(
     slab: BakedSlab,
-    meshA: THREE.InstancedMesh,
-    meshB: THREE.InstancedMesh | null,
+    primary: THREE.InstancedMesh,
     maxCap: number
-  ): void {
-    if (slab.count === 0) return;
-    const avail = maxCap - meshA.count;
-    if (avail <= 0) return;
-    const take = slab.count <= avail ? slab.count : avail;
-    const matSrc = take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16);
-    const colSrc = take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3);
+  ): number {
+    const n = slab.count;
+    if (n === 0) return 0;
+    const avail = maxCap - primary.count;
+    if (avail <= 0) return 0;
+    const take = n <= avail ? n : avail;
+    const matSrc = take === n ? slab.matrices : slab.matrices.subarray(0, take * 16);
+    const colSrc = take === n ? slab.colors : slab.colors.subarray(0, take * 3);
 
-    const matArrA = meshA.instanceMatrix.array as Float32Array;
-    matArrA.set(matSrc, meshA.count * 16);
-    const colArrA = meshA.instanceColor!.array as Float32Array;
-    colArrA.set(colSrc, meshA.count * 3);
-    meshA.count += take;
+    const matArr = primary.instanceMatrix.array as Float32Array;
+    matArr.set(matSrc, primary.count * 16);
+    const colArr = primary.instanceColor!.array as Float32Array;
+    colArr.set(colSrc, primary.count * 3);
+    primary.count += take;
+    return take;
+  }
 
-    if (meshB) {
-      const matArrB = meshB.instanceMatrix.array as Float32Array;
-      matArrB.set(matSrc, meshB.count * 16);
-      const colArrB = meshB.instanceColor!.array as Float32Array;
-      colArrB.set(colSrc, meshB.count * 3);
-      meshB.count += take;
+  /**
+   * Exact per-instance sphere vs. 6-plane frustum culling for sub-cells straddling frustum borders.
+   */
+  private appendSlabCulled(
+    slab: BakedSlab,
+    primary: THREE.InstancedMesh,
+    maxCap: number,
+    frustumPlanes: Float32Array,
+    margin = 2.8
+  ): number {
+    const n = slab.count;
+    if (n === 0) return 0;
+    let dst = primary.count;
+    if (dst >= maxCap) return 0;
+
+    const bounds = slab.bounds;
+    const srcMat = slab.matrices;
+    const srcCol = slab.colors;
+    const dstMat = primary.instanceMatrix.array as Float32Array;
+    const dstCol = primary.instanceColor!.array as Float32Array;
+    let added = 0;
+
+    for (let i = 0; i < n; i++) {
+      const bOff = i * 4;
+      if (
+        !sphereIntersectsFrustum(
+          frustumPlanes,
+          bounds[bOff],
+          bounds[bOff + 1],
+          bounds[bOff + 2],
+          bounds[bOff + 3] + margin
+        )
+      ) {
+        continue;
+      }
+      const sm = i * 16;
+      const dm = dst * 16;
+      dstMat[dm] = srcMat[sm];
+      dstMat[dm + 1] = srcMat[sm + 1];
+      dstMat[dm + 2] = srcMat[sm + 2];
+      dstMat[dm + 3] = srcMat[sm + 3];
+      dstMat[dm + 4] = srcMat[sm + 4];
+      dstMat[dm + 5] = srcMat[sm + 5];
+      dstMat[dm + 6] = srcMat[sm + 6];
+      dstMat[dm + 7] = srcMat[sm + 7];
+      dstMat[dm + 8] = srcMat[sm + 8];
+      dstMat[dm + 9] = srcMat[sm + 9];
+      dstMat[dm + 10] = srcMat[sm + 10];
+      dstMat[dm + 11] = srcMat[sm + 11];
+      dstMat[dm + 12] = srcMat[sm + 12];
+      dstMat[dm + 13] = srcMat[sm + 13];
+      dstMat[dm + 14] = srcMat[sm + 14];
+      dstMat[dm + 15] = srcMat[sm + 15];
+
+      const sc = i * 3;
+      const dc = dst * 3;
+      dstCol[dc] = srcCol[sc];
+      dstCol[dc + 1] = srcCol[sc + 1];
+      dstCol[dc + 2] = srcCol[sc + 2];
+
+      dst++;
+      added++;
+      if (dst >= maxCap) break;
     }
+    primary.count = dst;
+    return added;
+  }
+
+  private appendSlabSmart(
+    slab: BakedSlab,
+    primary: THREE.InstancedMesh,
+    maxCap: number,
+    cellStatus: FrustumCullStatus,
+    frustumPlanes?: Float32Array
+  ): number {
+    if (slab.count === 0) return 0;
+    if (cellStatus === FrustumCullStatus.INSIDE || !frustumPlanes) {
+      return this.appendSlabBulk(slab, primary, maxCap);
+    }
+    return this.appendSlabCulled(slab, primary, maxCap, frustumPlanes);
   }
 
   prewarmAround(x: number, z: number): void {
@@ -2357,7 +2642,7 @@ export class WorldVegetationSystem {
         this.getOrBakeChunk(pcx + dx, pcz + dz);
       }
     }
-    this.updateGrassCarpet(x, z, 25);
+    this.updateGrassCarpet(x, z, undefined, undefined, 25);
     void half;
   }
 
@@ -2370,15 +2655,22 @@ export class WorldVegetationSystem {
     windStrength = 0.9,
     stats?: VegetationStats,
     sunDir?: THREE.Vector3,
-    sunColor?: THREE.Color
+    sunColor?: THREE.Color,
+    frustumPlanes?: Float32Array,
+    camForward?: THREE.Vector3,
+    maxRenderDist = 225
   ): void {
     this.windTimeUniform.value = elapsedTime;
     this.windStrengthUniform.value = windStrength;
     if (sunDir) this.sunDirUniform.value.copy(sunDir);
     if (sunColor) this.sunColorUniform.value.copy(sunColor);
 
-    this.updateGrassCarpet(camPos.x, camPos.z);
+    this.updateGrassCarpet(camPos.x, camPos.z, frustumPlanes, camForward);
 
+    const fogDist = Math.max(96, Math.min(225, maxRenderDist));
+    const fogChunkCutoffSq = (fogDist + 32) * (fogDist + 32);
+
+    // Build chunk visibility signature (rejects fog-culled and off-frustum chunks)
     let sig = '';
     for (let c = 0; c < CHUNK_COUNT; c++) {
       const lod = chunkLods[c];
@@ -2387,77 +2679,151 @@ export class WorldVegetationSystem {
       const dx = chunkSpheres[sb] - camPos.x;
       const dz = chunkSpheres[sb + 2] - camPos.z;
       const dSq = dx * dx + dz * dz;
-      const tier =
-        dSq < 46 * 46 ? 4 : dSq < 74 * 74 ? 3 : dSq < 110 * 110 ? 2 : dSq < 150 * 150 ? 1 : 0;
+      if (dSq > fogChunkCutoffSq) continue;
       const slot = activeSlots[c];
-      sig += `${slot.vcx},${slot.vcz}:${lod}:${tier};`;
+      sig += `${slot.vcx},${slot.vcz};`;
     }
 
-    if (sig === this.lastVisibilitySig) {
+    let fwdX = this.lastCullFwdX;
+    let fwdZ = this.lastCullFwdZ;
+    let rotDirty = false;
+    if (camForward) {
+      const fl = Math.hypot(camForward.x, camForward.z) || 1;
+      fwdX = camForward.x / fl;
+      fwdZ = camForward.z / fl;
+      // Re-cull whenever camera turns > ~4.5 degrees
+      rotDirty = fwdX * this.lastCullFwdX + fwdZ * this.lastCullFwdZ < 0.9968;
+    }
+    const moveSq =
+      (camPos.x - this.lastCullCamX) * (camPos.x - this.lastCullCamX) +
+      (camPos.z - this.lastCullCamZ) * (camPos.z - this.lastCullCamZ);
+    const fogDirty = Math.abs(fogDist - this.lastFogCullDist) > 6;
+
+    if (sig === this.lastVisibilitySig && moveSq < 1.2 && !rotDirty && !fogDirty) {
       if (stats) {
         stats.treesRendered = this.cachedTreesCount;
         stats.foliageRendered = this.cachedFoliageCount + this.grassBladeMesh.count;
+        stats.culledInstances = this.cachedCulledCount;
+        stats.candidateInstances = this.cachedCandidateCount;
       }
       return;
     }
+
     this.lastVisibilitySig = sig;
+    this.lastCullCamX = camPos.x;
+    this.lastCullCamZ = camPos.z;
+    this.lastCullFwdX = fwdX;
+    this.lastCullFwdZ = fwdZ;
+    this.lastFogCullDist = fogDist;
     this.diagVisRebuilds++;
 
-    for (let i = 0; i < this.allChunkMeshes.length; i++) {
-      this.allChunkMeshes[i].count = 0;
+    for (let i = 0; i < this.primaryChunkMeshes.length; i++) {
+      this.primaryChunkMeshes[i].count = 0;
     }
+
+    const lod0Sq = 36 * 36;
+    const lod1Sq = 92 * 92;
+    const fogCellSq = (fogDist + 16) * (fogDist + 16);
+    const bogDistSq = Math.min(108, fogDist) * Math.min(108, fogDist);
+    const bushDistSq = Math.min(80, fogDist) * Math.min(80, fogDist);
+    const underDistSq = 58 * 58;
+    const boulderDistSq = Math.min(115, fogDist) * Math.min(115, fogDist);
+
+    let candidateInstances = 0;
+    let renderedInstances = 0;
 
     for (let c = 0; c < CHUNK_COUNT; c++) {
       const lod = chunkLods[c];
       if (lod < 0 || chunkSpheres[c * 4 + 1] > 9000) continue;
 
       const sb = c * 4;
-      const dx = chunkSpheres[sb] - camPos.x;
-      const dz = chunkSpheres[sb + 2] - camPos.z;
-      const dSq = dx * dx + dz * dz;
+      const cdx = chunkSpheres[sb] - camPos.x;
+      const cdz = chunkSpheres[sb + 2] - camPos.z;
+      if (cdx * cdx + cdz * cdz > fogChunkCutoffSq) continue;
+
+      // Tier 1: Chunk-level frustum test (padded for tall crowns) so behind-camera chunks are never processed
+      if (
+        frustumPlanes &&
+        !sphereIntersectsFrustum(
+          frustumPlanes,
+          chunkSpheres[sb],
+          chunkSpheres[sb + 1] + 5.0,
+          chunkSpheres[sb + 2],
+          chunkSpheres[sb + 3] + 7.5
+        )
+      ) {
+        continue;
+      }
+
       const slot = activeSlots[c];
       const bucket = this.getOrBakeChunk(slot.vcx, slot.vcz);
+      const cells = bucket.cells;
 
-      if (dSq < 46 * 46) {
-        this.appendSlab(bucket.birch, this.birchTrunk0, this.birchCrown0, CAP_LOD0);
-        this.appendSlab(bucket.pine, this.pineTrunk0, this.pineCrown0, CAP_LOD0);
-        this.appendSlab(bucket.spruce, this.spruceTrunk0, this.spruceCrown0, CAP_LOD0);
-      } else if (dSq < 110 * 110) {
-        this.appendSlab(bucket.birch, this.birchTrunk1, this.birchCrown1, CAP_LOD1);
-        this.appendSlab(bucket.pine, this.pineTrunk1, this.pineCrown1, CAP_LOD1);
-        this.appendSlab(bucket.spruce, this.spruceTrunk1, this.spruceCrown1, CAP_LOD1);
-      } else {
-        this.appendSlab(bucket.birch, this.birchTrunk2, this.birchCrown2, CAP_LOD2);
-        this.appendSlab(bucket.pine, this.pineTrunk2, this.pineCrown2, CAP_LOD2);
-        this.appendSlab(bucket.spruce, this.spruceTrunk2, this.spruceCrown2, CAP_LOD2);
-      }
+      for (let qi = 0; qi < cells.length; qi++) {
+        const cell = cells[qi];
+        candidateInstances += cell.totalInstances;
 
-      if (dSq < 115 * 115) {
-        this.appendSlab(bucket.bogPine, this.bogPineTrunk, this.bogPineCrown, CAP_BOG_PINE);
-        this.appendSlab(bucket.reed, this.reedMesh, null, CAP_REED);
-      }
-      if (dSq < 92 * 92) {
-        this.appendSlab(bucket.hazelBush, this.hazelStemMesh, this.hazelLeafMesh, CAP_HAZEL);
-        this.appendSlab(bucket.juniperBush, this.juniperMesh, null, CAP_JUNIPER);
-        this.appendSlab(bucket.sapling, this.saplingMesh, null, CAP_SAPLING);
-        this.appendSlab(bucket.deadfall, this.deadfallMesh, null, CAP_DEADFALL);
-      }
-      if (dSq < 68 * 68) {
-        this.appendSlab(bucket.mossHummock, this.mossHummockMesh, null, CAP_MOSS);
-        this.appendSlab(bucket.fern, this.fernMesh, null, CAP_FERN);
-        this.appendSlab(bucket.shrub, this.shrubMesh, null, CAP_SHRUB);
-      }
-      if (dSq < 130 * 130) {
-        this.appendSlab(bucket.boulder, this.boulderMesh, null, CAP_BOULDER);
+        const dx = cell.cx - camPos.x;
+        const dz = cell.cz - camPos.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq > fogCellSq) continue;
+
+        // Tier 2: 24x24m Sub-Cell 3-State Frustum Classification (OUTSIDE / INTERSECTING / INSIDE)
+        let cellStatus = FrustumCullStatus.INSIDE;
+        if (frustumPlanes) {
+          cellStatus = classifySphereFrustum(
+            frustumPlanes,
+            cell.cx,
+            cell.cy,
+            cell.cz,
+            cell.r + 3.0
+          );
+          if (cellStatus === FrustumCullStatus.OUTSIDE) continue;
+        }
+
+        if (dSq < lod0Sq) {
+          renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
+        } else if (dSq < lod1Sq) {
+          renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
+        } else {
+          renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
+        }
+
+        if (dSq < bogDistSq) {
+          renderedInstances += this.appendSlabSmart(cell.bogPine, this.bogPineTrunk, CAP_BOG_PINE, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.reed, this.reedMesh, CAP_REED, cellStatus, frustumPlanes);
+        }
+        if (dSq < bushDistSq) {
+          renderedInstances += this.appendSlabSmart(cell.hazelBush, this.hazelStemMesh, CAP_HAZEL, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.juniperBush, this.juniperMesh, CAP_JUNIPER, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.sapling, this.saplingMesh, CAP_SAPLING, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.deadfall, this.deadfallMesh, CAP_DEADFALL, cellStatus, frustumPlanes);
+        }
+        if (dSq < underDistSq) {
+          renderedInstances += this.appendSlabSmart(cell.mossHummock, this.mossHummockMesh, CAP_MOSS, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.fern, this.fernMesh, CAP_FERN, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.shrub, this.shrubMesh, CAP_SHRUB, cellStatus, frustumPlanes);
+        }
+        if (dSq < boulderDistSq) {
+          renderedInstances += this.appendSlabSmart(cell.boulder, this.boulderMesh, CAP_BOULDER, cellStatus, frustumPlanes);
+        }
       }
     }
 
-    for (let i = 0; i < this.allChunkMeshes.length; i++) {
-      const m = this.allChunkMeshes[i];
-      if (m.count > 0) {
-        m.instanceMatrix.needsUpdate = true;
-        if (m.instanceColor) m.instanceColor.needsUpdate = true;
-      }
+    // Commit ONLY active ranges [0..count) to GPU and hide empty layers (0 draw calls!)
+    for (let i = 0; i < this.primaryChunkMeshes.length; i++) {
+      commitCompactedInstancedMesh(this.primaryChunkMeshes[i], false);
+    }
+    for (let i = 0; i < this.pairedFollowers.length; i++) {
+      const pair = this.pairedFollowers[i];
+      pair.follower.count = pair.primary.count;
+      pair.follower.visible = pair.primary.count > 0;
     }
 
     this.cachedTreesCount =
@@ -2483,9 +2849,14 @@ export class WorldVegetationSystem {
       this.boulderMesh.count +
       this.deadfallMesh.count;
 
+    this.cachedCandidateCount = candidateInstances;
+    this.cachedCulledCount = Math.max(0, candidateInstances - renderedInstances);
+
     if (stats) {
       stats.treesRendered = this.cachedTreesCount;
       stats.foliageRendered = this.cachedFoliageCount + this.grassBladeMesh.count;
+      stats.culledInstances = this.cachedCulledCount;
+      stats.candidateInstances = this.cachedCandidateCount;
     }
   }
 

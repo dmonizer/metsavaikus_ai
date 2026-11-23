@@ -16,6 +16,7 @@ import { HutDecayState } from './worldBlueprint';
 import { WorldTextures } from './proceduralTextures';
 import { SoundEngine } from './soundEngine';
 import { SkyFrameState } from './weatherAndSky';
+import { sphereIntersectsFrustum } from './forestFrustumCuller';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
 
 export interface CircleCollider {
@@ -76,7 +77,9 @@ export interface WorldPropsContext {
     elapsed: number,
     camX: number,
     camZ: number,
-    skyState?: SkyFrameState
+    skyState?: SkyFrameState,
+    frustumPlanes?: Float32Array,
+    maxRenderDist?: number
   ) => void;
   gatherMushroom: (entry: InteractiveEntry) => MushroomSpecies | null;
   dispose: () => void;
@@ -2250,7 +2253,9 @@ export function buildArchitectureAndProps(
       elapsed: number,
       camX: number,
       camZ: number,
-      skyState?: SkyFrameState
+      skyState?: SkyFrameState,
+      frustumPlanes?: Float32Array,
+      maxRenderDist = 225
     ) => {
       if (fireLit) {
         fireLight.intensity = 2.5 + Math.sin(elapsed * 15.0) * 0.45;
@@ -2272,19 +2277,47 @@ export function buildArchitectureAndProps(
         activeWinMat.emissiveIntensity = 0.02 + duskGlow * 1.65;
       }
 
-      const maxVisSq = 54 * 54;
+      const maxMushSq = 38 * 38;
+      const fogCapSq = (maxRenderDist + 16) * (maxRenderDist + 16);
       for (let i = 0; i < mushroomNodes.length; i++) {
         const m = mushroomNodes[i];
         if (m.entry.gathered) continue;
         const dx = m.x - camX;
         const dz = m.z - camZ;
-        m.mesh.visible = dx * dx + dz * dz < maxVisSq;
+        const dSq = dx * dx + dz * dz;
+        if (dSq >= maxMushSq) {
+          m.mesh.visible = false;
+        } else if (frustumPlanes && dSq > 25) {
+          m.mesh.visible = sphereIntersectsFrustum(
+            frustumPlanes,
+            m.x,
+            m.mesh.position.y + 0.25,
+            m.z,
+            1.2
+          );
+        } else {
+          m.mesh.visible = true;
+        }
       }
       for (let i = 0; i < structureNodes.length; i++) {
         const s = structureNodes[i];
         const dx = s.x - camX;
         const dz = s.z - camZ;
-        s.obj.visible = dx * dx + dz * dz < s.maxDistSq;
+        const dSq = dx * dx + dz * dz;
+        const capSq = s.maxDistSq < fogCapSq ? s.maxDistSq : fogCapSq;
+        if (dSq >= capSq) {
+          s.obj.visible = false;
+        } else if (frustumPlanes && dSq > 26 * 26) {
+          s.obj.visible = sphereIntersectsFrustum(
+            frustumPlanes,
+            s.x,
+            s.obj.position.y + 4.5,
+            s.z,
+            18.0
+          );
+        } else {
+          s.obj.visible = true;
+        }
       }
     },
     gatherMushroom,

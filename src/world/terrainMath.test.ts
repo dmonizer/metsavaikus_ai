@@ -31,6 +31,14 @@ import {
   formatCompassLabel,
   projectPointOnHeadingMinimap,
 } from './minimapMath';
+import {
+  classifySphereFrustum,
+  commitCompactedInstancedMesh,
+  computeFogCullDistance,
+  extractFrustumPlanes,
+  FrustumCullStatus,
+  sphereIntersectsFrustum,
+} from './forestFrustumCuller';
 
 test('World constants scale to 1200x1200m procedural streaming', () => {
   assert.equal(WORLD_SIZE, 1200);
@@ -337,4 +345,71 @@ test('isDryLandForPlanting strictly excludes open lake water and flooded rims wh
   assert.ok(submergedCount > 20, `Expected open bog water spots to test, found ${submergedCount}`);
   assert.ok(dryCount > 5, `Expected dry bog islands/ridges to remain plantable, found ${dryCount}`);
 });
+
+test('forestFrustumCuller classifies spheres accurately, tightens fog horizon, and uses partial InstancedMesh upload ranges', () => {
+  const cam = new THREE.PerspectiveCamera(70, 16 / 9, 0.5, 220);
+  cam.position.set(0, 2, 0);
+  cam.lookAt(0, 2, -50);
+  cam.updateProjectionMatrix();
+  cam.updateMatrixWorld();
+
+  const planes = extractFrustumPlanes(cam, new Float32Array(24));
+
+  // Center-frustum tree -> INSIDE
+  assert.equal(classifySphereFrustum(planes, 0, 2, -45, 4), FrustumCullStatus.INSIDE);
+  assert.equal(sphereIntersectsFrustum(planes, 0, 2, -45, 4), true);
+
+  // Behind camera -> OUTSIDE
+  assert.equal(classifySphereFrustum(planes, 0, 2, 24, 4), FrustumCullStatus.OUTSIDE);
+  assert.equal(sphereIntersectsFrustum(planes, 0, 2, 24, 4), false);
+
+  // Far to the right outside FOV -> OUTSIDE
+  assert.equal(classifySphereFrustum(planes, 120, 2, -30, 5), FrustumCullStatus.OUTSIDE);
+
+  // Straddling the right frustum plane -> INTERSECTING
+  const halfWidthAt40 = Math.tan(THREE.MathUtils.degToRad(35)) * (16 / 9) * 40;
+  assert.equal(
+    classifySphereFrustum(planes, halfWidthAt40, 2, -40, 6),
+    FrustumCullStatus.INTERSECTING
+  );
+  assert.equal(sphereIntersectsFrustum(planes, halfWidthAt40, 2, -40, 6), true);
+
+  // Fog cull distance stays generous in clear air and tightens automatically in rain/storm
+  const clearDist = computeFogCullDistance(0.0052);
+  const rainDist = computeFogCullDistance(0.0137);
+  const stormDist = computeFogCullDistance(0.024);
+  assert.equal(clearDist, 225);
+  assert.ok(rainDist < 160 && rainDist > 135, `Expected rain fog cutoff ~151.8m, got ${rainDist}`);
+  assert.equal(stormDist, 96);
+
+  // commitCompactedInstancedMesh hides empty meshes and uploads only active ranges
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mat = new THREE.MeshBasicMaterial();
+  const inst = new THREE.InstancedMesh(geo, mat, 200);
+  inst.setColorAt(0, new THREE.Color(0xffffff));
+
+  inst.count = 0;
+  commitCompactedInstancedMesh(inst);
+  assert.equal(inst.visible, false);
+
+  inst.count = 37;
+  commitCompactedInstancedMesh(inst);
+  assert.equal(inst.visible, true);
+  assert.equal(inst.instanceMatrix.updateRanges.length, 1);
+  assert.deepEqual(inst.instanceMatrix.updateRanges[0], { start: 0, count: 37 * 16 });
+  assert.equal(inst.instanceColor!.updateRanges.length, 1);
+  assert.deepEqual(inst.instanceColor!.updateRanges[0], { start: 0, count: 37 * 3 });
+
+  // Shared-buffer follower updates visibility without duplicating matrix/color upload triggers
+  inst.instanceMatrix.clearUpdateRanges();
+  inst.count = 15;
+  commitCompactedInstancedMesh(inst, true);
+  assert.equal(inst.visible, true);
+  assert.equal(inst.instanceMatrix.updateRanges.length, 0);
+
+  geo.dispose();
+  mat.dispose();
+  inst.dispose();
+});
+
 

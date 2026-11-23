@@ -66,7 +66,7 @@ export class TerrainChunkManager {
   private readonly compute: ComputeEngine;
   private readonly frustum = new THREE.Frustum();
   private readonly projScreenMatrix = new THREE.Matrix4();
-  private readonly planesFlat = new Float32Array(24);
+  readonly frustumPlanes = new Float32Array(24);
   private readonly geoCache = new Map<string, THREE.BufferGeometry>();
 
   private readonly sunDayUniform = { value: 1.0 };
@@ -366,7 +366,11 @@ export class TerrainChunkManager {
     this.timeUniform.value = elapsed;
   }
 
-  update(camera: THREE.PerspectiveCamera, stats?: ChunkVisibilityStats): void {
+  update(
+    camera: THREE.PerspectiveCamera,
+    stats?: ChunkVisibilityStats,
+    maxRenderDist = 225
+  ): void {
     const { vcx, vcz } = worldToVirtualChunk(camera.position.x, camera.position.z);
     this.recenterWindow(vcx, vcz);
 
@@ -377,22 +381,23 @@ export class TerrainChunkManager {
     for (let p = 0; p < 6; p++) {
       const pl = this.frustum.planes[p];
       const pb = p * 4;
-      this.planesFlat[pb] = pl.normal.x;
-      this.planesFlat[pb + 1] = pl.normal.y;
-      this.planesFlat[pb + 2] = pl.normal.z;
-      this.planesFlat[pb + 3] = pl.constant;
+      this.frustumPlanes[pb] = pl.normal.x;
+      this.frustumPlanes[pb + 1] = pl.normal.y;
+      this.frustumPlanes[pb + 2] = pl.normal.z;
+      this.frustumPlanes[pb + 3] = pl.constant;
     }
 
+    const clampedMax = Math.max(96, Math.min(230, maxRenderDist));
     const vis = this.compute.cullChunks(
       this.chunkSpheres,
       CHUNK_COUNT,
-      this.planesFlat,
+      this.frustumPlanes,
       camera.position.x,
       camera.position.y,
       camera.position.z,
-      230 * 230,
-      64 * 64,
-      130 * 130,
+      clampedMax * clampedMax,
+      58 * 58,
+      118 * 118,
       this.chunkLods
     );
 
@@ -414,7 +419,8 @@ export class TerrainChunkManager {
 
       const dx = this.chunkSpheres[sb] - px;
       const dz = this.chunkSpheres[sb + 2] - pz;
-      const nearPlayer = dx * dx + dz * dz < 48 * 48;
+      // Only keep the immediate underfoot terrain chunk forced visible (26m) so behind-camera chunks stay culled
+      const nearPlayer = dx * dx + dz * dz < 26 * 26;
 
       let lod = this.chunkLods[i];
       if (nearPlayer) {
