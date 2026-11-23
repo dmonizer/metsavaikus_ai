@@ -4,9 +4,12 @@ import {
   addMushroomToBasket,
   buildInteractionPrompt,
   canClearHeightCollider,
+  clampResolutionScale,
   computeAdaptiveDprSteps,
+  computeScaledBackbuffer,
   createEmptyBasket,
   formatFpsLabel,
+  formatResolutionSummary,
   getWeatherWindProfile,
   MUSHROOM_SPECIES_INFO,
   MushroomSpecies,
@@ -127,6 +130,19 @@ test('computeAdaptiveDprSteps enforces integrated GPU pixel budget while keeping
 
   // Software GL stays fixed at [1]
   assert.deepEqual(computeAdaptiveDprSteps(1440, 900, 2, true, true), [1]);
+});
+
+test('Resolution scale helpers clamp, snap to 5% increments, and format live backbuffer dimensions', () => {
+  assert.equal(clampResolutionScale(0.2), 0.5);
+  assert.equal(clampResolutionScale(2.4), 1.5);
+  assert.equal(clampResolutionScale(0.87), 0.85);
+  assert.equal(clampResolutionScale(1.02), 1.0);
+  assert.equal(clampResolutionScale(Number.NaN), 1);
+
+  assert.deepEqual(computeScaledBackbuffer(2155, 1287, 0.58), { width: 1250, height: 746 });
+  assert.deepEqual(computeScaledBackbuffer(2155, 1287, 1.0), { width: 2155, height: 1287 });
+  assert.equal(formatResolutionSummary(2155, 1287, 0.58, true), 'Auto · 58% (1250×746)');
+  assert.equal(formatResolutionSummary(2155, 1287, 1.15, false), '115% (2478×1480)');
 });
 
 test('Weather wind profile scales from mist to storm', () => {

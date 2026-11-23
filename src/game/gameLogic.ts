@@ -235,3 +235,37 @@ export function canClearHeightCollider(
 ): boolean {
   return feetY >= groundY + colliderHeightAboveGround - 0.08;
 }
+
+export const RESOLUTION_SCALE_MIN = 0.5;
+export const RESOLUTION_SCALE_MAX = 1.5;
+export const RESOLUTION_SCALE_STEP = 0.05;
+
+export function clampResolutionScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1;
+  const clamped = Math.max(RESOLUTION_SCALE_MIN, Math.min(RESOLUTION_SCALE_MAX, scale));
+  return Math.round(clamped * 20) / 20;
+}
+
+export function computeScaledBackbuffer(
+  viewportW: number,
+  viewportH: number,
+  scale: number
+): { width: number; height: number } {
+  const safeScale = Math.max(0.25, Math.min(2.5, Number.isFinite(scale) ? scale : 1));
+  return {
+    width: Math.max(1, Math.round(Math.max(1, viewportW) * safeScale)),
+    height: Math.max(1, Math.round(Math.max(1, viewportH) * safeScale)),
+  };
+}
+
+export function formatResolutionSummary(
+  viewportW: number,
+  viewportH: number,
+  scale: number,
+  isAuto: boolean
+): string {
+  const pct = Math.round(scale * 100);
+  const { width, height } = computeScaledBackbuffer(viewportW, viewportH, scale);
+  return isAuto ? `Auto · ${pct}% (${width}×${height})` : `${pct}% (${width}×${height})`;
+}
+

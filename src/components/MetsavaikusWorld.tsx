@@ -41,6 +41,7 @@ function createOutdoorEnvScene(): THREE.Scene {
 import {
   buildInteractionPrompt,
   canClearHeightCollider,
+  clampResolutionScale,
   computeAdaptiveDprSteps,
   formatFpsLabel,
   InteractionPromptData,
@@ -102,6 +103,7 @@ export interface WorldCallbacks {
   onToast: (msg: string) => void;
   onPhaseChange: (phase: GamePhase) => void;
   onWorldReady: (info: { wasmActive: boolean; totalMushrooms: number }) => void;
+  onDisplayMetrics?: (info: { autoDpr: number; viewportW: number; viewportH: number }) => void;
 }
 
 export interface WorldActions {
@@ -112,11 +114,13 @@ export interface WorldActions {
   advanceTime: () => void;
   toggleFlashlight: () => void;
   toggleMute: () => boolean;
+  setResolutionScale: (scale: number | null) => void;
 }
 
 interface MetsavaikusWorldProps {
   worldSeed: number;
   phase: GamePhase;
+  resolutionScale: number | null;
   hudRefs: WorldHudRefs;
   callbacks: WorldCallbacks;
   actionsRef: React.MutableRefObject<WorldActions | null>;
@@ -166,6 +170,7 @@ const _nearbyVegColliders: CircleCollider[] = [];
 export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
   worldSeed,
   phase,
+  resolutionScale,
   hudRefs,
   callbacks,
   actionsRef,
@@ -174,8 +179,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
   const phaseRef = useRef<GamePhase>(phase);
   phaseRef.current = phase;
 
+  const resolutionScaleRef = useRef<number | null>(resolutionScale);
+  resolutionScaleRef.current = resolutionScale;
+
   const callbacksRef = useRef<WorldCallbacks>(callbacks);
   callbacksRef.current = callbacks;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      actionsRef.current?.setResolutionScale(resolutionScale);
+    }, 110);
+    return () => window.clearTimeout(timer);
+  }, [resolutionScale, actionsRef]);
 
   useEffect(() => {
     const mountEl = mountRef.current;
@@ -196,12 +211,22 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       isSoftwareGl,
       isLowPowerGpu
     );
+    let manualResolutionScale: number | null =
+      resolutionScaleRef.current !== null
+        ? clampResolutionScale(resolutionScaleRef.current)
+        : null;
     let dprStepIdx = 0;
-    let currentDpr = dprSteps[0];
+    let currentDpr = manualResolutionScale !== null ? manualResolutionScale : dprSteps[0];
     let drsCheckTimer = 0;
     let drsLowFpsStreak = 0;
     let drsHighFpsStreak = 0;
     let lastDrsStepDownMs = -Infinity;
+
+    callbacksRef.current.onDisplayMetrics?.({
+      autoDpr: dprSteps[0],
+      viewportW: window.innerWidth,
+      viewportH: window.innerHeight,
+    });
 
     // antialias: false eliminates 4x MSAA fillrate explosion & ANGLE blit-resolve compositor stalls
     const renderer = new THREE.WebGLRenderer({
@@ -550,6 +575,26 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         sound.setMuted(isMuted);
         return isMuted;
       },
+      setResolutionScale: (scale: number | null) => {
+        manualResolutionScale = scale !== null ? clampResolutionScale(scale) : null;
+        dprStepIdx = 0;
+        drsLowFpsStreak = 0;
+        drsHighFpsStreak = 0;
+        const nextDpr = manualResolutionScale !== null ? manualResolutionScale : dprSteps[0];
+        if (Math.abs(nextDpr - currentDpr) > 0.001) {
+          currentDpr = nextDpr;
+          const td0 = performance.now();
+          renderer.setPixelRatio(currentDpr);
+          weatherSky.setPixelRatio(currentDpr);
+          const resizeMs = performance.now() - td0;
+          if (resizeMs > drsMsWindow) drsMsWindow = resizeMs;
+          renderer.domElement.dataset.pixelRatio = currentDpr.toFixed(2);
+          perfLogger.recordEvent(
+            `res->${currentDpr.toFixed(2)}x${manualResolutionScale === null ? '(auto)' : ''}`,
+            td0
+          );
+        }
+      },
     };
 
     const onPointerLockChange = () => {
@@ -589,6 +634,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     const onKeyDown = (e: KeyboardEvent) => {
       const code = e.code;
       if (phaseRef.current === 'title') {
+        const activeTag = document.activeElement?.tagName;
+        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
         if (code === 'Enter' || code === 'Space') {
           e.preventDefault();
           actionsRef.current?.startPlaying();
@@ -648,9 +695,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         isLowPowerGpu
       );
       dprStepIdx = Math.min(dprStepIdx, dprSteps.length - 1);
-      currentDpr = dprSteps[dprStepIdx];
+      currentDpr = manualResolutionScale !== null ? manualResolutionScale : dprSteps[dprStepIdx];
       renderer.setPixelRatio(currentDpr);
       weatherSky.setPixelRatio(currentDpr);
+      renderer.domElement.dataset.pixelRatio = currentDpr.toFixed(2);
+      callbacksRef.current.onDisplayMetrics?.({
+        autoDpr: dprSteps[0],
+        viewportW: w,
+        viewportH: h,
+      });
     };
 
     document.addEventListener('pointerlockchange', onPointerLockChange);
@@ -1097,10 +1150,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
-        // Hysteresis-guarded discrete DRS. On Mesa/Intel integrated GPUs, resizing the WebGL drawing
-        // buffer flushes the GPU & reallocates the EGL swapchain (600-1700ms stall), so we require
-        // sustained low FPS before stepping down and enforce a 45s sticky cooldown before stepping back up.
-        if (!isSoftwareGl && curPhase === 'playing') {
+        // Hysteresis-guarded discrete DRS (active only when user hasn't locked a manual resolution scale).
+        // On Mesa/Intel integrated GPUs, resizing the WebGL drawing buffer flushes the GPU & reallocates
+        // the EGL swapchain (600-1700ms stall), so we require sustained low FPS before stepping down
+        // and enforce a 45s sticky cooldown before stepping back up.
+        if (!isSoftwareGl && curPhase === 'playing' && manualResolutionScale === null) {
           drsCheckTimer += Math.min(0.5, rawDt);
           const drsInterval = isLowPowerGpu ? 2.0 : fpsEma < 22 ? 1.2 : 2.5;
           if (drsCheckTimer >= drsInterval) {

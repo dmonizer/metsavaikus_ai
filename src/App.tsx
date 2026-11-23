@@ -2,10 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Volume2, VolumeX, Pause } from 'lucide-react';
 import {
   addMushroomToBasket,
+  clampResolutionScale,
   createEmptyBasket,
+  formatResolutionSummary,
   InteractionPromptData,
   MushroomBasket,
   MushroomSpecies,
+  RESOLUTION_SCALE_MAX,
+  RESOLUTION_SCALE_MIN,
+  RESOLUTION_SCALE_STEP,
 } from './game/gameLogic';
 import {
   GamePhase,
@@ -35,6 +40,21 @@ function getInitialSeed(): number {
   return 2026;
 }
 
+const RESOLUTION_STORAGE_KEY = 'metsavaikus_resolution_scale';
+
+function getInitialResolutionScale(): number | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(RESOLUTION_STORAGE_KEY);
+    if (!raw || raw === 'auto') return null;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return clampResolutionScale(parsed);
+  } catch {
+    // Ignore storage access failures in restricted contexts
+  }
+  return null;
+}
+
 export default function App() {
   const [worldSeed, setWorldSeed] = useState<number>(getInitialSeed);
   const [phase, setPhase] = useState<GamePhase>(getInitialPhase);
@@ -46,6 +66,16 @@ export default function App() {
   const [toastVisible, setToastVisible] = useState<boolean>(false);
   const [muted, setMuted] = useState<boolean>(false);
   const [worldKey, setWorldKey] = useState<number>(0);
+  const [resolutionScale, setResolutionScale] = useState<number | null>(getInitialResolutionScale);
+  const [displayMetrics, setDisplayMetrics] = useState<{
+    autoDpr: number;
+    viewportW: number;
+    viewportH: number;
+  }>(() => ({
+    autoDpr: 1,
+    viewportW: typeof window !== 'undefined' ? window.innerWidth : 1440,
+    viewportH: typeof window !== 'undefined' ? window.innerHeight : 900,
+  }));
 
   const toastTimerRef = useRef<number | null>(null);
   const actionsRef = useRef<WorldActions | null>(null);
@@ -105,9 +135,31 @@ export default function App() {
       onWorldReady: ({ totalMushrooms }) => {
         setTotalWorldMushrooms(totalMushrooms);
       },
+      onDisplayMetrics: (info) => {
+        setDisplayMetrics(info);
+      },
     }),
     [showToast]
   );
+
+  const handleResolutionSliderChange = useCallback((nextScale: number) => {
+    const clamped = clampResolutionScale(nextScale);
+    setResolutionScale(clamped);
+    try {
+      window.localStorage.setItem(RESOLUTION_STORAGE_KEY, clamped.toFixed(2));
+    } catch {
+      // Ignore storage write failures
+    }
+  }, []);
+
+  const handleResolutionAutoReset = useCallback(() => {
+    setResolutionScale(null);
+    try {
+      window.localStorage.removeItem(RESOLUTION_STORAGE_KEY);
+    } catch {
+      // Ignore storage write failures
+    }
+  }, []);
 
   const handleStartClick = useCallback(() => {
     document.body.dataset.state = 'playing';
@@ -171,6 +223,16 @@ export default function App() {
 
   const edibleCount = basket.edible;
   const boleteEdibleCount = basket.bySpecies.kivipuravik + basket.bySpecies.kasepuravik;
+  const effectiveResolutionScale =
+    resolutionScale !== null ? resolutionScale : clampResolutionScale(displayMetrics.autoDpr);
+  const displayResolutionScale =
+    resolutionScale !== null ? resolutionScale : displayMetrics.autoDpr;
+  const resolutionSummary = formatResolutionSummary(
+    displayMetrics.viewportW,
+    displayMetrics.viewportH,
+    displayResolutionScale,
+    resolutionScale === null
+  );
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#0b100d] text-[#eef3ec]">
@@ -179,6 +241,7 @@ export default function App() {
         key={`${worldKey}-${worldSeed}`}
         worldSeed={worldSeed}
         phase={phase}
+        resolutionScale={resolutionScale}
         hudRefs={hudRefs}
         callbacks={callbacks}
         actionsRef={actionsRef}
@@ -425,10 +488,56 @@ export default function App() {
               />
             </svg>
 
-            <p className="text-sm md:text-base text-[#bfd0bd] leading-relaxed mb-7 max-w-md">
+            <p className="text-sm md:text-base text-[#bfd0bd] leading-relaxed mb-6 max-w-md">
               Roam procedural birch groves, dense spruce thickets, four villages, and misty
               peat bog islands with decaying timber huts while foraging seven wild mushroom species.
             </p>
+
+            {/* Render Resolution Configuration */}
+            <div className="mb-6 max-w-sm rounded-md bg-[#0c120e]/78 border border-white/12 px-4 py-3">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <label
+                  htmlFor="title-resolution-slider"
+                  className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#a5b9a4]"
+                >
+                  Render Resolution
+                </label>
+                <div className="flex items-center gap-2">
+                  <span
+                    data-testid="resolution-readout"
+                    className="font-mono tabular-nums text-xs text-[#e5efe3]"
+                  >
+                    {resolutionSummary}
+                  </span>
+                  {resolutionScale !== null && (
+                    <button
+                      type="button"
+                      onClick={handleResolutionAutoReset}
+                      className="text-[11px] text-[#98c29b] hover:text-[#cce6ce] underline underline-offset-2 cursor-pointer"
+                    >
+                      Auto
+                    </button>
+                  )}
+                </div>
+              </div>
+              <input
+                id="title-resolution-slider"
+                data-testid="resolution-slider"
+                type="range"
+                min={RESOLUTION_SCALE_MIN}
+                max={RESOLUTION_SCALE_MAX}
+                step={RESOLUTION_SCALE_STEP}
+                value={effectiveResolutionScale}
+                onChange={(e) => handleResolutionSliderChange(parseFloat(e.target.value))}
+                aria-label="Render resolution scale"
+                className="w-full h-1.5 rounded-lg appearance-none bg-[#233328] accent-[#7fb382] cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b110d]"
+              />
+              <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono tabular-nums text-[#859984]">
+                <span>50% Fast</span>
+                <span>100% Native</span>
+                <span>150% Sharp</span>
+              </div>
+            </div>
 
             <button
               type="button"
@@ -462,7 +571,43 @@ export default function App() {
               Seed #{worldSeed} · Edible: {edibleCount} · Total: {basket.total} / {totalWorldMushrooms}
             </p>
 
-            <div className="mt-6 flex flex-col gap-2.5">
+            <div className="mt-5 rounded-md bg-[#0b110d] border border-white/10 px-3.5 py-2.5">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label
+                  htmlFor="pause-resolution-slider"
+                  className="text-[11px] uppercase tracking-[0.12em] text-[#a5b9a4]"
+                >
+                  Resolution
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono tabular-nums text-[11px] text-[#e5efe3]">
+                    {resolutionSummary}
+                  </span>
+                  {resolutionScale !== null && (
+                    <button
+                      type="button"
+                      onClick={handleResolutionAutoReset}
+                      className="text-[11px] text-[#98c29b] hover:text-[#cce6ce] underline underline-offset-2 cursor-pointer"
+                    >
+                      Auto
+                    </button>
+                  )}
+                </div>
+              </div>
+              <input
+                id="pause-resolution-slider"
+                type="range"
+                min={RESOLUTION_SCALE_MIN}
+                max={RESOLUTION_SCALE_MAX}
+                step={RESOLUTION_SCALE_STEP}
+                value={effectiveResolutionScale}
+                onChange={(e) => handleResolutionSliderChange(parseFloat(e.target.value))}
+                aria-label="Render resolution scale"
+                className="w-full h-1.5 rounded-lg appearance-none bg-[#233328] accent-[#7fb382] cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b110d]"
+              />
+            </div>
+
+            <div className="mt-5 flex flex-col gap-2.5">
               <button
                 type="button"
                 onClick={handleResumeClick}
