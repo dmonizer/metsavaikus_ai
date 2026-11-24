@@ -1,3 +1,4 @@
+import { ShelterGeometry, shelterShader } from './shelterGeometry';
 import * as THREE from 'three';
 import { getSwampFactor, getTerrainHeight } from './terrainMath';
 import { AmbientShelter, SoundEngine } from './soundEngine';
@@ -713,6 +714,21 @@ export class WeatherAndSkySystem {
   private readonly cHemiSkyDay = new THREE.Color(0xdcebf7);
   private readonly cHemiGroundGold = new THREE.Color(0x4a3f26);
   private readonly cHemiGroundNight = new THREE.Color(0x0b1014);
+
+  private shelterGeometryAttached = false;
+
+  setShelterGeometry(shelters: ShelterGeometry): void {
+    const material = this.rain.material;
+    Object.assign(material.uniforms, shelters.uniforms);
+    if (this.shelterGeometryAttached) return;
+    this.shelterGeometryAttached = true;
+    material.vertexShader = 'varying vec3 vRainWorld;\n' + material.vertexShader;
+    material.vertexShader = material.vertexShader.replace('gl_Position = projectionMatrix * viewMatrix * vec4(vertexWorld, 1.0);',
+      'vRainWorld = vertexWorld;\ngl_Position = projectionMatrix * viewMatrix * vec4(vertexWorld, 1.0);');
+    material.fragmentShader = shelterShader + '\nvarying vec3 vRainWorld;\n' + material.fragmentShader;
+    material.fragmentShader = material.fragmentShader.replace('void main() {', 'void main() {\nif (shelterContains(vRainWorld, 0.0, true)) discard;');
+    material.needsUpdate = true;
+  }
 
   private snapFogNextFrame = false;
 

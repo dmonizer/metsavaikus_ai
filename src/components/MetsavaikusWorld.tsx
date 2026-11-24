@@ -1,3 +1,4 @@
+import { moveSphere, pushCharacterOut } from '../world/spatialPhysics';
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -370,7 +371,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
-    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.shadowMap.autoUpdate = false;
     renderer.shadowMap.needsUpdate = true;
@@ -729,6 +730,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     function getSurfaceHeightAt(x: number, z: number): number {
       let h = getTerrainHeight(x, z);
       if (!propsCtx) return h;
+      h = propsCtx.shelters.floorHeight(x, z, h);
       for (let i = 0; i < propsCtx.boardwalkZones.length; i++) {
         const b = propsCtx.boardwalkZones[i];
         if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) {
@@ -778,20 +780,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           if (b.jumpable && canClearHeightCollider(pos.y, b.groundY, b.heightAboveGround)) {
             continue;
           }
-          const nearX = THREE.MathUtils.clamp(pos.x, b.minX, b.maxX);
-          const nearZ = THREE.MathUtils.clamp(pos.z, b.minZ, b.maxZ);
-          const dx = pos.x - nearX;
-          const dz = pos.z - nearZ;
-          const d2 = dx * dx + dz * dz;
-          if (d2 < pR * pR) {
-            if (d2 > 0.00001) {
-              const d = Math.sqrt(d2);
-              pos.x = nearX + (dx / d) * pR;
-              pos.z = nearZ + (dz / d) * pR;
-            } else {
-              pos.x = b.minX - pR;
-            }
-          }
+          pushCharacterOut(pos, pR, player.currentEye + 0.2, b);
         }
       }
 
@@ -807,7 +796,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       item.resting = false;
       _euler.set(player.pitch, player.yaw, 0, 'YXZ');
       _lookDir.set(0, 0, -1).applyEuler(_euler);
-      item.mesh.position.copy(camera.position).addScaledVector(_lookDir, 1.05);
+      item.mesh.position.copy(camera.position);
+      const releaseOffset = _lookDir.clone().multiplyScalar(1.05);
+      if (propsCtx) moveSphere(item.mesh.position, releaseOffset, 1, item.radius, propsCtx.boxColliders, 0);
       item.vel.copy(player.vel).addScaledVector(_lookDir, throwImpulse);
       item.vel.y += throwImpulse * 0.25;
       callbacksRef.current.onCarryChange('');
@@ -2068,7 +2059,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         _lookDir.set(0, 0, -1).applyEuler(_euler);
         _holdPos.copy(camera.position).addScaledVector(_lookDir, 1.15);
         _holdPos.y -= 0.22;
-        player.carrying.mesh.position.lerp(_holdPos, Math.min(1, dt * 16));
+        const carried = player.carrying;
+        const holdOffset = _holdPos.clone().sub(camera.position);
+        const safeHold = camera.position.clone();
+        if (propsCtx) moveSphere(safeHold, holdOffset, 1, carried.radius, propsCtx.boxColliders, 0);
+        if (carried.mesh.position.distanceToSquared(safeHold) > 0.000001) propsCtx?.invalidateLightShadows();
+        carried.mesh.position.copy(safeHold);
       }
 
       return { locomotion, jumped };
@@ -2080,8 +2076,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         const obj = propsCtx.dynamicObjects[i];
         if (obj === player.carrying || obj.resting) continue;
 
+        propsCtx.invalidateLightShadows();
         obj.vel.y -= 15.0 * dt;
-        obj.mesh.position.addScaledVector(obj.vel, dt);
+        moveSphere(obj.mesh.position, obj.vel, dt, obj.radius, propsCtx.boxColliders);
         obj.mesh.rotation.x += obj.angVel.x * dt;
         obj.mesh.rotation.y += obj.angVel.y * dt;
         obj.mesh.rotation.z += obj.angVel.z * dt;
@@ -2566,6 +2563,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           propsMs += performance.now() - tp1;
         }
 
+        if (propsCtx?.needsLightShadowUpdate()) renderer.shadowMap.needsUpdate = true;
+
         if (!isSoftwareGl && weatherSky.isSunCastingShadow) {
           shadowFrameSkip++;
           const movedSq =
@@ -2955,6 +2954,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           },
         }
       );
+      weatherSky.setShelterGeometry(propsCtx.shelters);
       propCircleColliders = propsCtx.circleColliders;
       const activeBp = getActiveBlueprint();
       minimap = createMinimapRenderer(activeBp, propsCtx.boardwalkZones, fogOfWar);
@@ -2989,7 +2989,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         player.pitch = -0.14;
       }
 
-      vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl, isLowPowerGpu);
+      vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl, isLowPowerGpu, propsCtx.shelters);
       vegetation.prewarmAround(player.pos.x, player.pos.z);
       scene.add(vegetation.group);
 

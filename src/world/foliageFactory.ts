@@ -1,3 +1,4 @@
+import { ShelterGeometry, containsFootprint, excludeShelterVegetation } from './shelterGeometry';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
@@ -1302,45 +1303,6 @@ const MAX_GRASS_TILE_CACHE = 180;
 const MAX_CHUNK_CACHE = 450;
 const COLLIDER_CELL_SIZE = 8;
 
-interface BuildingRect {
-  cx: number;
-  cz: number;
-  cosR: number;
-  sinR: number;
-  hw: number;
-  hd: number;
-}
-
-function buildExclusionRects(): BuildingRect[] {
-  const bp = getActiveBlueprint();
-  const rects: BuildingRect[] = [];
-  for (const v of bp.villages) {
-    for (const b of v.buildings) {
-      rects.push({
-        cx: v.x + b.offsetX,
-        cz: v.z + b.offsetZ,
-        cosR: Math.cos(-b.rotY),
-        sinR: Math.sin(-b.rotY),
-        hw: b.w * 0.5 + 1.1,
-        hd: b.d * 0.5 + 1.4,
-      });
-    }
-  }
-  for (const isl of bp.swampIslands) {
-    if (isl.hut) {
-      rects.push({
-        cx: isl.x,
-        cz: isl.z,
-        cosR: Math.cos(-isl.hut.rotY),
-        sinR: Math.sin(-isl.hut.rotY),
-        hw: isl.hut.w * 0.5 + 1.0,
-        hd: isl.hut.d * 0.5 + 1.2,
-      });
-    }
-  }
-  return rects;
-}
-
 export class WorldVegetationSystem {
   readonly group = new THREE.Group();
   readonly windTimeUniform = { value: 0 };
@@ -1353,7 +1315,6 @@ export class WorldVegetationSystem {
   private readonly grassTileCache = new Map<string, GrassTileBaked>();
   private readonly indexedColliderChunks = new Set<string>();
   private readonly colliderGrid = new Map<string, CircleCollider[]>();
-  private readonly buildingRects: BuildingRect[];
   private readonly disposables: Array<{ dispose: () => void }> = [];
   private lastVisibilitySig = '';
   private lastCullCamX = 999999;
@@ -1427,23 +1388,23 @@ export class WorldVegetationSystem {
   private lastGrassMaxRing = GRASS_TILE_RADIUS;
   private readonly grassRingSortBuf: Array<{ tx: number; tz: number; dSq: number }> = [];
 
-  constructor(textures: WorldTextures, isSoftwareGl: boolean, isLowPowerGpu = false) {
+  constructor(textures: WorldTextures, isSoftwareGl: boolean, isLowPowerGpu: boolean, private readonly shelters: ShelterGeometry) {
     this.isLowPowerGpu = isLowPowerGpu;
     this.grassCap = isLowPowerGpu ? 1850 : GRASS_BLADE_CAP;
-    this.buildingRects = buildExclusionRects();
     this.buildInstancedLayers(textures, isSoftwareGl);
+    this.group.traverse(node => {
+      if (node instanceof THREE.InstancedMesh) node.receiveShadow = true;
+    });
+    const groundLayers = [this.grassBladeMesh, this.fernMesh, this.shrubMesh, this.mossHummockMesh, this.reedMesh];
+    for (const mesh of groundLayers) {
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        excludeShelterVegetation(material, shelters);
+      }
+    }
   }
 
   private isInsideBuilding(x: number, z: number): boolean {
-    for (let i = 0; i < this.buildingRects.length; i++) {
-      const r = this.buildingRects[i];
-      const dx = x - r.cx;
-      const dz = z - r.cz;
-      const lx = dx * r.cosR - dz * r.sinR;
-      const lz = dx * r.sinR + dz * r.cosR;
-      if (Math.abs(lx) < r.hw && Math.abs(lz) < r.hd) return true;
-    }
-    return false;
+    return this.shelters.footprints.some(area => !area.temporary && containsFootprint(area, x, z, 1.2));
   }
 
   private indexChunkColliders(colliders: CircleCollider[]): void {
@@ -2379,16 +2340,11 @@ export class WorldVegetationSystem {
 
     const tileCx = minX + GRASS_TILE_SIZE * 0.5;
     const tileCz = minZ + GRASS_TILE_SIZE * 0.5;
-    const localBuildings: BuildingRect[] = [];
-    for (let i = 0; i < this.buildingRects.length; i++) {
-      const r = this.buildingRects[i];
-      const maxReach = Math.hypot(r.hw, r.hd) + GRASS_TILE_SIZE * 0.72;
-      const dx = tileCx - r.cx;
-      const dz = tileCz - r.cz;
-      if (dx * dx + dz * dz <= maxReach * maxReach) {
-        localBuildings.push(r);
-      }
-    }
+    const localBuildings = this.shelters.footprints.filter(area => {
+      if (area.temporary) return false;
+      const reach = Math.hypot(area.halfW, area.halfD) + GRASS_TILE_SIZE * 0.72 + 1.2;
+      return Math.hypot(tileCx - area.x, tileCz - area.z) <= reach;
+    });
 
     const cellsPerSide = Math.ceil(GRASS_TILE_SIZE / GRASS_BLADE_SPACING);
     const maxTileBlades = cellsPerSide * cellsPerSide;
@@ -2422,19 +2378,7 @@ export class WorldVegetationSystem {
         const roadInfo = distToRoadDetail(px, pz);
         if (roadInfo.dist < (roadInfo.isTrail ? 1.55 : 2.35)) continue;
 
-        let insideBuilding = false;
-        for (let b = 0; b < localBuildings.length; b++) {
-          const r = localBuildings[b];
-          const dx = px - r.cx;
-          const dz = pz - r.cz;
-          const lx = dx * r.cosR - dz * r.sinR;
-          const lz = dx * r.sinR + dz * r.cosR;
-          if (Math.abs(lx) < r.hw && Math.abs(lz) < r.hd) {
-            insideBuilding = true;
-            break;
-          }
-        }
-        if (insideBuilding) continue;
+        if (localBuildings.some(area => containsFootprint(area, px, pz, 1.2))) continue;
 
         const py = getTerrainHeight(px, pz);
         if (py < SWAMP_WATER_Y + 0.12) continue;

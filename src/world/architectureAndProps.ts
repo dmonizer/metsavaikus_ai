@@ -20,23 +20,16 @@ import { sphereIntersectsFrustum } from './forestFrustumCuller';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
 import { ItemId } from '../game/itemCatalog';
 import { ShelterQuality } from '../game/survivalEngine';
+import { BoxCollider } from './spatialPhysics';
+export type { BoxCollider } from './spatialPhysics';
+import { ShelterGeometry, containsFootprint } from './shelterGeometry';
+import { buildPantry } from './pantry';
 import { getMushroomCopy, t } from '../i18n/i18n';
 
 export interface CircleCollider {
   x: number;
   z: number;
   r: number;
-}
-
-export interface BoxCollider {
-  minX: number;
-  maxX: number;
-  minZ: number;
-  maxZ: number;
-  groundY: number;
-  heightAboveGround: number;
-  jumpable: boolean;
-  active: boolean;
 }
 
 export interface BoardwalkZone {
@@ -123,6 +116,9 @@ export interface WorldEnvironmentAtPoint {
 }
 
 export interface WorldPropsContext {
+  shelters: ShelterGeometry;
+  needsLightShadowUpdate: () => boolean;
+  invalidateLightShadows: () => void;
   circleColliders: CircleCollider[];
   boxColliders: BoxCollider[];
   boardwalkZones: BoardwalkZone[];
@@ -267,6 +263,8 @@ export function buildArchitectureAndProps(
   const rand = seededRand(bp.seed + 1337);
   const circleColliders: CircleCollider[] = [];
   const boxColliders: BoxCollider[] = [];
+  const shelters = new ShelterGeometry();
+  let lightShadowsDirty = true;
   const boardwalkZones: BoardwalkZone[] = [];
   const interactiveObjects: InteractiveEntry[] = [];
   const interactiveMeshes: THREE.Object3D[] = [];
@@ -275,17 +273,6 @@ export function buildArchitectureAndProps(
   const structureNodes: Array<{ obj: THREE.Object3D; x: number; z: number; maxDistSq: number }> = [];
   const disposables: Array<{ dispose: () => void }> = [];
 
-  interface ShelterZone {
-    id?: string;
-    cx: number;
-    cz: number;
-    halfW: number;
-    halfD: number;
-    cosY: number;
-    sinY: number;
-    quality: ShelterQuality;
-    label: string;
-  }
   interface CampfireEntry {
     id: string;
     label: string;
@@ -305,7 +292,6 @@ export function buildArchitectureAndProps(
     interactiveEntry: InteractiveEntry;
     geometries: THREE.BufferGeometry[];
   }
-  const shelterZones: ShelterZone[] = [];
   const campfires: CampfireEntry[] = [];
   const tents: TentEntry[] = [];
   let tentCounter = 0;
@@ -371,6 +357,7 @@ export function buildArchitectureAndProps(
     mesh.userData.interactive = entry;
     mesh.traverse((child) => {
       child.userData.interactive = entry;
+      if (child instanceof THREE.Mesh) child.receiveShadow = true;
     });
     interactiveObjects.push(entry);
     interactiveMeshes.push(mesh);
@@ -699,18 +686,31 @@ export function buildArchitectureAndProps(
       decayState?: HutDecayState;
       porch?: boolean;
       name?: string;
+      pantry?: boolean;
     } = {}
   ): void {
     const w = opts.w ?? 8.4;
     const d = opts.d ?? 5.6;
     const h = opts.h ?? 2.75;
     const roofStyle = opts.roofStyle ?? 'thatch';
+    const roofOverhang = 0.84;
+    const roofH = roofStyle === 'thatch' ? 2.95 : 2.55;
     const wallMat = opts.warmWood ? warmLogMat : weatheredLogMat;
     const abandoned = !!opts.abandoned;
     const decay: HutDecayState = opts.decayState ?? 'intact';
     const name = opts.name ?? 'Rehemaja';
 
     const y = getTerrainHeight(x, z);
+    shelters.add({
+      id: `house_${x}_${z}`, x, z, yaw: rotY, halfW: w / 2, halfD: d / 2, floorY: y + 0.43,
+      shelter: decay === 'intact' || decay === 'sagging' ? {
+        quality: !abandoned && decay === 'intact' ? 'warm_house' : 'drafty_hut', label: name,
+      } : undefined,
+      roof: decay === 'intact' ? {
+        eaveY: y + 0.4 + h - 0.16 + roofH * roofOverhang / (d / 2 + roofOverhang),
+        rise: roofH * (d / 2) / (d / 2 + roofOverhang), axis: 'z',
+      } : undefined,
+    });
     const group = new THREE.Group();
     group.position.set(x, y, z);
     group.rotation.y = rotY;
@@ -829,8 +829,6 @@ export function buildArchitectureAndProps(
     }
 
     // 3. Deep overhanging heritage Estonian roof & exposed eaves rafters
-    const roofOverhang = 0.84;
-    const roofH = roofStyle === 'thatch' ? 2.95 : 2.55;
     const slopeRun = d / 2 + roofOverhang;
     const slopeLen = Math.hypot(slopeRun, roofH);
     const slopeAngle = Math.atan2(roofH, slopeRun);
@@ -1018,12 +1016,12 @@ export function buildArchitectureAndProps(
       interiorParts.push(makeBoxPart(1.4, 0.76, 0.82, 0, 0.4 + 0.38, -0.5));
     }
 
-    addBatchedMesh(group, plinthParts, stonePlinthMat, shadows);
-    addBatchedMesh(group, wallParts, wallMat, shadows, { baseY: 0.4, topY: 0.4 + h });
-    addBatchedMesh(group, roofParts, roofStyle === 'thatch' ? thatchMat : shingleMat, shadows);
-    addBatchedMesh(group, gableParts, gableMat, shadows);
+    addBatchedMesh(group, plinthParts, stonePlinthMat, true);
+    addBatchedMesh(group, wallParts, wallMat, true, { baseY: 0.4, topY: 0.4 + h });
+    addBatchedMesh(group, roofParts, roofStyle === 'thatch' ? thatchMat : shingleMat, true);
+    addBatchedMesh(group, gableParts, gableMat, true);
     addBatchedMesh(group, trimParts, timberTrimMat, shadows);
-    addBatchedMesh(group, interiorParts, darkInteriorMat, false);
+    addBatchedMesh(group, interiorParts, darkInteriorMat, true);
     addBatchedMesh(group, winParts, abandoned ? darkWinMat : activeWinMat, false);
     addBatchedMesh(group, chimneyParts, chimneyWhiteMat, shadows);
 
@@ -1047,7 +1045,7 @@ export function buildArchitectureAndProps(
         doorMat
       );
       doorMesh.position.set(doorWidth / 2, (h - 0.72) / 2, 0);
-      doorMesh.castShadow = shadows;
+      doorMesh.castShadow = true;
       doorMesh.receiveShadow = true;
       doorPivot.add(doorMesh);
       group.add(doorPivot);
@@ -1063,7 +1061,8 @@ export function buildArchitectureAndProps(
       const wz = z - lx * s + lz * c;
       const ww = Math.abs(doorWidth * c) + Math.abs(wallThick * s);
       const wd = Math.abs(doorWidth * s) + Math.abs(wallThick * c);
-      doorCollider = addBoxCollider(wx, wz, ww, wd, y, h, false);
+      doorCollider = addBoxCollider(wx, wz, ww, wd, y + 0.4, h - 0.72, false);
+      doorCollider.frame = { x: wx, z: wz, yaw: rotY, halfW: doorWidth / 2, halfD: wallThick / 2 };
       doorCollider.active = !doorOpen;
 
       registerInteractive(doorMesh, {
@@ -1073,6 +1072,7 @@ export function buildArchitectureAndProps(
         getDesc: () => (abandoned ? t('prop.doorDescAbandoned') : t('prop.doorDescIntact')),
         onUse: () => {
           doorOpen = !doorOpen;
+          lightShadowsDirty = true;
           if (doorCollider) doorCollider.active = !doorOpen;
           doorPivot.rotation.y = doorOpen ? -Math.PI * 0.58 : 0;
           sound.playImpact(0.7);
@@ -1083,18 +1083,8 @@ export function buildArchitectureAndProps(
       });
     }
 
-    // Shelter zone registration for roofed houses/huts
-    if (decay === 'intact' || decay === 'sagging') {
-      shelterZones.push({
-        cx: x,
-        cz: z,
-        halfW: w * 0.5 - 0.15,
-        halfD: d * 0.5 - 0.15,
-        cosY: Math.cos(rotY),
-        sinY: Math.sin(rotY),
-        quality: !abandoned && decay === 'intact' ? 'warm_house' : 'drafty_hut',
-        label: name,
-      });
+    if (opts.pantry && !abandoned && decay === 'intact') {
+      buildPantry(group, w, d, registerInteractive, disposables);
     }
 
     // Interactive Bed inside roofed usable houses & intact bog huts
@@ -1206,21 +1196,23 @@ export function buildArchitectureAndProps(
       }
     }
 
-    function addLocalWallCollider(lx: number, lz: number, lw: number, ld: number): void {
+    function addLocalWallCollider(lx: number, lz: number, lw: number, ld: number, wallHeight: number, bottom = 0.4): void {
       const c = Math.cos(rotY);
       const s = Math.sin(rotY);
       const wx = x + lx * c + lz * s;
       const wz = z - lx * s + lz * c;
       const ww = Math.abs(lw * c) + Math.abs(ld * s);
       const wd = Math.abs(lw * s) + Math.abs(ld * c);
-      addBoxCollider(wx, wz, ww, wd, y, h + 0.5, false);
+      const collider = addBoxCollider(wx, wz, ww, wd, y + bottom, wallHeight, false);
+      collider.frame = { x: wx, z: wz, yaw: rotY, halfW: lw / 2, halfD: ld / 2 };
     }
 
-    addLocalWallCollider(0, -d / 2 + wallThick / 2, w, wallThick);
-    addLocalWallCollider(-w / 2 + wallThick / 2, 0, wallThick, d);
-    addLocalWallCollider(w / 2 - wallThick / 2, 0, wallThick, d);
-    addLocalWallCollider(-w / 2 + sideSegW / 2, d / 2 - wallThick / 2, sideSegW, wallThick);
-    addLocalWallCollider(w / 2 - sideSegW / 2, d / 2 - wallThick / 2, sideSegW, wallThick);
+    addLocalWallCollider(0, -d / 2 + wallThick / 2, w, wallThick, hBack);
+    addLocalWallCollider(-w / 2 + wallThick / 2, 0, wallThick, d, hLeft);
+    addLocalWallCollider(w / 2 - wallThick / 2, 0, wallThick, d, hRight);
+    addLocalWallCollider(-w / 2 + sideSegW / 2, d / 2 - wallThick / 2, sideSegW, wallThick, hFrontL);
+    addLocalWallCollider(w / 2 - sideSegW / 2, d / 2 - wallThick / 2, sideSegW, wallThick, hFrontR);
+    if (decay !== 'ruins') addLocalWallCollider(0, d / 2 - wallThick / 2, doorWidth, wallThick, 0.62, 0.4 + h - 0.62);
   }
 
   // Split-Pole Slanted Estonian Fence (roigasaed — SOLID horizontal collision, JUMPABLE over 0.92m!)
@@ -1375,6 +1367,7 @@ export function buildArchitectureAndProps(
         abandoned: b.abandoned,
         decayState: b.decayState,
         name: b.name,
+        pantry: b === v.buildings[0],
       });
     }
     for (const f of v.fences) {
@@ -1425,6 +1418,14 @@ export function buildArchitectureAndProps(
     new THREE.PointLight(0xff8c36, 0, 22, 1.6),
     new THREE.PointLight(0xffaa44, 0, 16, 1.5),
   ];
+  for (const light of pooledPointLights) {
+    light.castShadow = true;
+    light.shadow.mapSize.set(isSoftwareGl ? 256 : 512, isSoftwareGl ? 256 : 512);
+    light.shadow.camera.near = 0.05;
+    light.shadow.bias = -0.0001;
+    light.shadow.normalBias = 0.015;
+    light.shadow.autoUpdate = false;
+  }
   pooledPointLights[0].visible = true;
   pooledPointLights[1].visible = true;
   scene.add(pooledPointLights[0], pooledPointLights[1]);
@@ -2915,16 +2916,10 @@ export function buildArchitectureAndProps(
   function getEnvironmentStateAt(px: number, pz: number): WorldEnvironmentAtPoint {
     let shelter: ShelterQuality = 'outdoor';
     let shelterLabel: string | null = null;
-    for (let i = 0; i < shelterZones.length; i++) {
-      const sz = shelterZones[i];
-      const dx = px - sz.cx;
-      const dz = pz - sz.cz;
-      // Rotate into building local frame (inverse of rotY)
-      const lx = dx * sz.cosY - dz * sz.sinY;
-      const lz = dx * sz.sinY + dz * sz.cosY;
-      if (Math.abs(lx) <= sz.halfW && Math.abs(lz) <= sz.halfD) {
-        shelter = sz.quality;
-        shelterLabel = sz.label;
+    for (const area of shelters.footprints) {
+      if (area.shelter && containsFootprint(area, px, pz, -0.1)) {
+        shelter = area.shelter.quality;
+        shelterLabel = area.shelter.label;
         break;
       }
     }
@@ -3021,6 +3016,8 @@ export function buildArchitectureAndProps(
     if (idx < 0) return false;
     const target = tents[idx];
     tents.splice(idx, 1);
+    shelters.remove(tentId);
+    lightShadowsDirty = true;
 
     target.interactiveEntry.gathered = true;
     scene.remove(target.group);
@@ -3029,9 +3026,6 @@ export function buildArchitectureAndProps(
     if (ioIdx >= 0) interactiveObjects.splice(ioIdx, 1);
     const imIdx = interactiveMeshes.indexOf(target.group);
     if (imIdx >= 0) interactiveMeshes.splice(imIdx, 1);
-
-    const szIdx = shelterZones.findIndex((sz) => sz.id === tentId);
-    if (szIdx >= 0) shelterZones.splice(szIdx, 1);
 
     for (const geo of target.geometries) {
       geo.dispose();
@@ -3047,6 +3041,9 @@ export function buildArchitectureAndProps(
     const groundY = getTerrainHeight(x, z);
     if (groundY <= SWAMP_WATER_Y + 0.14) {
       return { ok: false, message: t('prop.tentTooWet') };
+    }
+    if (shelters.footprints.some(area => containsFootprint(area, x, z, 2.1))) {
+      return { ok: false, message: t('prop.tentBlocked') };
     }
     // Check overlap with solid buildings, wells, campfires, or existing tents
     for (let i = 0; i < boxColliders.length; i++) {
@@ -3081,6 +3078,9 @@ export function buildArchitectureAndProps(
     }
 
     const id = `tent_player_${++tentCounter}`;
+    shelters.add({ id, x, z, yaw, temporary: true, halfW: 1.06, halfD: 1.33, floorY: groundY + 0.08,
+      shelter: { quality: 'tent', label: t('prop.tentSpotLabel') },
+      roof: { eaveY: groundY + 0.08, rise: 1.3, axis: 'x' } });
     const tentGroup = new THREE.Group();
     tentGroup.position.set(x, groundY, z);
     tentGroup.rotation.y = yaw;
@@ -3223,19 +3223,7 @@ export function buildArchitectureAndProps(
     }
 
     scene.add(tentGroup);
-
-    // Register waterproof tent shelter zone (protects player in rain & windchill)
-    shelterZones.push({
-      id,
-      cx: x,
-      cz: z,
-      halfW: 1.55,
-      halfD: 1.85,
-      cosY: Math.cos(-yaw),
-      sinY: Math.sin(-yaw),
-      quality: 'tent',
-      label: t('prop.tentSpotLabel'),
-    });
+    lightShadowsDirty = true;
 
     const interactiveEntry = registerInteractive(tentGroup, {
       name: t('prop.tentName'),
@@ -3285,6 +3273,9 @@ export function buildArchitectureAndProps(
   }
 
   return {
+    shelters,
+    invalidateLightShadows: () => { lightShadowsDirty = true; },
+    needsLightShadowUpdate: () => pooledPointLights.some(light => light.castShadow && light.intensity > 0 && light.shadow.needsUpdate),
     circleColliders,
     boxColliders,
     boardwalkZones,
@@ -3338,6 +3329,11 @@ export function buildArchitectureAndProps(
         const pl = pooledPointLights[slot];
         const src = slot === 0 ? chosen0 : chosen1;
         if (src) {
+          const nextPosition = src.anchor.position.clone();
+          nextPosition.y += src.yOffset;
+          if (lightShadowsDirty || pl.position.distanceToSquared(nextPosition) > 0.000001 || pl.intensity === 0) {
+            pl.shadow.needsUpdate = true;
+          }
           pl.position.set(
             src.anchor.position.x,
             src.anchor.position.y + src.yOffset,
@@ -3351,6 +3347,8 @@ export function buildArchitectureAndProps(
           pl.intensity = 0;
         }
       }
+
+      lightShadowsDirty = false;
 
       // Distance + frustum cull bog water & mist so they never shade off-screen from village/forest
       const bogDx = camX - bp.bogCenterX;
@@ -3438,6 +3436,7 @@ export function buildArchitectureAndProps(
     collectPickupItem: (entry: InteractiveEntry): ItemId | null => {
       if (!entry.pickupItemId || entry.gathered) return null;
       entry.gathered = true;
+      lightShadowsDirty = true;
       entry.resting = true;
       entry.mesh.visible = false;
       sound.playImpact(0.42);
@@ -3448,6 +3447,16 @@ export function buildArchitectureAndProps(
       x: number,
       z: number
     ): { ok: boolean; campfire?: CampfireInfo; message: string } => {
+      const nearbyTent = tents.filter(tt => Math.hypot(x - tt.x, z - tt.z) < 7)
+        .sort((a, b) => Math.hypot(x - a.x, z - a.z) - Math.hypot(x - b.x, z - b.z))[0];
+      if (nearbyTent) {
+        x = nearbyTent.x + Math.sin(nearbyTent.yaw) * 3.8;
+        z = nearbyTent.z + Math.cos(nearbyTent.yaw) * 3.8;
+      }
+      if (shelters.footprints.some(area => containsFootprint(area, x, z, 0.9)) ||
+          circleColliders.some(c => Math.hypot(c.x - x, c.z - z) < c.r + 0.9)) {
+        return { ok: false, message: t('prop.campfireBlocked') };
+      }
       const groundY = getTerrainHeight(x, z);
       if (groundY <= SWAMP_WATER_Y + 0.08) {
         return {
@@ -3511,6 +3520,8 @@ export function buildArchitectureAndProps(
     isWaterVisible: () => swampWater.visible,
     isMistVisible: () => mistInst.visible,
     dispose: () => {
+      shelters.dispose();
+      for (const light of pooledPointLights) { light.dispose(); scene.remove(light); }
       for (const tt of tents) {
         for (const geo of tt.geometries) geo.dispose();
       }
