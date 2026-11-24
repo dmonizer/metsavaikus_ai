@@ -27,6 +27,7 @@ import { buildConnectedTube, createBogPineSegments } from './foliageFactory';
 import {
   buildMinimapTerrainPixels,
   computeCompassHeadingDeg,
+  FogOfWarMap,
   formatCardinalDirection,
   formatCompassLabel,
   projectPointOnHeadingMinimap,
@@ -313,6 +314,52 @@ test('Heading-up minimap projects North/East targets accurately and rasterizes w
     uniqueColors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
   }
   assert.ok(uniqueColors.size > 15, 'Rasterized terrain map should contain varied biome shades');
+});
+
+test('FogOfWarMap gradually reveals explored terrain as player moves and resets cleanly', () => {
+  const fog = new FogOfWarMap(80);
+  assert.equal(fog.getExploredPercent(), 0);
+  assert.equal(fog.getAlphaAt(0, 0), 0);
+  assert.equal(fog.isExploredAt(0, 0), false);
+  const v0 = fog.version;
+
+  // Reveal around spawn (0, 0)
+  const firstChanged = fog.revealAt(0, 0, 84, 28);
+  assert.equal(firstChanged, true);
+  assert.equal(fog.version, v0 + 1);
+  assert.equal(fog.getAlphaAt(0, 0), 255);
+  assert.equal(fog.isExploredAt(0, 0), true);
+  assert.equal(fog.getAlphaAt(300, 300), 0);
+  assert.equal(fog.isExploredAt(300, 300), false);
+
+  // Soft feather edge should have intermediate alpha between 0 and 255
+  const edgeAlpha = fog.getAlphaAt(70, 0);
+  assert.ok(edgeAlpha > 0 && edgeAlpha < 255, `Expected feathered alpha at 70m, got ${edgeAlpha}`);
+
+  // Standing still must not increment version or report changes
+  const stillChanged = fog.revealAt(0, 0, 84, 28);
+  assert.equal(stillChanged, false);
+  assert.equal(fog.version, v0 + 1);
+
+  const pctStart = fog.getExploredPercent();
+  assert.ok(pctStart >= 1, `Expected explored % >= 1 after spawn reveal, got ${pctStart}`);
+
+  // Walking north & east monotonically reveals more terrain while preserving prior explored area
+  fog.revealAt(0, -140, 84, 28);
+  fog.revealAt(140, -140, 84, 28);
+  fog.revealAt(240, -140, 84, 28);
+  assert.equal(fog.isExploredAt(0, 0), true, 'Previously explored origin remains revealed');
+  assert.equal(fog.isExploredAt(240, -140), true, 'Newly explored destination is revealed');
+  assert.ok(
+    fog.getExploredPercent() > pctStart,
+    `Expected explored % to grow after moving (${pctStart}% -> ${fog.getExploredPercent()}%)`
+  );
+
+  // Reset clears all fog back to 0%
+  fog.reset();
+  assert.equal(fog.getExploredPercent(), 0);
+  assert.equal(fog.getAlphaAt(0, 0), 0);
+  assert.equal(fog.isExploredAt(240, -140), false);
 });
 
 test('isDryLandForPlanting strictly excludes open lake water and flooded rims while accepting dry hills & islands', () => {

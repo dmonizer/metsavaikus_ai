@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { getSwampFactor, getTerrainHeight } from './terrainMath';
-import { SoundEngine } from './soundEngine';
+import { AmbientShelter, SoundEngine } from './soundEngine';
 import { getWeatherWindProfile } from '../game/gameLogic';
+import { getWeatherLabel } from '../i18n/i18n';
 
 export type WeatherId = 'clear' | 'mist' | 'rain' | 'storm';
+
+/** Base progression rate: 0.04 in-game hours per real second (~1/3 slower than 0.06). */
+export const BASE_GAME_HOURS_PER_SEC = 0.04;
 
 export const WEATHER_ORDER: WeatherId[] = ['clear', 'mist', 'rain', 'storm'];
 
@@ -696,6 +700,10 @@ export class WeatherAndSkySystem {
     this.timeOfDay = (this.timeOfDay + hours) % 24;
   }
 
+  setTimeOfDay(hour: number): void {
+    this.timeOfDay = ((hour % 24) + 24) % 24;
+  }
+
   private readonly cCloudGold = new THREE.Color(0xffcfa0);
   private readonly cCloudOvercastBright = new THREE.Color(0x9ca7b0);
   private readonly cCloudNightBright = new THREE.Color(0x162030);
@@ -746,15 +754,20 @@ export class WeatherAndSkySystem {
     scene: THREE.Scene,
     sound: SoundEngine,
     flashEl: HTMLElement | null,
-    camForward?: THREE.Vector3
+    camForward?: THREE.Vector3,
+    timeScale = 1,
+    shelter: AmbientShelter = 'outdoor'
   ): SkyFrameState {
-    this.elapsed += dt;
-    this.timeOfDay = (this.timeOfDay + dt * 0.06) % 24;
+    const scaledCloudDt = dt * (timeScale > 1 ? Math.min(14, timeScale * 0.4) : 1);
+    this.elapsed += scaledCloudDt;
+    this.timeOfDay = (this.timeOfDay + dt * BASE_GAME_HOURS_PER_SEC * timeScale) % 24;
 
-    this.weatherTimer -= dt;
-    if (this.weatherTimer <= 0) {
-      this.weatherIdx = (this.weatherIdx + 1 + Math.floor(Math.random() * 2)) % WEATHER_ORDER.length;
-      this.weatherTimer = 60 + Math.random() * 75;
+    if (timeScale <= 1.5) {
+      this.weatherTimer -= dt;
+      if (this.weatherTimer <= 0) {
+        this.weatherIdx = (this.weatherIdx + 1 + Math.floor(Math.random() * 2)) % WEATHER_ORDER.length;
+        this.weatherTimer = 60 + Math.random() * 75;
+      }
     }
 
     const weather = this.currentWeather;
@@ -969,13 +982,13 @@ export class WeatherAndSkySystem {
     }
 
     const soundWind = THREE.MathUtils.clamp((windStrength - 0.3) / 2.6, 0.15, 1.0);
-    sound.updateAmbience(weather, soundWind);
+    sound.updateAmbience(weather, soundWind, shelter);
 
     const hrs = Math.floor(this.timeOfDay);
     const mins = Math.floor((this.timeOfDay - hrs) * 60);
     return {
       timeLabel: `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}`,
-      weatherLabel: WEATHER_LABELS[weather],
+      weatherLabel: getWeatherLabel(weather),
       lightningStrength: this.lightningFlash,
       windStrength,
       sunDir: this.sunDir,

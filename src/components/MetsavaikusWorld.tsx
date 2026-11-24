@@ -26,7 +26,6 @@ function createOutdoorEnvScene(): THREE.Scene {
           ? mix(horizon, zenith, smoothstep(0.0, 0.75, y))
           : mix(pineBand, ground, smoothstep(0.0, -0.55, y));
 
-        // Soft warm Baltic morning sun lobe for specular highlights on glass, water & wet caps
         vec3 sunDir = normalize(vec3(0.55, 0.58, 0.35));
         float sunGlow = pow(max(dot(normalize(vDir), sunDir), 0.0), 16.0);
         col += vec3(1.15, 1.02, 0.82) * sunGlow * 0.9;
@@ -38,6 +37,7 @@ function createOutdoorEnvScene(): THREE.Scene {
   envScene.add(new THREE.Mesh(skyGeo, skyMat));
   return envScene;
 }
+
 import {
   buildInteractionPrompt,
   canClearHeightCollider,
@@ -50,16 +50,73 @@ import {
   MushroomSpecies,
   smoothFps,
 } from '../game/gameLogic';
+import {
+  addItemToInventory,
+  CAMPFIRE_WOOD_COST,
+  cloneInventory,
+  computeClothingBonuses,
+  computeInventoryWeightKg,
+  computeSleepGearBonuses,
+  createDefaultPackingSelection,
+  createInventoryFromPacking,
+  dropBottle,
+  getNavigationMode,
+  hasFlashlight,
+  hasRainJacket,
+  hasSleepingBag,
+  hasTent,
+  InventoryState,
+  isWearingRainJacket,
+  ITEM_CATALOG,
+  ItemId,
+  MUSHROOM_TO_ITEM_ID,
+  NavigationMode,
+  PackingSelection,
+  removeStackItem,
+  toggleWearClothing,
+} from '../game/itemCatalog';
+import {
+  boilBottleAtCampfire,
+  computeWeightBurden,
+  cookCampfireRecipe,
+  createInitialSurvivalState,
+  DiscoveryTracker,
+  drinkFromBottle,
+  eatFoodItem,
+  formatGameHour,
+  loadFlashlightBattery,
+  LocomotionState,
+  PlayerSurvivalState,
+  refillBottlesFromSource,
+  stepSleepSlice,
+  stepSurvivalTick,
+  SurvivalTickEvents,
+  tryIgniteCampfire,
+} from '../game/survivalEngine';
 import { FpsDropLogger, FramePerfSample } from '../game/perfLogger';
 import {
   buildArchitectureAndProps,
+  CampfireInfo,
   CircleCollider,
   InteractiveEntry,
+  SleepSpotInfo,
+  TentInfo,
   WorldPropsContext,
 } from '../world/architectureAndProps';
-import { VegetationStats, WorldVegetationSystem } from '../world/foliageFactory';
+import {
+  DeadfallLogTarget,
+  VegetationStats,
+  WorldVegetationSystem,
+} from '../world/foliageFactory';
 import { createWorldTextures, WorldTextures } from '../world/proceduralTextures';
-import { SoundEngine, FootstepSurface } from '../world/soundEngine';
+import {
+  AmbientShelter,
+  FootstepSurface,
+  SoundEngine,
+  SpatialAmbienceStats,
+  SpatialAudioEvent,
+  SpatialClipKind,
+} from '../world/soundEngine';
 import {
   ChunkVisibilityStats,
   TerrainChunkManager,
@@ -68,6 +125,7 @@ import {
   distToRoadDetail,
   getActiveBlueprint,
   getBiomeInfo,
+  getSwampFactor,
   getTerrainHeight,
   roadCenterX,
   setActiveWorldSeed,
@@ -77,23 +135,72 @@ import {
 } from '../world/terrainMath';
 import {
   createMinimapRenderer,
+  FogOfWarMap,
   formatCompassLabel,
   MinimapRenderer,
 } from '../world/minimapMath';
 import { ComputeEngine } from '../world/wasmCompute';
 import { computeFogCullDistance } from '../world/forestFrustumCuller';
-import { WEATHER_LABELS, WeatherAndSkySystem, WeatherId } from '../world/weatherAndSky';
+import {
+  BASE_GAME_HOURS_PER_SEC,
+  WeatherAndSkySystem,
+  WeatherId,
+} from '../world/weatherAndSky';
+import {
+  getItemName,
+  getLocalizedBiomeLabel,
+  getMushroomCopy,
+  getWeatherLabel,
+  subscribeLanguage,
+  t,
+} from '../i18n/i18n';
 
-export type GamePhase = 'title' | 'playing' | 'paused';
+export type GamePhase =
+  | 'title'
+  | 'packing'
+  | 'playing'
+  | 'paused'
+  | 'sleeping'
+  | 'collapsing'
+  | 'collapsed';
 
 export interface WorldHudRefs {
   fpsEl: React.RefObject<HTMLSpanElement | null>;
-  staminaFillEl: React.RefObject<HTMLDivElement | null>;
   biomeEl: React.RefObject<HTMLDivElement | null>;
   timeWeatherEl: React.RefObject<HTMLDivElement | null>;
   flashEl: React.RefObject<HTMLDivElement | null>;
   minimapCanvasEl: React.RefObject<HTMLCanvasElement | null>;
   compassHeadingEl: React.RefObject<HTMLDivElement | null>;
+  healthFillEl: React.RefObject<HTMLDivElement | null>;
+  energyFillEl: React.RefObject<HTMLDivElement | null>;
+  hydrationFillEl: React.RefObject<HTMLDivElement | null>;
+  fullnessFillEl: React.RefObject<HTMLDivElement | null>;
+  tirednessFillEl: React.RefObject<HTMLDivElement | null>;
+  bodyTempEl: React.RefObject<HTMLSpanElement | null>;
+  conditionsEl: React.RefObject<HTMLDivElement | null>;
+  frostVignetteEl: React.RefObject<HTMLDivElement | null>;
+  nauseaVignetteEl: React.RefObject<HTMLDivElement | null>;
+  drowsyVignetteEl: React.RefObject<HTMLDivElement | null>;
+}
+
+export interface WorldSurvivalSnapshot {
+  survival: PlayerSurvivalState;
+  inventory: InventoryState;
+  navigationMode: NavigationMode;
+  discoveredPercent: number;
+  fogVersion: number;
+  playerX: number;
+  playerZ: number;
+  playerYaw: number;
+  hourOfDay: number;
+  weather: WeatherId;
+  windStrength: number;
+  shelterLabel: string | null;
+  nearLitCampfireFactor: number;
+  seatedInTent: boolean;
+  wearingRainJacket: boolean;
+  sleepProgress: { elapsedHours: number; totalHours: number; spotLabel: string } | null;
+  collapseProgress: number;
 }
 
 export interface WorldCallbacks {
@@ -104,23 +211,50 @@ export interface WorldCallbacks {
   onPhaseChange: (phase: GamePhase) => void;
   onWorldReady: (info: { wasmActive: boolean; totalMushrooms: number }) => void;
   onDisplayMetrics?: (info: { autoDpr: number; viewportW: number; viewportH: number }) => void;
+  onSurvivalSnapshot: (snap: WorldSurvivalSnapshot) => void;
+  onOpenSleepModal: (spot: SleepSpotInfo) => void;
+  onOpenCampfireModal: (campfire: CampfireInfo) => void;
+  onToggleBackpack: () => void;
+  onToggleFullMap: () => void;
+  onCloseModals: () => void;
 }
 
 export interface WorldActions {
-  startPlaying: () => void;
+  startPlaying: (packingSelection: PackingSelection) => void;
   resumePlaying: () => void;
-  restartWorld: () => void;
+  restartWorld: (packingSelection?: PackingSelection) => void;
   cycleWeather: () => void;
   advanceTime: () => void;
   toggleFlashlight: () => void;
   toggleMute: () => boolean;
   setResolutionScale: (scale: number | null) => void;
+  setUiModalOpen: (open: boolean) => void;
+  eatItem: (itemId: ItemId) => void;
+  drinkBottle: (uid: string) => void;
+  loadBattery: () => void;
+  dropItem: (itemId: ItemId) => void;
+  dropBottleByUid: (uid: string) => void;
+  igniteCampfire: (campfireId: string) => CampfireInfo | null;
+  bankCampfire: (campfireId: string) => CampfireInfo | null;
+  placeCampfireFromWood: () => CampfireInfo | null;
+  pitchTent: () => TentInfo | null;
+  sitInTent: (tentId?: string) => boolean;
+  standUpFromTent: () => void;
+  openSleepForSeatedTent: () => void;
+  toggleWearItem: (itemId: ItemId) => void;
+  sleepInSleepingBag: () => void;
+  cookAtCampfire: (recipe: 'seared_steak' | 'roasted_mushrooms') => void;
+  boilBottle: (uid: string) => void;
+  startSleep: (spot: SleepSpotInfo, hours: number) => void;
+  wakeEarly: () => void;
+  renderFullMap: (canvas: HTMLCanvasElement, zoom: number, panX: number, panZ: number) => void;
 }
 
 interface MetsavaikusWorldProps {
   worldSeed: number;
   phase: GamePhase;
   resolutionScale: number | null;
+  initialPacking: PackingSelection;
   hudRefs: WorldHudRefs;
   callbacks: WorldCallbacks;
   actionsRef: React.MutableRefObject<WorldActions | null>;
@@ -147,11 +281,7 @@ function detectGpuInfo(): {
       /Intel.*(UHD|HD Graphics|GT1|GT2|Bay Trail|Cherry|Jasper|Gemini|CFL|KBL|SKL|WHL|CML)|Mesa Intel.*(UHD|HD )/i.test(
         raw
       );
-    return {
-      isSoftwareGl,
-      isLowPowerGpu,
-      gpuRenderer,
-    };
+    return { isSoftwareGl, isLowPowerGpu, gpuRenderer };
   } catch {
     return { isSoftwareGl: false, isLowPowerGpu: false, gpuRenderer: 'unknown' };
   }
@@ -171,6 +301,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
   worldSeed,
   phase,
   resolutionScale,
+  initialPacking,
   hudRefs,
   callbacks,
   actionsRef,
@@ -181,6 +312,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
   const resolutionScaleRef = useRef<number | null>(resolutionScale);
   resolutionScaleRef.current = resolutionScale;
+
+  const initialPackingRef = useRef<PackingSelection>(initialPacking);
+  initialPackingRef.current = initialPacking;
 
   const callbacksRef = useRef<WorldCallbacks>(callbacks);
   callbacksRef.current = callbacks;
@@ -196,7 +330,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     const mountEl = mountRef.current;
     if (!mountEl) return;
 
-    // Generate active procedural world blueprint from seed before sampling terrain or building props
     setActiveWorldSeed(worldSeed);
 
     let disposed = false;
@@ -228,7 +361,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       viewportH: window.innerHeight,
     });
 
-    // antialias: false eliminates 4x MSAA fillrate explosion & ANGLE blit-resolve compositor stalls
     const renderer = new THREE.WebGLRenderer({
       antialias: false,
       powerPreference: 'high-performance',
@@ -256,8 +388,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       460
     );
 
-    // On integrated GPUs (e.g. Intel UHD 630), skip full PMREM cubeUV IBL (saves 6-8 texture fetches/pixel on matte terrain & bark!)
-    // HemisphereLight intensity is boosted proportionally in WeatherAndSkySystem to keep ambient lighting rich and balanced.
     let envTarget: THREE.WebGLRenderTarget | null = null;
     if (!isLowPowerGpu) {
       const pmremGenerator = new THREE.PMREMGenerator(renderer);
@@ -272,8 +402,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       pmremGenerator.dispose();
     }
 
-    // Keep flashlight visible=true forever (intensity=0 when off) so NUM_SPOT_LIGHTS stays constant
-    // and toggling [L] never triggers a synchronous 1.7s shader recompile across the entire scene.
+    // Keep flashlight visible=true forever (intensity=0 when off) so NUM_SPOT_LIGHTS never recompiles
     const flashlight = new THREE.SpotLight(0xfff1cc, 0, 38, Math.PI / 5.5, 0.45, 1.4);
     flashlight.visible = true;
     flashlight.position.set(0, 0, 0);
@@ -297,6 +426,111 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let minimap: MinimapRenderer | null = null;
     let computeEngine: ComputeEngine | null = null;
 
+    // Survival, Inventory, Discovery & Sleep/Collapse State
+    let inventory: InventoryState = createInventoryFromPacking(
+      initialPackingRef.current ?? createDefaultPackingSelection()
+    );
+    let survival: PlayerSurvivalState = createInitialSurvivalState(
+      computeInventoryWeightKg(inventory)
+    );
+    const discovery = new DiscoveryTracker();
+    const fogOfWar = new FogOfWarMap();
+    let lastFogRevealX = 999999;
+    let lastFogRevealZ = 999999;
+    const tickEvents: SurvivalTickEvents = {
+      vomited: false,
+      vomitSource: null,
+      died: false,
+      flashlightDepleted: false,
+      toastMessage: null,
+    };
+
+    let uiModalOpen = false;
+    let vomitLurchTimer = 0;
+    let collapseTimer = 0;
+    let collapseStartMs = 0;
+    const COLLAPSE_DURATION_SEC = 3.2;
+    let collapseStartPitch = 0;
+    let collapseStartEye = 1.7;
+
+    interface SleepSession {
+      spot: SleepSpotInfo;
+      totalHours: number;
+      elapsedHours: number;
+      realDurationSec: number;
+      orbitAngle: number;
+      nearFireFactor: number;
+    }
+    let sleepSession: SleepSession | null = null;
+    let seatedTent: TentInfo | null = null;
+    let seatedBaseYaw = 0;
+    let seatedBlend = 0;
+    const seatedCamPos = new THREE.Vector3();
+    const seatedStartPos = new THREE.Vector3();
+
+    function computeTentSeatWorldPos(tent: TentInfo, out: THREE.Vector3): void {
+      // Seated squarely on the insulated pad inside the tent, looking out the open triangular front doorway (+Z)
+      const lx = -0.04;
+      const lz = -0.18;
+      const cosY = Math.cos(tent.yaw);
+      const sinY = Math.sin(tent.yaw);
+      out.set(
+        tent.x + lx * cosY + lz * sinY,
+        tent.y + 0.56,
+        tent.z - lx * sinY + lz * cosY
+      );
+    }
+
+    function enterTentSeat(tent: TentInfo): void {
+      sound.init();
+      sound.resume();
+      if (player.carrying) dropCarried(0);
+      seatedTent = tent;
+      seatedBaseYaw = tent.yaw + Math.PI;
+      seatedBlend = 0;
+      computeTentSeatWorldPos(tent, seatedCamPos);
+      // Start subtle settle-in glide from just 0.16m higher inside the tent so the interior frames immediately at any FPS
+      seatedStartPos.set(seatedCamPos.x, seatedCamPos.y + 0.16, seatedCamPos.z);
+      player.pos.set(tent.x, tent.y, tent.z);
+      player.vel.set(0, 0, 0);
+      player.yaw = seatedBaseYaw;
+      player.pitch = -0.03;
+      camera.position.copy(seatedStartPos);
+      camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+      camera.updateMatrixWorld();
+      uiModalOpen = false;
+      hoveredObj = null;
+      hoveredDeadfall = null;
+      lastPromptKey = '';
+      callbacksRef.current.onPromptChange(null);
+      sound.playFabricRustle(true);
+      callbacksRef.current.onToast(t('toast.satInTent'));
+      syncVitalHudDom();
+      pushSurvivalSnapshot();
+    }
+
+    function exitTentSeat(silent = false): void {
+      if (!seatedTent) return;
+      const tent = seatedTent;
+      seatedTent = null;
+      const exitDist = 2.25;
+      const ex = tent.x + Math.sin(tent.yaw) * exitDist;
+      const ez = tent.z + Math.cos(tent.yaw) * exitDist;
+      const ey = getSurfaceHeightAt(ex, ez);
+      player.pos.set(ex, ey, ez);
+      player.vel.set(0, 0, 0);
+      player.yaw = tent.yaw + Math.PI;
+      player.pitch = -0.04;
+      player.currentEye = player.eyeHeight;
+      resolvePlayerCollisions(player.pos);
+      if (!silent) {
+        sound.playFabricRustle(false);
+        callbacksRef.current.onToast(t('toast.stoodUpTent'));
+      }
+      syncVitalHudDom();
+      pushSurvivalSnapshot();
+    }
+
     const perfLogger = new FpsDropLogger(performance.now());
     let hasLivePerfSample = false;
     (window as unknown as { dumpMetsavaikusPerf?: () => string }).dumpMetsavaikusPerf = () => {
@@ -304,25 +538,19 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       console.log(dump);
       return dump;
     };
+
     let lastObservedWeather = weatherSky.currentWeather;
     let lastObservedChunkKey = '';
     const onWebGlContextLost = (ev: Event) => {
       ev.preventDefault();
       perfLogger.recordEvent('webglcontextlost', performance.now());
-      console.log('[METSAVAIKUS_PERF:WEBGL_CONTEXT_LOST]', {
-        pos: `${player.pos.x.toFixed(1)},${player.pos.z.toFixed(1)}`,
-        weather: weatherSky.currentWeather,
-        hour: weatherSky.timeOfDay.toFixed(2),
-      });
     };
     const onWebGlContextRestored = () => {
       perfLogger.recordEvent('webglcontextrestored', performance.now());
-      console.log('[METSAVAIKUS_PERF:WEBGL_CONTEXT_RESTORED]');
     };
     renderer.domElement.addEventListener('webglcontextlost', onWebGlContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', onWebGlContextRestored);
 
-    // Spawn player on open gravel road facing north toward the homestead
     const spawnZ = 6;
     const spawnX = roadCenterX(spawnZ);
     const player = {
@@ -334,23 +562,33 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       crouchEyeHeight: 1.05,
       currentEye: 1.7,
       onGround: true,
-      stamina: 100,
       carrying: null as InteractiveEntry | null,
       stepTimer: 0,
       bobPhase: 0,
     };
+
+    discovery.markAroundWorldPos(player.pos.x, player.pos.z, 1);
+    fogOfWar.revealAt(player.pos.x, player.pos.z);
+    lastFogRevealX = player.pos.x;
+    lastFogRevealZ = player.pos.z;
 
     let flashlightOn = false;
     let isMuted = false;
     let pointerLocked = false;
     let mouseDragging = false;
     let hoveredObj: InteractiveEntry | null = null;
+    let hoveredDeadfall: DeadfallLogTarget | null = null;
+    let canRefillBogWater = false;
     let lastPromptKey = '';
+    let lastLocomotion: LocomotionState = 'idle';
+    let lastWindStrength = 0.6;
+    let lastShelterLabel: string | null = null;
+    let lastNearFire = 0;
 
     const keysHeld = new Set<string>();
     const keysJustPressed = new Set<string>();
     const raycaster = new THREE.Raycaster();
-    raycaster.far = 3.8;
+    raycaster.far = 4.2;
 
     const chunkStats: ChunkVisibilityStats = { visibleChunks: 0, lod0: 0, lod1: 0, lod2: 0 };
     const vegStats: VegetationStats = {
@@ -359,6 +597,134 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       culledInstances: 0,
       candidateInstances: 0,
     };
+
+    // Cached DOM values to avoid unnecessary style writes
+    let lastBarHealth = -1;
+    let lastBarEnergy = -1;
+    let lastBarHydration = -1;
+    let lastBarFullness = -1;
+    let lastBarTiredness = -1;
+    let lastTempText = '';
+    let lastCondText = '';
+
+    function syncVitalHudDom(): void {
+      if (hudRefs.healthFillEl.current && Math.abs(survival.health - lastBarHealth) > 0.25) {
+        lastBarHealth = survival.health;
+        hudRefs.healthFillEl.current.style.transform = `scaleX(${(survival.health / 100).toFixed(3)})`;
+      }
+      if (hudRefs.energyFillEl.current && Math.abs(survival.energy - lastBarEnergy) > 0.25) {
+        lastBarEnergy = survival.energy;
+        hudRefs.energyFillEl.current.style.transform = `scaleX(${(survival.energy / 100).toFixed(3)})`;
+      }
+      if (hudRefs.hydrationFillEl.current && Math.abs(survival.hydration - lastBarHydration) > 0.25) {
+        lastBarHydration = survival.hydration;
+        hudRefs.hydrationFillEl.current.style.transform = `scaleX(${(survival.hydration / 100).toFixed(3)})`;
+      }
+      if (hudRefs.fullnessFillEl.current && Math.abs(survival.stomachFullness - lastBarFullness) > 0.25) {
+        lastBarFullness = survival.stomachFullness;
+        hudRefs.fullnessFillEl.current.style.transform = `scaleX(${(survival.stomachFullness / 100).toFixed(3)})`;
+      }
+      if (hudRefs.tirednessFillEl.current && Math.abs(survival.physicalTiredness - lastBarTiredness) > 0.25) {
+        lastBarTiredness = survival.physicalTiredness;
+        hudRefs.tirednessFillEl.current.style.transform = `scaleX(${(survival.physicalTiredness / 100).toFixed(3)})`;
+      }
+      if (hudRefs.bodyTempEl.current) {
+        const txt = `${survival.bodyTempC.toFixed(1)}°C`;
+        if (txt !== lastTempText) {
+          lastTempText = txt;
+          hudRefs.bodyTempEl.current.textContent = txt;
+        }
+      }
+      if (hudRefs.conditionsEl.current) {
+        const conds: string[] = [];
+        if (survival.hypothermiaStage === 'severe') conds.push(t('cond.severeHypothermia'));
+        else if (survival.hypothermiaStage === 'hypothermia') conds.push(t('cond.hypothermia'));
+        else if (survival.hypothermiaStage === 'chilly') conds.push(t('cond.cold'));
+        if (survival.wetness > 55) conds.push(t('cond.soaked'));
+        else if (survival.wetness > 25) conds.push(t('cond.wet'));
+        if (survival.loadTier === 'overburdened') conds.push(t('cond.overburdened'));
+        else if (survival.loadTier === 'heavy') conds.push(t('cond.heavy'));
+        if (survival.waterStomachLoadL > 0.55) conds.push(t('cond.waterHeavy'));
+        if (survival.nausea > 22 || survival.poisons.length > 0) conds.push(t('cond.sick'));
+        if (survival.stomachFullness < 18) conds.push(t('cond.hungry'));
+        if (survival.hydration < 20) conds.push(t('cond.thirsty'));
+        if (survival.energy < 20) conds.push(t('cond.exhausted'));
+        if (lastNearFire > 0.25) conds.push(t('cond.warm'));
+        if (isWearingRainJacket(inventory)) conds.push(t('cond.rainJacket'));
+        const nextCond = conds.slice(0, 4).join(' · ');
+        if (nextCond !== lastCondText) {
+          lastCondText = nextCond;
+          hudRefs.conditionsEl.current.textContent = nextCond;
+        }
+      }
+
+      if (hudRefs.frostVignetteEl.current) {
+        const frost = THREE.MathUtils.clamp((35.8 - survival.bodyTempC) / 2.2, 0, 1) * 0.72;
+        hudRefs.frostVignetteEl.current.style.opacity = frost.toFixed(3);
+      }
+      if (hudRefs.nauseaVignetteEl.current) {
+        const nau = THREE.MathUtils.clamp(survival.nausea / 100, 0, 1) * 0.62;
+        hudRefs.nauseaVignetteEl.current.style.opacity = nau.toFixed(3);
+      }
+      if (hudRefs.drowsyVignetteEl.current) {
+        const drowsy = THREE.MathUtils.clamp((25 - survival.energy) / 25, 0, 1) * 0.52;
+        hudRefs.drowsyVignetteEl.current.style.opacity = drowsy.toFixed(3);
+      }
+    }
+
+    function pushSurvivalSnapshot(): void {
+      const snap: WorldSurvivalSnapshot = {
+        survival: {
+          ...survival,
+          poisons: survival.poisons.map((p) => ({ ...p })),
+          deathFactors: [...survival.deathFactors],
+        },
+        inventory: cloneInventory(inventory),
+        navigationMode: getNavigationMode(inventory),
+        discoveredPercent: fogOfWar.getExploredPercent(),
+        fogVersion: fogOfWar.version,
+        playerX: player.pos.x,
+        playerZ: player.pos.z,
+        playerYaw: player.yaw,
+        hourOfDay: weatherSky.timeOfDay,
+        weather: weatherSky.currentWeather,
+        windStrength: lastWindStrength,
+        shelterLabel: seatedTent ? t('prop.tentSpotLabel') : lastShelterLabel,
+        nearLitCampfireFactor: lastNearFire,
+        seatedInTent: seatedTent !== null,
+        wearingRainJacket: isWearingRainJacket(inventory),
+        sleepProgress: sleepSession
+          ? {
+              elapsedHours: sleepSession.elapsedHours,
+              totalHours: sleepSession.totalHours,
+              spotLabel: sleepSession.spot.label,
+            }
+          : null,
+        collapseProgress: Math.min(1, collapseTimer / COLLAPSE_DURATION_SEC),
+      };
+      callbacksRef.current.onSurvivalSnapshot(snap);
+    }
+
+    function beginCollapse(): void {
+      if (phaseRef.current === 'collapsing' || phaseRef.current === 'collapsed') return;
+      if (document.pointerLockElement) document.exitPointerLock?.();
+      keysHeld.clear();
+      keysJustPressed.clear();
+      uiModalOpen = false;
+      sleepSession = null;
+      seatedTent = null;
+      collapseTimer = 0;
+      collapseStartMs = performance.now();
+      collapseStartPitch = player.pitch;
+      collapseStartEye = player.currentEye;
+      if (flashlightOn) {
+        flashlightOn = false;
+        flashlight.intensity = 0;
+      }
+      phaseRef.current = 'collapsing';
+      callbacksRef.current.onPhaseChange('collapsing');
+      pushSurvivalSnapshot();
+    }
 
     function getSurfaceHeightAt(x: number, z: number): number {
       let h = getTerrainHeight(x, z);
@@ -409,7 +775,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         for (let i = 0; i < propsCtx.boxColliders.length; i++) {
           const b = propsCtx.boxColliders[i];
           if (!b.active) continue;
-          // Jumpable split-pole fences allow clearing over the top rail when jumping!
           if (b.jumpable && canClearHeightCollider(pos.y, b.groundY, b.heightAboveGround)) {
             continue;
           }
@@ -430,7 +795,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
       }
 
-      // Rectangular world boundary inside 1200x1200m playable countryside
       const limit = WORLD_HALF - 10;
       pos.x = THREE.MathUtils.clamp(pos.x, -limit, limit);
       pos.z = THREE.MathUtils.clamp(pos.z, -limit, limit);
@@ -449,29 +813,82 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       callbacksRef.current.onCarryChange('');
     }
 
+    const getEntryName = (entry: InteractiveEntry): string =>
+      entry.getName ? entry.getName() : entry.name;
+    const getEntryDesc = (entry: InteractiveEntry): string =>
+      entry.getDesc ? entry.getDesc() : entry.desc;
+    const getEntryPickupLabel = (entry: InteractiveEntry): string | undefined =>
+      entry.getPickupLabel ? entry.getPickupLabel() : entry.pickupLabel;
+    const getEntrySecondaryActionLabel = (entry: InteractiveEntry): string | undefined =>
+      entry.getSecondaryActionLabel ? entry.getSecondaryActionLabel() : undefined;
+
     function handleInteractE(): void {
       if (player.carrying) {
         dropCarried(1.5);
         sound.playImpact(0.4);
         return;
       }
-      if (!hoveredObj) return;
+      if (!hoveredObj) {
+        if (canRefillBogWater) {
+          const res = refillBottlesFromSource(inventory, 'bog_lake');
+          sound.playFootstep('water');
+          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+          callbacksRef.current.onToast(res.message);
+          syncVitalHudDom();
+          pushSurvivalSnapshot();
+        }
+        return;
+      }
 
       if (hoveredObj.gatherable && propsCtx) {
         const gatheredSpecies = propsCtx.gatherMushroom(hoveredObj);
         if (gatheredSpecies) {
           const meta = MUSHROOM_SPECIES_INFO[gatheredSpecies];
+          const localizedName = getMushroomCopy(gatheredSpecies).name;
+          addItemToInventory(inventory, MUSHROOM_TO_ITEM_ID[gatheredSpecies], 1);
+          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
           callbacksRef.current.onGatherMushroom(gatheredSpecies);
           if (meta.edibility === 'poisonous') {
-            callbacksRef.current.onToast(`WARNING: ${meta.estonian} (${meta.english}) is POISONOUS!`);
+            callbacksRef.current.onToast(t('toast.gatherPoisonous', { name: localizedName }));
           } else if (meta.edibility === 'inedible') {
-            callbacksRef.current.onToast(`Caution: ${meta.estonian} (${meta.english}) is bitter & inedible.`);
+            callbacksRef.current.onToast(t('toast.gatherInedible', { name: localizedName }));
           } else {
-            callbacksRef.current.onToast(`Gathered ${meta.english} (${meta.estonian})`);
+            callbacksRef.current.onToast(t('toast.gatherEdible', { name: localizedName }));
           }
           hoveredObj = null;
           lastPromptKey = '';
           callbacksRef.current.onPromptChange(null);
+          pushSurvivalSnapshot();
+        }
+        return;
+      }
+
+      if (hoveredObj.pickupItemId && propsCtx) {
+        const pickedId = propsCtx.collectPickupItem(hoveredObj);
+        if (pickedId) {
+          addItemToInventory(inventory, pickedId, 1);
+          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+          const woodCount = inventory.stacks.firewood ?? 0;
+          const totalKg = survival.backpackWeightKg.toFixed(2);
+          const readyHint =
+            pickedId === 'firewood' && woodCount >= CAMPFIRE_WOOD_COST
+              ? t('toast.packedWoodReady')
+              : pickedId === 'firewood'
+                ? t('toast.packedWoodCount', { have: woodCount, need: CAMPFIRE_WOOD_COST })
+                : '';
+          callbacksRef.current.onToast(
+            t('toast.packedItem', {
+              name: getItemName(pickedId),
+              unitKg: ITEM_CATALOG[pickedId].weightKg.toFixed(2),
+              totalKg,
+              hint: readyHint,
+            })
+          );
+          hoveredObj = null;
+          lastPromptKey = '';
+          callbacksRef.current.onPromptChange(null);
+          syncVitalHudDom();
+          pushSurvivalSnapshot();
         }
         return;
       }
@@ -479,7 +896,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (hoveredObj.carryable) {
         player.carrying = hoveredObj;
         callbacksRef.current.onCarryChange(
-          `Carrying: ${hoveredObj.name} ([E] Drop · [F] Throw)`
+          t('hud.carrying', { name: getEntryName(hoveredObj) })
         );
         sound.playImpact(0.35);
       } else if (hoveredObj.onUse) {
@@ -493,9 +910,41 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         sound.playImpact(1.1);
         return;
       }
+      if (!hoveredObj && hoveredDeadfall && vegetation && propsCtx) {
+        survival.physicalTiredness = Math.min(100, survival.physicalTiredness + 3.5);
+        const res = vegetation.kickDeadfall(hoveredDeadfall.id);
+        if (res && res.hit) {
+          if (!res.broken) {
+            sound.playImpact(1.1);
+            callbacksRef.current.onToast(t('toast.deadfallCracked'));
+          } else {
+            sound.playImpact(1.45);
+            const pieces = propsCtx.shatterWoodAt(res.x, res.y, res.z, res.rotY, 4);
+            hoveredDeadfall = null;
+            lastPromptKey = '';
+            callbacksRef.current.onPromptChange(null);
+            callbacksRef.current.onToast(t('toast.deadfallShattered', { count: pieces }));
+          }
+          syncVitalHudDom();
+          pushSurvivalSnapshot();
+        }
+        return;
+      }
       if (!hoveredObj) return;
       if (hoveredObj.gatherable) {
-        callbacksRef.current.onToast('Press [E] to gather mushrooms gently.');
+        callbacksRef.current.onToast(t('toast.gatherGently'));
+        return;
+      }
+      if (hoveredObj.onKick) {
+        survival.physicalTiredness = Math.min(100, survival.physicalTiredness + 3.5);
+        hoveredObj.onKick();
+        if (hoveredObj.gathered) {
+          hoveredObj = null;
+          lastPromptKey = '';
+          callbacksRef.current.onPromptChange(null);
+        }
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
         return;
       }
       if (hoveredObj.kickable) {
@@ -514,57 +963,159 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         sound.playImpact(1.2);
       } else {
         sound.playImpact(0.8);
-        callbacksRef.current.onToast(
-          `You push against the ${hoveredObj.name}, but it won't budge.`
-        );
+        callbacksRef.current.onToast(t('toast.wontBudge', { name: getEntryName(hoveredObj) }));
       }
     }
 
     function handleInteractR(): void {
-      if (!hoveredObj) return;
-      if (hoveredObj.onTouch) hoveredObj.onTouch();
-      else callbacksRef.current.onToast(`${hoveredObj.name}: ${hoveredObj.desc}`);
+      if (hoveredObj) {
+        if (hoveredObj.onTouch) hoveredObj.onTouch();
+        else {
+          callbacksRef.current.onToast(
+            `${getEntryName(hoveredObj)}: ${getEntryDesc(hoveredObj)}`
+          );
+        }
+        return;
+      }
+      if (hoveredDeadfall) {
+        callbacksRef.current.onToast(t('toast.deadfallInspect'));
+      }
+    }
+
+    function finishSleep(early: boolean): void {
+      if (!sleepSession) return;
+      const doneHrs = sleepSession.elapsedHours;
+      sleepSession = null;
+      callbacksRef.current.onPhaseChange('playing');
+      const wakeStr = formatGameHour(weatherSky.timeOfDay);
+      callbacksRef.current.onToast(
+        early
+          ? t('toast.wokeEarly', {
+              time: wakeStr,
+              hours: doneHrs.toFixed(1),
+              energy: Math.round(survival.energy),
+            })
+          : t('toast.wokeNormal', {
+              time: wakeStr,
+              hours: doneHrs.toFixed(0),
+              energy: Math.round(survival.energy),
+            })
+      );
+      syncVitalHudDom();
+      pushSurvivalSnapshot();
     }
 
     actionsRef.current = {
-      startPlaying: () => {
+      startPlaying: (packingSelection: PackingSelection) => {
         sound.init();
         sound.resume();
+        inventory = createInventoryFromPacking(packingSelection);
+        survival = createInitialSurvivalState(computeInventoryWeightKg(inventory));
+        discovery.reset();
+        discovery.markAroundWorldPos(player.pos.x, player.pos.z, 1);
+        fogOfWar.reset();
+        fogOfWar.revealAt(player.pos.x, player.pos.z);
+        lastFogRevealX = player.pos.x;
+        lastFogRevealZ = player.pos.z;
+        flashlightOn = false;
+        flashlight.intensity = 0;
+        uiModalOpen = false;
+        sleepSession = null;
+        seatedTent = null;
+        collapseTimer = 0;
+        lastBarHealth = -1;
+        lastMinimapCanvas = null;
+        lastMinimapFogVersion = -1;
         keysHeld.clear();
         keysJustPressed.clear();
         callbacksRef.current.onPhaseChange('playing');
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+        window.requestAnimationFrame(() => {
+          if (hudRefs.biomeEl.current) {
+            const b = getBiomeInfo(player.pos.x, player.pos.z);
+            hudRefs.biomeEl.current.textContent = getLocalizedBiomeLabel(b.id, b.label);
+          }
+          if (hudRefs.timeWeatherEl.current) {
+            hudRefs.timeWeatherEl.current.textContent = `${formatGameHour(weatherSky.timeOfDay)} · ${getWeatherLabel(weatherSky.currentWeather)}`;
+          }
+          const mmCanvas = hudRefs.minimapCanvasEl.current;
+          const navMode = getNavigationMode(inventory);
+          if (mmCanvas && minimap && navMode !== 'none') {
+            lastMinimapCanvas = mmCanvas;
+            lastMinimapMode = navMode;
+            lastMinimapYaw = player.yaw;
+            lastMinimapFogVersion = fogOfWar.version;
+            minimap.draw(mmCanvas, player.pos.x, player.pos.z, player.yaw, navMode);
+            if (hudRefs.compassHeadingEl.current && (navMode === 'compass' || navMode === 'both')) {
+              hudRefs.compassHeadingEl.current.textContent = formatCompassLabel(player.yaw);
+            }
+          }
+        });
       },
       resumePlaying: () => {
         sound.init();
         sound.resume();
+        uiModalOpen = false;
         keysHeld.clear();
         keysJustPressed.clear();
         callbacksRef.current.onPhaseChange('playing');
       },
-      restartWorld: () => {
+      restartWorld: (packingSelection?: PackingSelection) => {
         player.pos.set(spawnX, getTerrainHeight(spawnX, spawnZ), spawnZ);
         player.vel.set(0, 0, 0);
         player.yaw = 0.05;
         player.pitch = -0.04;
-        player.stamina = 100;
+        player.currentEye = player.eyeHeight;
         if (player.carrying) dropCarried(0);
+        inventory = createInventoryFromPacking(
+          packingSelection ?? initialPackingRef.current ?? createDefaultPackingSelection()
+        );
+        survival = createInitialSurvivalState(computeInventoryWeightKg(inventory));
+        discovery.reset();
+        discovery.markAroundWorldPos(player.pos.x, player.pos.z, 1);
+        fogOfWar.reset();
+        fogOfWar.revealAt(player.pos.x, player.pos.z);
+        lastFogRevealX = player.pos.x;
+        lastFogRevealZ = player.pos.z;
+        flashlightOn = false;
+        flashlight.intensity = 0;
+        uiModalOpen = false;
+        sleepSession = null;
+        seatedTent = null;
+        collapseTimer = 0;
+        lastBarHealth = -1;
+        lastMinimapCanvas = null;
+        lastMinimapFogVersion = -1;
         keysHeld.clear();
         keysJustPressed.clear();
         sound.resume();
         callbacksRef.current.onPhaseChange('playing');
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
       },
       cycleWeather: () => {
         const w = weatherSky.cycleWeather();
         lastObservedWeather = w;
         perfLogger.recordEvent(`keyWeather->${w}`, performance.now());
-        callbacksRef.current.onToast(`Weather: ${WEATHER_LABELS[w]}`);
+        callbacksRef.current.onToast(t('toast.weatherChanged', { weather: getWeatherLabel(w) }));
+        pushSurvivalSnapshot();
       },
       advanceTime: () => {
         weatherSky.advanceTime(2);
         perfLogger.recordEvent(`keyTime->${weatherSky.timeOfDay.toFixed(1)}h`, performance.now());
-        callbacksRef.current.onToast('Time advanced +2 hours.');
+        callbacksRef.current.onToast(t('toast.timeAdvanced'));
+        pushSurvivalSnapshot();
       },
       toggleFlashlight: () => {
+        if (!hasFlashlight(inventory)) {
+          callbacksRef.current.onToast(t('toast.noFlashlight'));
+          return;
+        }
+        if (!flashlightOn && inventory.flashlightBattery <= 0.5) {
+          callbacksRef.current.onToast(t('toast.batteryDead'));
+          return;
+        }
         flashlightOn = !flashlightOn;
         flashlight.intensity = flashlightOn ? 3.5 : 0;
         perfLogger.recordEvent(`flashlight->${flashlightOn ? 'on' : 'off'}`, performance.now());
@@ -595,6 +1146,581 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           );
         }
       },
+      setUiModalOpen: (open: boolean) => {
+        uiModalOpen = open;
+        if (open) {
+          keysHeld.clear();
+          keysJustPressed.clear();
+          mouseDragging = false;
+          if (document.pointerLockElement) document.exitPointerLock?.();
+          pushSurvivalSnapshot();
+        }
+      },
+      eatItem: (itemId: ItemId) => {
+        const res = eatFoodItem(survival, inventory, itemId);
+        if (res.ok) {
+          sound.playEatCrunch();
+          if (res.poisoned) vomitLurchTimer = 0.6;
+        }
+        callbacksRef.current.onToast(res.message);
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+      },
+      drinkBottle: (uid: string) => {
+        const res = drinkFromBottle(survival, inventory, uid);
+        if (res.ok) {
+          sound.playDrinkSip();
+          if (res.poisoned) vomitLurchTimer = 0.7;
+        }
+        callbacksRef.current.onToast(res.message);
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+      },
+      loadBattery: () => {
+        const res = loadFlashlightBattery(inventory);
+        if (res.ok) sound.playImpact(0.35);
+        callbacksRef.current.onToast(res.message);
+        pushSurvivalSnapshot();
+      },
+      dropItem: (itemId: ItemId) => {
+        if (removeStackItem(inventory, itemId, 1)) {
+          if (itemId === 'flashlight' && !hasFlashlight(inventory) && flashlightOn) {
+            flashlightOn = false;
+            flashlight.intensity = 0;
+          }
+          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+          lastMinimapCanvas = null;
+          callbacksRef.current.onToast(t('toast.droppedItem', { name: getItemName(itemId) }));
+          syncVitalHudDom();
+          pushSurvivalSnapshot();
+        }
+      },
+      dropBottleByUid: (uid: string) => {
+        if (dropBottle(inventory, uid)) {
+          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+          callbacksRef.current.onToast(t('toast.droppedBottle'));
+          syncVitalHudDom();
+          pushSurvivalSnapshot();
+        }
+      },
+      igniteCampfire: (campfireId: string) => {
+        const res = tryIgniteCampfire(inventory, weatherSky.currentWeather, survival.wetness);
+        sound.playFireIgnite(res.ok);
+        if (res.ok && propsCtx) {
+          propsCtx.setCampfireLit(campfireId, true);
+        }
+        callbacksRef.current.onToast(res.message);
+        pushSurvivalSnapshot();
+        return propsCtx ? propsCtx.getCampfireInfo(campfireId) : null;
+      },
+      bankCampfire: (campfireId: string) => {
+        if (propsCtx) {
+          propsCtx.setCampfireLit(campfireId, false);
+        }
+        sound.playImpact(0.45);
+        callbacksRef.current.onToast(t('toast.bankedFire'));
+        pushSurvivalSnapshot();
+        return propsCtx ? propsCtx.getCampfireInfo(campfireId) : null;
+      },
+      placeCampfireFromWood: () => {
+        if (!propsCtx) return null;
+        const woodHave = inventory.stacks.firewood ?? 0;
+        if (woodHave < CAMPFIRE_WOOD_COST) {
+          callbacksRef.current.onToast(
+            t('toast.needWood', { cost: CAMPFIRE_WOOD_COST, have: woodHave })
+          );
+          return null;
+        }
+        const fx = player.pos.x - Math.sin(player.yaw) * 2.3;
+        const fz = player.pos.z - Math.cos(player.yaw) * 2.3;
+        const placed = propsCtx.placePlayerCampfire(fx, fz);
+        if (!placed.ok || !placed.campfire) {
+          callbacksRef.current.onToast(placed.message);
+          return null;
+        }
+        removeStackItem(inventory, 'firewood', CAMPFIRE_WOOD_COST);
+        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+        callbacksRef.current.onToast(placed.message);
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+        return placed.campfire;
+      },
+      pitchTent: () => {
+        if (!propsCtx) return null;
+        if (!hasTent(inventory)) {
+          callbacksRef.current.onToast(t('toast.noTent'));
+          return null;
+        }
+        const tx = player.pos.x - Math.sin(player.yaw) * 3.85;
+        const tz = player.pos.z - Math.cos(player.yaw) * 3.85;
+        // Orient tent entrance facing toward the player at a natural 3/4 angle
+        const tentYaw = player.yaw + 0.42;
+        const placed = propsCtx.placePlayerTent(tx, tz, tentYaw);
+        if (!placed.ok || !placed.tent) {
+          callbacksRef.current.onToast(placed.message);
+          return null;
+        }
+        removeStackItem(inventory, 'tent', 1);
+        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+        callbacksRef.current.onToast(placed.message);
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+        return placed.tent;
+      },
+      sitInTent: (tentId?: string) => {
+        const list = propsCtx?.getTents() ?? [];
+        const target = tentId ? list.find((tt) => tt.id === tentId) : list[0];
+        if (!target) return false;
+        enterTentSeat(target);
+        return true;
+      },
+      standUpFromTent: () => {
+        exitTentSeat(false);
+      },
+      openSleepForSeatedTent: () => {
+        if (!seatedTent) return;
+        const tt = seatedTent;
+        uiModalOpen = true;
+        keysHeld.clear();
+        if (document.pointerLockElement) document.exitPointerLock?.();
+        pushSurvivalSnapshot();
+        callbacksRef.current.onOpenSleepModal({
+          kind: 'tent',
+          label: t('prop.tentSpotLabel'),
+          x: tt.x,
+          y: tt.y + 0.15,
+          z: tt.z,
+          shelter: 'tent',
+          tentId: tt.id,
+        });
+      },
+      toggleWearItem: (itemId: ItemId) => {
+        if (itemId === 'rain_jacket' && !hasRainJacket(inventory)) {
+          callbacksRef.current.onToast(t('toast.noRainJacket'));
+          return;
+        }
+        const nowWorn = toggleWearClothing(inventory, itemId);
+        if (nowWorn === null) return;
+        sound.init();
+        sound.resume();
+        sound.playFabricRustle(nowWorn);
+        callbacksRef.current.onToast(
+          nowWorn ? t('toast.woreRainJacket') : t('toast.tookOffRainJacket')
+        );
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+      },
+      sleepInSleepingBag: () => {
+        if (!hasSleepingBag(inventory)) {
+          callbacksRef.current.onToast(t('toast.noSleepingBag'));
+          return;
+        }
+        const groundY = getTerrainHeight(player.pos.x, player.pos.z);
+        if (groundY <= SWAMP_WATER_Y + 0.08) {
+          callbacksRef.current.onToast(t('toast.cannotSleepInWater'));
+          return;
+        }
+        const envNow = propsCtx?.getEnvironmentStateAt(player.pos.x, player.pos.z);
+        uiModalOpen = true;
+        keysHeld.clear();
+        if (document.pointerLockElement) document.exitPointerLock?.();
+        pushSurvivalSnapshot();
+        callbacksRef.current.onOpenSleepModal({
+          kind: 'sleeping_bag',
+          label: t('prop.sleepingBagSpotLabel'),
+          x: player.pos.x,
+          y: groundY + 0.12,
+          z: player.pos.z,
+          shelter: envNow?.shelter ?? 'outdoor',
+        });
+      },
+      cookAtCampfire: (recipe: 'seared_steak' | 'roasted_mushrooms') => {
+        const res = cookCampfireRecipe(inventory, recipe);
+        if (res.ok) {
+          sound.playCookSizzle();
+          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+        }
+        callbacksRef.current.onToast(res.message);
+        pushSurvivalSnapshot();
+      },
+      boilBottle: (uid: string) => {
+        const res = boilBottleAtCampfire(inventory, uid);
+        if (res.ok) sound.playCookSizzle();
+        callbacksRef.current.onToast(res.message);
+        pushSurvivalSnapshot();
+      },
+      startSleep: (spot: SleepSpotInfo, hours: number) => {
+        if (document.pointerLockElement) document.exitPointerLock?.();
+        keysHeld.clear();
+        keysJustPressed.clear();
+        uiModalOpen = false;
+        if (seatedTent && spot.kind !== 'tent') {
+          exitTentSeat(true);
+        }
+        const clampedHrs = THREE.MathUtils.clamp(Math.round(hours), 1, 10);
+        const envNow = propsCtx?.getEnvironmentStateAt(spot.x, spot.z);
+        const fireFactor =
+          spot.kind === 'campfire' && spot.campfireId && propsCtx?.getCampfireInfo(spot.campfireId)?.lit
+            ? 0.95
+            : envNow?.nearLitCampfireFactor ?? 0;
+        sleepSession = {
+          spot,
+          totalHours: clampedHrs,
+          elapsedHours: 0,
+          realDurationSec: Math.max(5.2, clampedHrs * 1.0),
+          orbitAngle: Math.atan2(player.pos.x - spot.x, player.pos.z - spot.z),
+          nearFireFactor: fireFactor,
+        };
+        callbacksRef.current.onPhaseChange('sleeping');
+        pushSurvivalSnapshot();
+      },
+      wakeEarly: () => {
+        finishSleep(true);
+      },
+      renderFullMap: (canvas: HTMLCanvasElement, zoom: number, panX: number, panZ: number) => {
+        if (!minimap) return;
+        const navMode = getNavigationMode(inventory);
+        const campfires = propsCtx
+          ? propsCtx.getCampfires().map((c) => ({ x: c.x, z: c.z, lit: c.lit }))
+          : [];
+        const tents = propsCtx ? propsCtx.getTents().map((tt) => ({ x: tt.x, z: tt.z })) : [];
+        minimap.drawFullMap(canvas, {
+          playerX: player.pos.x,
+          playerZ: player.pos.z,
+          playerYaw: player.yaw,
+          mode: navMode,
+          zoom,
+          panX,
+          panZ,
+          campfires,
+          tents,
+          bogLabel: t('fullMap.bogLabel'),
+        });
+      },
+    };
+
+    // Lightweight dev/test helper (never shown in UI) for deterministic verification of sleep & collapse flows
+    (
+      window as unknown as {
+        __metsavaikusDebug?: {
+          getState: () => {
+            survival: PlayerSurvivalState;
+            inventory: InventoryState;
+            navigationMode: NavigationMode;
+            phase: GamePhase;
+            hour: number;
+            exploredPercent: number;
+            fogVersion: number;
+            seatedInTent: boolean;
+            wearingRainJacket: boolean;
+          };
+          movePlayerForTest: (x: number, z: number) => {
+            x: number;
+            z: number;
+            exploredPercent: number;
+            fogVersion: number;
+          };
+          openPrimaryCampfire: () => void;
+          openCampfireById: (id: string) => void;
+          kickNearestStump: () => { broken: boolean; woodPiecesNear: number };
+          kickNearestDeadfallReal: () => {
+            hoveredTitle: string | null;
+            broken: boolean;
+            woodPiecesNear: number;
+          };
+          pickNearestBirchFirewoodReal: () => {
+            hoveredTitle: string | null;
+            picked: boolean;
+            totalWood: number;
+            packKg: number;
+          };
+          gatherNearbyWood: (maxCount?: number) => { collected: number; totalWood: number; packKg: number };
+          placeCampfire: () => CampfireInfo | null;
+          pitchTentForTest: () => TentInfo | null;
+          openTentSleepForTest: () => boolean;
+          sitInTentForTest: () => boolean;
+          standUpFromTentForTest: () => void;
+          packUpTentForTest: () => boolean;
+          toggleRainJacketForTest: () => boolean;
+          triggerSpatialSoundForTest: (kind: SpatialClipKind) => SpatialAudioEvent | null;
+          getSpatialAudioStats: () => SpatialAmbienceStats;
+          setWeatherForTest: (w: WeatherId) => void;
+          setHourForTest: (hour: number) => void;
+          triggerLethalCollapse: (cause?: string) => void;
+          setVitalsForTest: (patch: Partial<PlayerSurvivalState>) => void;
+        };
+      }
+    ).__metsavaikusDebug = {
+      getState: () => ({
+        survival: { ...survival },
+        inventory: cloneInventory(inventory),
+        navigationMode: getNavigationMode(inventory),
+        phase: phaseRef.current,
+        hour: weatherSky.timeOfDay,
+        exploredPercent: fogOfWar.getExploredPercent(),
+        fogVersion: fogOfWar.version,
+        seatedInTent: seatedTent !== null,
+        wearingRainJacket: isWearingRainJacket(inventory),
+      }),
+      movePlayerForTest: (x: number, z: number) => {
+        const cx = THREE.MathUtils.clamp(x, -WORLD_HALF + 20, WORLD_HALF - 20);
+        const cz = THREE.MathUtils.clamp(z, -WORLD_HALF + 20, WORLD_HALF - 20);
+        player.pos.set(cx, getTerrainHeight(cx, cz), cz);
+        discovery.markAroundWorldPos(cx, cz, 1);
+        fogOfWar.revealAt(cx, cz);
+        lastFogRevealX = cx;
+        lastFogRevealZ = cz;
+        const mmCanvas = hudRefs.minimapCanvasEl.current;
+        const navMode = getNavigationMode(inventory);
+        if (mmCanvas && minimap && navMode !== 'none') {
+          lastMinimapFogVersion = fogOfWar.version;
+          lastMinimapX = cx;
+          lastMinimapZ = cz;
+          minimap.draw(mmCanvas, cx, cz, player.yaw, navMode);
+        }
+        pushSurvivalSnapshot();
+        return {
+          x: cx,
+          z: cz,
+          exploredPercent: fogOfWar.getExploredPercent(),
+          fogVersion: fogOfWar.version,
+        };
+      },
+      openPrimaryCampfire: () => {
+        const info = propsCtx?.getCampfireInfo('fire_v0');
+        if (info) {
+          uiModalOpen = true;
+          callbacksRef.current.onOpenCampfireModal(info);
+        }
+      },
+      openCampfireById: (id: string) => {
+        const info = propsCtx?.getCampfireInfo(id);
+        if (info) {
+          uiModalOpen = true;
+          callbacksRef.current.onOpenCampfireModal(info);
+        }
+      },
+      kickNearestStump: () => {
+        if (!propsCtx) return { broken: false, woodPiecesNear: 0 };
+        const stumps = propsCtx.getBreakableStumps();
+        if (stumps.length === 0) return { broken: false, woodPiecesNear: 0 };
+        let nearest = stumps[0];
+        let bestSq = Infinity;
+        for (const s of stumps) {
+          const dSq = (s.x - player.pos.x) ** 2 + (s.z - player.pos.z) ** 2;
+          if (dSq < bestSq) {
+            bestSq = dSq;
+            nearest = s;
+          }
+        }
+        // Position player facing the stump cleanly for visual inspection
+        const tx = nearest.x;
+        const tz = nearest.z;
+        const ty = getTerrainHeight(tx, tz) + 0.28;
+        player.pos.set(tx + 1.9, getTerrainHeight(tx + 1.9, tz + 1.4), tz + 1.4);
+        const dx = tx - player.pos.x;
+        const dz = tz - player.pos.z;
+        const dy = ty - (player.pos.y + player.currentEye);
+        player.yaw = Math.atan2(-dx, -dz);
+        player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
+        updateInteractionHover();
+        handleInteractF();
+        return {
+          broken: !!nearest.entry.gathered,
+          woodPiecesNear: propsCtx.getPickupItems().length,
+        };
+      },
+      kickNearestDeadfallReal: () => {
+        if (!vegetation || !propsCtx) {
+          return { hoveredTitle: null, broken: false, woodPiecesNear: 0 };
+        }
+        const log = vegetation.getNearestDeadfall(player.pos.x, player.pos.z);
+        if (!log) return { hoveredTitle: null, broken: false, woodPiecesNear: 0 };
+        const px = log.x + 2.0;
+        const pz = log.z + 1.2;
+        player.pos.set(px, getTerrainHeight(px, pz), pz);
+        const dx = log.x - player.pos.x;
+        const dz = log.z - player.pos.z;
+        const dy = log.y + 0.2 * log.scale - (player.pos.y + player.currentEye);
+        player.yaw = Math.atan2(-dx, -dz);
+        player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
+        updateInteractionHover();
+        const hoveredTitle = hoveredDeadfall ? 'Fallen Log (Lamav palk)' : hoveredObj?.name ?? null;
+        handleInteractF();
+        return {
+          hoveredTitle,
+          broken: log.broken,
+          woodPiecesNear: propsCtx.getPickupItems().length,
+        };
+      },
+      pickNearestBirchFirewoodReal: () => {
+        if (!propsCtx) {
+          return { hoveredTitle: null, picked: false, totalWood: 0, packKg: survival.backpackWeightKg };
+        }
+        const birchLogs = propsCtx
+          .getPickupItems()
+          .filter(
+            (p) =>
+              p.entry.pickupItemId === 'firewood' &&
+              (getEntryName(p.entry).includes('Birch') || getEntryName(p.entry).includes('Kasehalg'))
+          );
+        if (birchLogs.length === 0) {
+          return {
+            hoveredTitle: null,
+            picked: false,
+            totalWood: inventory.stacks.firewood ?? 0,
+            packKg: survival.backpackWeightKg,
+          };
+        }
+        const target = birchLogs[0];
+        const tx = target.x;
+        const tz = target.z;
+        const ty = target.entry.mesh.position.y;
+        const px = tx + 1.3;
+        const pz = tz + 1.1;
+        player.pos.set(px, getTerrainHeight(px, pz), pz);
+        const dx = tx - player.pos.x;
+        const dz = tz - player.pos.z;
+        const dy = ty - (player.pos.y + player.currentEye);
+        player.yaw = Math.atan2(-dx, -dz);
+        player.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
+        updateInteractionHover();
+        const hoveredTitle = hoveredObj?.name ?? null;
+        const before = inventory.stacks.firewood ?? 0;
+        handleInteractE();
+        const after = inventory.stacks.firewood ?? 0;
+        return {
+          hoveredTitle,
+          picked: after > before,
+          totalWood: after,
+          packKg: survival.backpackWeightKg,
+        };
+      },
+      gatherNearbyWood: (maxCount = 3) => {
+        if (!propsCtx) return { collected: 0, totalWood: 0, packKg: survival.backpackWeightKg };
+        const items = propsCtx
+          .getPickupItems()
+          .sort(
+            (a, b) =>
+              (a.x - player.pos.x) ** 2 +
+              (a.z - player.pos.z) ** 2 -
+              ((b.x - player.pos.x) ** 2 + (b.z - player.pos.z) ** 2)
+          );
+        let collected = 0;
+        for (const item of items) {
+          if (collected >= maxCount) break;
+          const id = propsCtx.collectPickupItem(item.entry);
+          if (id) {
+            addItemToInventory(inventory, id, 1);
+            collected++;
+          }
+        }
+        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+        return {
+          collected,
+          totalWood: inventory.stacks.firewood ?? 0,
+          packKg: survival.backpackWeightKg,
+        };
+      },
+      placeCampfire: () => {
+        return actionsRef.current?.placeCampfireFromWood() ?? null;
+      },
+      pitchTentForTest: () => {
+        return actionsRef.current?.pitchTent() ?? null;
+      },
+      openTentSleepForTest: () => {
+        const list = propsCtx?.getTents() ?? [];
+        if (list.length === 0) return false;
+        const tt = list[0];
+        uiModalOpen = true;
+        keysHeld.clear();
+        if (document.pointerLockElement) document.exitPointerLock?.();
+        pushSurvivalSnapshot();
+        callbacksRef.current.onOpenSleepModal({
+          kind: 'tent',
+          label: t('prop.tentSpotLabel'),
+          x: tt.x,
+          y: tt.y + 0.15,
+          z: tt.z,
+          shelter: 'tent',
+          tentId: tt.id,
+        });
+        return true;
+      },
+      sitInTentForTest: () => {
+        return actionsRef.current?.sitInTent() ?? false;
+      },
+      standUpFromTentForTest: () => {
+        actionsRef.current?.standUpFromTent();
+      },
+      packUpTentForTest: () => {
+        const list = propsCtx?.getTents() ?? [];
+        if (list.length === 0 || !propsCtx) return false;
+        const tt = list[0];
+        if (seatedTent?.id === tt.id) exitTentSeat(true);
+        if (!propsCtx.packUpPlayerTent(tt.id)) return false;
+        addItemToInventory(inventory, 'tent', 1);
+        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+        callbacksRef.current.onToast(t('prop.tentPackedUp'));
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+        return true;
+      },
+      toggleRainJacketForTest: () => {
+        actionsRef.current?.toggleWearItem('rain_jacket');
+        return isWearingRainJacket(inventory);
+      },
+      triggerSpatialSoundForTest: (kind: SpatialClipKind) => {
+        sound.init();
+        sound.resume();
+        const angle = Math.PI * 0.25;
+        const dist = kind === 'insect' ? 2.4 : kind === 'cricket' ? 8.0 : 12.0;
+        const dy = kind === 'bird' ? 5.0 : kind === 'cricket' ? -1.1 : 0.0;
+        return sound.triggerSpatialClip(
+          kind,
+          camera.position.x + Math.cos(angle) * dist,
+          camera.position.y + dy,
+          camera.position.z + Math.sin(angle) * dist,
+          1.0,
+          {
+            biome: getBiomeInfo(player.pos.x, player.pos.z).id,
+            weather: weatherSky.currentWeather,
+            hourOfDay: weatherSky.timeOfDay,
+          }
+        );
+      },
+      getSpatialAudioStats: () => sound.getSpatialAmbienceStats(),
+      setWeatherForTest: (w: WeatherId) => {
+        weatherSky.setWeather(w, true);
+        lastObservedWeather = w;
+        pushSurvivalSnapshot();
+      },
+      setHourForTest: (hour: number) => {
+        weatherSky.timeOfDay = ((hour % 24) + 24) % 24;
+        pushSurvivalSnapshot();
+      },
+      triggerLethalCollapse: (cause = 'Fatal Valge kärbseseen (Amatoxin)') => {
+        survival.health = 0;
+        survival.deathCause = cause;
+        survival.deathFactors = ['Empty stomach', 'Hypothermia (34.4°C)'];
+        beginCollapse();
+      },
+      setVitalsForTest: (patch) => {
+        Object.assign(survival, patch);
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+      },
     };
 
     const onPointerLockChange = () => {
@@ -602,7 +1728,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      if (phaseRef.current !== 'playing') return;
+      if (phaseRef.current !== 'playing' || uiModalOpen) return;
       if (e.target !== renderer.domElement) return;
       sound.init();
       mouseDragging = true;
@@ -620,31 +1746,58 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      if (phaseRef.current !== 'playing') return;
+      if (phaseRef.current !== 'playing' || uiModalOpen) return;
       if (!pointerLocked && !mouseDragging) return;
       const sens = 0.0022;
       player.yaw -= e.movementX * sens;
-      player.pitch = THREE.MathUtils.clamp(
-        player.pitch - e.movementY * sens,
-        -Math.PI * 0.48,
-        Math.PI * 0.48
-      );
+      if (seatedTent) {
+        const rel = THREE.MathUtils.clamp(player.yaw - seatedBaseYaw, -1.48, 1.48);
+        player.yaw = seatedBaseYaw + rel;
+        player.pitch = THREE.MathUtils.clamp(player.pitch - e.movementY * sens, -0.46, 0.52);
+      } else {
+        player.pitch = THREE.MathUtils.clamp(
+          player.pitch - e.movementY * sens,
+          -Math.PI * 0.48,
+          Math.PI * 0.48
+        );
+      }
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
       const code = e.code;
-      if (phaseRef.current === 'title') {
-        const activeTag = document.activeElement?.tagName;
-        if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
-        if (code === 'Enter' || code === 'Space') {
+      if (phaseRef.current === 'title' || phaseRef.current === 'packing') {
+        return;
+      }
+      if (
+        phaseRef.current === 'sleeping' ||
+        phaseRef.current === 'collapsing' ||
+        phaseRef.current === 'collapsed'
+      ) {
+        return;
+      }
+
+      if (code === 'Tab' || code === 'KeyB') {
+        if (phaseRef.current === 'playing') {
           e.preventDefault();
-          actionsRef.current?.startPlaying();
+          callbacksRef.current.onToggleBackpack();
+        }
+        return;
+      }
+
+      if (code === 'KeyM') {
+        if (phaseRef.current === 'playing') {
+          e.preventDefault();
+          callbacksRef.current.onToggleFullMap();
         }
         return;
       }
 
       if (code === 'KeyP' || (code === 'Escape' && !pointerLocked)) {
         e.preventDefault();
+        if (uiModalOpen) {
+          callbacksRef.current.onCloseModals();
+          return;
+        }
         if (phaseRef.current === 'playing') {
           if (document.pointerLockElement) document.exitPointerLock?.();
           sound.suspend();
@@ -656,7 +1809,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return;
       }
 
-      if (phaseRef.current !== 'playing') return;
+      if (phaseRef.current !== 'playing' || uiModalOpen) return;
 
       if (!keysHeld.has(code)) {
         keysJustPressed.add(code);
@@ -664,11 +1817,30 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       keysHeld.add(code);
 
       if (code === 'KeyL') actionsRef.current?.toggleFlashlight();
+      if (code === 'KeyJ') actionsRef.current?.toggleWearItem('rain_jacket');
       if (code === 'KeyT') actionsRef.current?.advanceTime();
       if (code === 'KeyY') actionsRef.current?.cycleWeather();
+
+      if (seatedTent) {
+        if (code === 'KeyE') {
+          actionsRef.current?.openSleepForSeatedTent();
+        } else if (
+          code === 'Space' ||
+          code === 'KeyW' ||
+          code === 'KeyA' ||
+          code === 'KeyS' ||
+          code === 'KeyD'
+        ) {
+          exitTentSeat(false);
+        }
+        return;
+      }
+
       if (code === 'KeyE') handleInteractE();
       if (code === 'KeyF') handleInteractF();
       if (code === 'KeyR') handleInteractR();
+      if (code === 'KeyG') actionsRef.current?.placeCampfireFromWood();
+      if (code === 'KeyH') actionsRef.current?.pitchTent();
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -716,7 +1888,39 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     document.addEventListener('visibilitychange', clearInputs);
     window.addEventListener('resize', onResize);
 
-    function updatePlayer(dt: number): void {
+    function updatePlayer(dt: number): { locomotion: LocomotionState; jumped: boolean } {
+      if (seatedTent) {
+        if (!uiModalOpen) {
+          if (keysHeld.has('ArrowLeft')) player.yaw += 1.5 * dt;
+          if (keysHeld.has('ArrowRight')) player.yaw -= 1.5 * dt;
+          const rel = THREE.MathUtils.clamp(player.yaw - seatedBaseYaw, -1.48, 1.48);
+          player.yaw = seatedBaseYaw + rel;
+          if (keysHeld.has('ArrowUp')) {
+            player.pitch = THREE.MathUtils.clamp(player.pitch + 1.1 * dt, -0.46, 0.52);
+          }
+          if (keysHeld.has('ArrowDown')) {
+            player.pitch = THREE.MathUtils.clamp(player.pitch - 1.1 * dt, -0.46, 0.52);
+          }
+        }
+        keysJustPressed.clear();
+        canRefillBogWater = false;
+        seatedBlend = Math.min(1, seatedBlend + dt * 4.5);
+        const ease = seatedBlend * seatedBlend * (3 - 2 * seatedBlend);
+        const breathY = Math.sin(elapsed * 1.45) * 0.008;
+        camera.position.lerpVectors(seatedStartPos, seatedCamPos, ease);
+        camera.position.y += breathY;
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
+        return { locomotion: 'idle', jumped: false };
+      }
+
+      if (uiModalOpen) {
+        camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
+        return { locomotion: 'idle', jumped: false };
+      }
+
       if (keysHeld.has('ArrowLeft')) player.yaw += 1.7 * dt;
       if (keysHeld.has('ArrowRight')) player.yaw -= 1.7 * dt;
       if (keysHeld.has('ArrowUp')) {
@@ -727,10 +1931,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
 
       const crouching = keysHeld.has('KeyC');
+      const canSprint = survival.physicalTiredness < 94 && survival.energy > 5;
       const wantRun =
-        (keysHeld.has('ShiftLeft') || keysHeld.has('ShiftRight')) &&
-        !crouching &&
-        player.stamina > 3;
+        (keysHeld.has('ShiftLeft') || keysHeld.has('ShiftRight')) && !crouching && canSprint;
 
       _fwd.set(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
       _right.set(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
@@ -744,30 +1947,44 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const moving = _move.lengthSq() > 0.01;
       if (moving) _move.normalize();
 
-      const groundY = getSurfaceHeightAt(player.pos.x, player.pos.z);
-      const inSwampWater =
-        groundY < SWAMP_WATER_Y + 0.04 && !isOnBoardwalk(player.pos.x, player.pos.z);
+      const onBoardwalk = isOnBoardwalk(player.pos.x, player.pos.z);
+      const rawGroundY = getTerrainHeight(player.pos.x, player.pos.z);
+      const waterDepth = onBoardwalk ? 0 : Math.max(0, SWAMP_WATER_Y - rawGroundY);
+      const isSwimming = waterDepth >= 0.28;
+      const isSwampWading =
+        !isSwimming &&
+        !onBoardwalk &&
+        (waterDepth > 0.02 || getSwampFactor(player.pos.x, player.pos.z) > 0.35);
 
-      let speed = crouching ? 2.5 : wantRun && moving ? 8.2 : 4.6;
-      if (inSwampWater) speed *= 0.58;
+      canRefillBogWater = !onBoardwalk && (waterDepth > 0.03 || isSwimming);
 
-      if (wantRun && moving) {
-        player.stamina = Math.max(0, player.stamina - 24 * dt);
-      } else {
-        player.stamina = Math.min(100, player.stamina + 16 * dt);
-      }
-      if (hudRefs.staminaFillEl.current && Math.abs(player.stamina - lastRenderedStamina) > 0.2) {
-        lastRenderedStamina = player.stamina;
-        hudRefs.staminaFillEl.current.style.transform = `scaleX(${(player.stamina / 100).toFixed(3)})`;
+      const burden = computeWeightBurden(survival.backpackWeightKg, survival.waterStomachLoadL);
+      const tirednessSpeedMult =
+        survival.physicalTiredness > 72
+          ? THREE.MathUtils.lerp(1.0, 0.68, (survival.physicalTiredness - 72) / 28)
+          : 1.0;
+
+      let speed = crouching ? 2.5 : wantRun && moving && !isSwimming ? 8.0 : 4.6;
+      if (isSwimming) speed = 2.45;
+      else if (isSwampWading) speed *= 0.64;
+      speed *= burden.moveSpeedMultiplier * tirednessSpeedMult;
+
+      let locomotion: LocomotionState = 'idle';
+      if (isSwimming) locomotion = 'swim';
+      else if (moving) {
+        if (isSwampWading) locomotion = 'swamp';
+        else if (wantRun) locomotion = 'run';
+        else locomotion = 'walk';
       }
 
       player.pos.addScaledVector(_move, speed * dt);
       resolvePlayerCollisions(player.pos);
 
-      // Jump impulse 6.4 m/s reaches ~1.24m peak, easily clearing 0.92m split-pole fences
-      if (keysJustPressed.has('Space') && player.onGround && !crouching) {
+      let jumped = false;
+      if (keysJustPressed.has('Space') && player.onGround && !crouching && !isSwimming) {
         player.vel.y = 6.4;
         player.onGround = false;
+        jumped = true;
       }
       keysJustPressed.clear();
 
@@ -775,7 +1992,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       player.pos.y += player.vel.y * dt;
 
       const newGroundY = getSurfaceHeightAt(player.pos.x, player.pos.z);
-      const minFloorY = Math.max(newGroundY, SWAMP_WATER_Y - 0.38);
+      const minFloorY = isSwimming
+        ? Math.max(newGroundY, SWAMP_WATER_Y - 0.56)
+        : Math.max(newGroundY, SWAMP_WATER_Y - 0.36);
       if (player.pos.y <= minFloorY) {
         player.pos.y = minFloorY;
         player.vel.y = 0;
@@ -784,11 +2003,25 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         player.onGround = false;
       }
 
-      const targetEye = crouching ? player.crouchEyeHeight : player.eyeHeight;
+      const targetEye = isSwimming
+        ? 1.12
+        : crouching
+          ? player.crouchEyeHeight
+          : player.eyeHeight;
       player.currentEye = THREE.MathUtils.lerp(player.currentEye, targetEye, Math.min(1, dt * 10));
 
       let bobY = 0;
-      if (moving && player.onGround) {
+      if (isSwimming) {
+        player.bobPhase += dt * (moving ? 5.6 : 2.6);
+        bobY = Math.sin(player.bobPhase) * 0.055;
+        if (moving) {
+          player.stepTimer += dt * 1.4;
+          if (player.stepTimer >= 1) {
+            player.stepTimer = 0;
+            sound.playFootstep('water');
+          }
+        }
+      } else if (moving && player.onGround) {
         const freq = wantRun ? 13 : 8.5;
         player.bobPhase += dt * freq;
         bobY = Math.sin(player.bobPhase) * (wantRun ? 0.065 : 0.038);
@@ -796,15 +2029,38 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (player.stepTimer >= 1) {
           player.stepTimer = 0;
           let surf: FootstepSurface = 'grass';
-          if (isOnBoardwalk(player.pos.x, player.pos.z)) surf = 'wood';
-          else if (inSwampWater) surf = 'water';
+          if (onBoardwalk) surf = 'wood';
+          else if (waterDepth > 0.02) surf = 'water';
           else if (distToRoadDetail(player.pos.x, player.pos.z).dist < 3.3) surf = 'road';
           sound.playFootstep(surf);
         }
       }
 
-      camera.position.set(player.pos.x, player.pos.y + player.currentEye + bobY, player.pos.z);
-      camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+      // Subtle hypothermia shiver & vomiting camera lurch
+      let shiverX = 0;
+      let shiverY = 0;
+      if (survival.bodyTempC < 35.4) {
+        const amp = THREE.MathUtils.clamp((35.4 - survival.bodyTempC) / 1.8, 0.15, 1) * 0.011;
+        shiverX = Math.sin(elapsed * 29.0) * amp;
+        shiverY = Math.cos(elapsed * 33.0) * amp * 0.8;
+      }
+      let vomitPitchOffset = 0;
+      if (vomitLurchTimer > 0) {
+        vomitLurchTimer = Math.max(0, vomitLurchTimer - dt);
+        vomitPitchOffset = -Math.sin(vomitLurchTimer * Math.PI) * 0.24;
+      }
+
+      camera.position.set(
+        player.pos.x + shiverX,
+        player.pos.y + player.currentEye + bobY + shiverY,
+        player.pos.z
+      );
+      camera.rotation.set(
+        THREE.MathUtils.clamp(player.pitch + vomitPitchOffset, -Math.PI * 0.48, Math.PI * 0.48),
+        player.yaw,
+        0,
+        'YXZ'
+      );
       camera.updateMatrixWorld();
 
       if (player.carrying) {
@@ -814,6 +2070,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         _holdPos.y -= 0.22;
         player.carrying.mesh.position.lerp(_holdPos, Math.min(1, dt * 16));
       }
+
+      return { locomotion, jumped };
     }
 
     function updateDynamicObjects(dt: number): void {
@@ -853,9 +2111,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     const nearbyInteractives: THREE.Object3D[] = [];
 
     function updateInteractionHover(): void {
-      if (!propsCtx || phaseRef.current !== 'playing' || player.carrying) {
-        if (hoveredObj !== null) {
+      if (!propsCtx || phaseRef.current !== 'playing' || uiModalOpen || player.carrying || seatedTent) {
+        if (hoveredObj !== null || hoveredDeadfall !== null || lastPromptKey !== '') {
           hoveredObj = null;
+          hoveredDeadfall = null;
           lastPromptKey = '';
           callbacksRef.current.onPromptChange(null);
         }
@@ -865,7 +2124,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       nearbyInteractives.length = 0;
       const camX = camera.position.x;
       const camZ = camera.position.z;
-      const maxRangeSq = 6.2 * 6.2; // raycaster.far is 3.8m; extra margin covers wide doors/crates
+      const maxRangeSq = 6.5 * 6.5;
       const items = propsCtx.interactiveObjects;
       for (let i = 0; i < items.length; i++) {
         const entry = items[i];
@@ -887,19 +2146,42 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
       hoveredObj = nextHover && !nextHover.gathered ? nextHover : null;
 
-      const nextPrompt = hoveredObj
-        ? buildInteractionPrompt(
-            {
-              name: hoveredObj.name,
-              desc: hoveredObj.desc,
-              gatherable: hoveredObj.gatherable,
-              carryable: hoveredObj.carryable,
-              kickable: hoveredObj.kickable,
-              hasUse: !!hoveredObj.onUse,
-            },
-            false
-          )
-        : null;
+      hoveredDeadfall = null;
+      if (!hoveredObj && vegetation) {
+        camera.getWorldDirection(_camForward);
+        hoveredDeadfall = vegetation.findTargetDeadfall(camera.position, _camForward, 4.8);
+      }
+
+      let nextPrompt: InteractionPromptData | null = null;
+      if (hoveredObj) {
+        nextPrompt = buildInteractionPrompt(
+          {
+            name: getEntryName(hoveredObj),
+            desc: getEntryDesc(hoveredObj),
+            gatherable: hoveredObj.gatherable,
+            carryable: hoveredObj.carryable,
+            kickable: hoveredObj.kickable,
+            breakable: hoveredObj.breakable,
+            pickupLabel: getEntryPickupLabel(hoveredObj),
+            secondaryActionLabel: getEntrySecondaryActionLabel(hoveredObj),
+            hasUse: !!hoveredObj.onUse,
+          },
+          false
+        );
+      } else if (hoveredDeadfall) {
+        nextPrompt = {
+          title: t('prompt.fallenLogTitle'),
+          actionsText:
+            hoveredDeadfall.kicksRemaining <= 1
+              ? t('prompt.fallenLogShatter')
+              : t('prompt.fallenLogBreak'),
+        };
+      } else if (canRefillBogWater && inventory.bottles.length > 0) {
+        nextPrompt = {
+          title: t('prompt.bogWaterTitle'),
+          actionsText: t('prompt.bogWaterAction'),
+        };
+      }
 
       const key = nextPrompt ? `${nextPrompt.title}|${nextPrompt.actionsText}` : '';
       if (key !== lastPromptKey) {
@@ -935,14 +2217,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let elapsed = 0;
     let fpsEma = 60;
     let hudTimer = 0;
+    let snapshotTimer = 0;
     let minimapTimer = 0;
     let diagResetTimer = 0;
     let prevTickCpuMs = 0;
     let lastMinimapCanvas: HTMLCanvasElement | null = null;
-    let lastMinimapX = 99999;
-    let lastMinimapZ = 99999;
+    let lastMinimapMode: NavigationMode = 'none';
     let lastMinimapYaw = 999;
-    let lastRenderedStamina = -1;
+    let lastMinimapX = 999999;
+    let lastMinimapZ = 999999;
+    let lastMinimapFogVersion = -1;
     let titleOrbit = 0;
 
     const perfSample: FramePerfSample = {
@@ -1021,6 +2305,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       fpsEma = smoothFps(fpsEma, rawDt);
       hudTimer += rawDt;
+      snapshotTimer += rawDt;
       minimapTimer += rawDt;
       diagResetTimer += rawDt;
 
@@ -1034,8 +2319,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       let minimapMs = 0;
       let skyTimeLabel = '';
       let skyWindStrength = 0;
+      let skyTimeScale = 1;
+      let jumpedThisFrame = false;
 
-      if (curPhase === 'title') {
+      if (curPhase === 'title' || curPhase === 'packing') {
         titleOrbit += dt * 0.08;
         const camX = spawnX + Math.sin(titleOrbit) * 18;
         const camZ = 14 + Math.cos(titleOrbit) * 7;
@@ -1045,21 +2332,107 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         camera.updateMatrixWorld();
       } else if (curPhase === 'playing') {
         const t0 = performance.now();
-        updatePlayer(dt);
+        const moveRes = updatePlayer(dt);
+        lastLocomotion = moveRes.locomotion;
+        jumpedThisFrame = moveRes.jumped;
         const t1 = performance.now();
         updateDynamicObjects(dt);
         updateInteractionHover();
         const t2 = performance.now();
         playerMs = t1 - t0;
         propsMs = t2 - t1;
+      } else if (curPhase === 'sleeping' && sleepSession) {
+        // Fast-time sleeping animation with gentle camera pan on location!
+        const wallDt = Math.min(0.25, Math.max(0.001, rawDt));
+        const hrsPerRealSec = sleepSession.totalHours / sleepSession.realDurationSec;
+        const hrsStep = Math.min(
+          sleepSession.totalHours - sleepSession.elapsedHours,
+          hrsPerRealSec * wallDt
+        );
+        sleepSession.elapsedHours += hrsStep;
+        skyTimeScale = Math.max(1, hrsStep / Math.max(0.001, dt) / BASE_GAME_HOURS_PER_SEC);
+
+        const clothing = computeClothingBonuses(inventory);
+        const sleepGear = computeSleepGearBonuses(inventory);
+        stepSleepSlice(
+          survival,
+          hrsStep,
+          weatherSky.timeOfDay,
+          weatherSky.currentWeather,
+          lastWindStrength,
+          sleepSession.spot.shelter,
+          sleepSession.nearFireFactor,
+          clothing.warmthBonusC,
+          sleepGear.warmthBonusC
+        );
+
+        sleepSession.orbitAngle += wallDt * (sleepSession.spot.kind === 'bed' ? 0.32 : 0.42);
+        const rad =
+          sleepSession.spot.kind === 'bed'
+            ? 1.55
+            : sleepSession.spot.kind === 'tent'
+              ? 3.7
+              : sleepSession.spot.kind === 'sleeping_bag'
+                ? 2.8
+                : 3.9;
+        const camHeight =
+          sleepSession.spot.kind === 'bed'
+            ? 1.15
+            : sleepSession.spot.kind === 'tent'
+              ? 1.85
+              : 2.15;
+        const cx = sleepSession.spot.x + Math.sin(sleepSession.orbitAngle) * rad;
+        const cz = sleepSession.spot.z + Math.cos(sleepSession.orbitAngle) * rad;
+        const cy = sleepSession.spot.y + camHeight;
+        camera.position.set(cx, cy, cz);
+        camera.lookAt(sleepSession.spot.x, sleepSession.spot.y + 0.45, sleepSession.spot.z);
+        camera.updateMatrixWorld();
+
+        if (sleepSession.elapsedHours >= sleepSession.totalHours - 0.001) {
+          finishSleep(false);
+        }
+      } else if (curPhase === 'collapsing') {
+        collapseTimer = Math.max(0, (now - collapseStartMs) / 1000);
+        const p = Math.min(1, collapseTimer / COLLAPSE_DURATION_SEC);
+        const ease = p * p * (3 - 2 * p);
+        const droopEye = THREE.MathUtils.lerp(collapseStartEye, 0.52, ease);
+        const droopPitch = THREE.MathUtils.lerp(collapseStartPitch, -0.52, ease);
+        camera.position.set(player.pos.x, player.pos.y + droopEye, player.pos.z);
+        camera.rotation.set(droopPitch, player.yaw, ease * 0.28, 'YXZ');
+        camera.updateMatrixWorld();
+        if (snapshotTimer >= 0.04) {
+          snapshotTimer = 0;
+          pushSurvivalSnapshot();
+        }
+        if (p >= 1) {
+          phaseRef.current = 'collapsed';
+          callbacksRef.current.onPhaseChange('collapsed');
+          pushSurvivalSnapshot();
+        }
       } else {
         camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
         camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
         camera.updateMatrixWorld();
       }
 
-      if (curPhase !== 'paused') {
+      if (curPhase !== 'paused' && curPhase !== 'collapsed') {
         camera.getWorldDirection(_camForward);
+
+        const curEnvState =
+          curPhase === 'playing'
+            ? (propsCtx?.getEnvironmentStateAt(player.pos.x, player.pos.z) ?? {
+                shelter: 'outdoor' as const,
+                shelterLabel: null,
+                nearLitCampfireFactor: 0,
+                nearestCampfire: null,
+              })
+            : null;
+        const effectiveShelter: AmbientShelter =
+          curPhase === 'sleeping' && sleepSession
+            ? sleepSession.spot.shelter
+            : seatedTent
+              ? 'tent'
+              : curEnvState?.shelter ?? 'outdoor';
 
         const tp0 = performance.now();
         const skyInfo = weatherSky.update(
@@ -1068,14 +2441,76 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           scene,
           sound,
           hudRefs.flashEl.current,
-          _camForward
+          _camForward,
+          skyTimeScale,
+          effectiveShelter
         );
         const tp1 = performance.now();
         skyMs = tp1 - tp0;
         skyTimeLabel = skyInfo.timeLabel;
         skyWindStrength = skyInfo.windStrength;
+        lastWindStrength = skyInfo.windStrength;
 
-        // Fog-aware dynamic horizon cutoff: in rain/mist/storm, geometry past 98.7% fog is culled
+        // Dynamic 3D spatial ambient soundscape (forest birds, crickets, buzzing insects)
+        if (curPhase === 'playing' || curPhase === 'sleeping') {
+          const curBiomeId = getBiomeInfo(player.pos.x, player.pos.z).id;
+          sound.updateSpatialAmbience(dt, {
+            listenerX: camera.position.x,
+            listenerY: camera.position.y,
+            listenerZ: camera.position.z,
+            forwardX: _camForward.x,
+            forwardY: _camForward.y,
+            forwardZ: _camForward.z,
+            biome: curBiomeId,
+            weather: weatherSky.currentWeather,
+            hourOfDay: weatherSky.timeOfDay,
+            shelter: effectiveShelter,
+          });
+        }
+
+        // Continuous survival physiology tick during active gameplay
+        if (curPhase === 'playing' && !uiModalOpen && curEnvState) {
+          lastShelterLabel = seatedTent ? t('prop.tentSpotLabel') : curEnvState.shelterLabel;
+          lastNearFire = curEnvState.nearLitCampfireFactor;
+
+          stepSurvivalTick(
+            survival,
+            inventory,
+            {
+              locomotion: lastLocomotion,
+              jumpedThisFrame,
+              weather: weatherSky.currentWeather,
+              windStrength: skyInfo.windStrength,
+              hourOfDay: weatherSky.timeOfDay,
+              shelter: seatedTent ? 'tent' : curEnvState.shelter,
+              nearLitCampfireFactor: curEnvState.nearLitCampfireFactor,
+              flashlightActive: flashlightOn,
+              seatedInTent: seatedTent !== null,
+            },
+            dt,
+            dt * BASE_GAME_HOURS_PER_SEC,
+            tickEvents
+          );
+
+          if (tickEvents.flashlightDepleted && flashlightOn) {
+            flashlightOn = false;
+            flashlight.intensity = 0;
+            callbacksRef.current.onToast(t('toast.batteryDied'));
+          }
+          if (tickEvents.vomited) {
+            vomitLurchTimer = 1.0;
+            sound.playVomitRetch();
+            callbacksRef.current.onToast(
+              t('toast.vomited', { source: tickEvents.vomitSource ?? 'poison' })
+            );
+            pushSurvivalSnapshot();
+          }
+          if (tickEvents.died) {
+            beginCollapse();
+          }
+          syncVitalHudDom();
+        }
+
         const maxRenderDist = computeFogCullDistance(skyInfo.fogDensity);
         lastFogCullDist = maxRenderDist;
 
@@ -1131,7 +2566,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           propsMs += performance.now() - tp1;
         }
 
-        // Smart on-demand shadow map updates: 0 GPU shadow passes while standing still, throttled cleanly while walking!
         if (!isSoftwareGl && weatherSky.isSunCastingShadow) {
           shadowFrameSkip++;
           const movedSq =
@@ -1150,10 +2584,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
-        // Hysteresis-guarded discrete DRS (active only when user hasn't locked a manual resolution scale).
-        // On Mesa/Intel integrated GPUs, resizing the WebGL drawing buffer flushes the GPU & reallocates
-        // the EGL swapchain (600-1700ms stall), so we require sustained low FPS before stepping down
-        // and enforce a 45s sticky cooldown before stepping back up.
         if (!isSoftwareGl && curPhase === 'playing' && manualResolutionScale === null) {
           drsCheckTimer += Math.min(0.5, rawDt);
           const drsInterval = isLowPowerGpu ? 2.0 : fpsEma < 22 ? 1.2 : 2.5;
@@ -1210,13 +2640,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             hudRefs.fpsEl.current.textContent = formatFpsLabel(fpsEma);
           }
           if (hudRefs.biomeEl.current) {
-            hudRefs.biomeEl.current.textContent = getBiomeInfo(
-              player.pos.x,
-              player.pos.z
-            ).label;
+            const b = getBiomeInfo(player.pos.x, player.pos.z);
+            hudRefs.biomeEl.current.textContent = getLocalizedBiomeLabel(b.id, b.label);
           }
           if (hudRefs.timeWeatherEl.current) {
-            hudRefs.timeWeatherEl.current.textContent = `${skyInfo.timeLabel} · ${skyInfo.weatherLabel}`;
+            hudRefs.timeWeatherEl.current.textContent = `${skyInfo.timeLabel} · ${getWeatherLabel(weatherSky.currentWeather)}`;
           }
           renderer.domElement.dataset.visibleChunks = String(chunkStats.visibleChunks);
           renderer.domElement.dataset.treesRendered = String(vegStats.treesRendered);
@@ -1234,32 +2662,72 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           renderer.domElement.dataset.playerY = player.pos.y.toFixed(2);
           renderer.domElement.dataset.playerZ = player.pos.z.toFixed(2);
           renderer.domElement.dataset.heading = formatCompassLabel(player.yaw);
+          renderer.domElement.dataset.navMode = getNavigationMode(inventory);
 
           const vc = worldToVirtualChunk(player.pos.x, player.pos.z);
           const cKey = `${vc.vcx},${vc.vcz}`;
           if (lastObservedChunkKey && cKey !== lastObservedChunkKey) {
             perfLogger.recordEvent(`chunk(${cKey})`, now);
+            discovery.markAroundWorldPos(player.pos.x, player.pos.z, 1);
           }
           lastObservedChunkKey = cKey;
         }
 
-        // Only redraw 2D minimap canvas when player moves or turns (0 Skia-over-WebGL compositor stalls while idle!)
+        // Smooth continuous fog-of-war reveal whenever player moves >= 3.0m
+        if (curPhase === 'playing') {
+          const fdx = player.pos.x - lastFogRevealX;
+          const fdz = player.pos.z - lastFogRevealZ;
+          if (fdx * fdx + fdz * fdz >= 9.0) {
+            lastFogRevealX = player.pos.x;
+            lastFogRevealZ = player.pos.z;
+            fogOfWar.revealAt(player.pos.x, player.pos.z);
+          }
+        }
+
+        if (
+          (curPhase === 'sleeping' && snapshotTimer >= 0.08) ||
+          (curPhase === 'playing' && snapshotTimer >= 0.5)
+        ) {
+          snapshotTimer = 0;
+          pushSurvivalSnapshot();
+        }
+
+        // Diegetic Navigation Canvas: only renders according to carried Compass / Paper Map!
+        const navMode = getNavigationMode(inventory);
         const mmCanvas = hudRefs.minimapCanvasEl.current;
-        if (mmCanvas && minimap) {
-          const mmMoved =
+        if (mmCanvas && minimap && navMode !== 'none') {
+          const needsYawRedraw = navMode === 'compass' || navMode === 'both';
+          const needsPosRedraw = navMode === 'both';
+          const needsFogRedraw =
+            (navMode === 'map' || navMode === 'both') &&
+            fogOfWar.version !== lastMinimapFogVersion;
+          const posMoved =
+            needsPosRedraw &&
+            (Math.abs(player.pos.x - lastMinimapX) > 0.35 ||
+              Math.abs(player.pos.z - lastMinimapZ) > 0.35);
+          const mmChanged =
             mmCanvas !== lastMinimapCanvas ||
-            Math.abs(player.pos.x - lastMinimapX) > 0.2 ||
-            Math.abs(player.pos.z - lastMinimapZ) > 0.2 ||
-            Math.abs(player.yaw - lastMinimapYaw) > 0.012;
-          if (mmMoved && (mmCanvas !== lastMinimapCanvas || minimapTimer >= 0.066)) {
+            navMode !== lastMinimapMode ||
+            needsFogRedraw ||
+            posMoved ||
+            (needsYawRedraw && Math.abs(player.yaw - lastMinimapYaw) > 0.012);
+          if (
+            mmChanged &&
+            (mmCanvas !== lastMinimapCanvas ||
+              navMode !== lastMinimapMode ||
+              needsFogRedraw ||
+              minimapTimer >= 0.066)
+          ) {
             const tm0 = performance.now();
             minimapTimer = 0;
             lastMinimapCanvas = mmCanvas;
+            lastMinimapMode = navMode;
+            lastMinimapYaw = player.yaw;
             lastMinimapX = player.pos.x;
             lastMinimapZ = player.pos.z;
-            lastMinimapYaw = player.yaw;
-            minimap.draw(mmCanvas, player.pos.x, player.pos.z, player.yaw);
-            if (hudRefs.compassHeadingEl.current) {
+            lastMinimapFogVersion = fogOfWar.version;
+            minimap.draw(mmCanvas, player.pos.x, player.pos.z, player.yaw, navMode);
+            if (hudRefs.compassHeadingEl.current && needsYawRedraw) {
               hudRefs.compassHeadingEl.current.textContent = formatCompassLabel(player.yaw);
             }
             minimapMs = performance.now() - tm0;
@@ -1339,6 +2807,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfSample.backbufferPx![0] = renderer.domElement.width;
           perfSample.backbufferPx![1] = renderer.domElement.height;
           perfSample.shadowUpdates = shadowUpdatesWindow;
+          perfSample.survival = {
+            hp: Math.round(survival.health),
+            en: Math.round(survival.energy),
+            hyd: Math.round(survival.hydration),
+            full: Math.round(survival.stomachFullness),
+            tempC: Math.round(survival.bodyTempC * 10) / 10,
+            wet: Math.round(survival.wetness),
+            kg: survival.backpackWeightKg,
+          };
 
           const activeOv: string[] = [];
           if (propsCtx?.isWaterVisible()) activeOv.push('water');
@@ -1429,11 +2906,58 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         loadedTextures,
         sound,
         (msg) => callbacksRef.current.onToast(msg),
-        isSoftwareGl
+        isSoftwareGl,
+        {
+          onOpenSleep: (spot) => {
+            uiModalOpen = true;
+            keysHeld.clear();
+            if (document.pointerLockElement) document.exitPointerLock?.();
+            pushSurvivalSnapshot();
+            callbacksRef.current.onOpenSleepModal(spot);
+          },
+          onOpenCampfire: (campfire) => {
+            uiModalOpen = true;
+            keysHeld.clear();
+            if (document.pointerLockElement) document.exitPointerLock?.();
+            pushSurvivalSnapshot();
+            callbacksRef.current.onOpenCampfireModal(campfire);
+          },
+          onPackUpTent: (tentId) => {
+            if (seatedTent?.id === tentId) {
+              exitTentSeat(true);
+            }
+            addItemToInventory(inventory, 'tent', 1);
+            survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+            sound.playImpact(0.5);
+            callbacksRef.current.onToast(t('prop.tentPackedUp'));
+            syncVitalHudDom();
+            pushSurvivalSnapshot();
+          },
+          onRefillWell: (source) => {
+            const res = refillBottlesFromSource(inventory, source);
+            survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+            callbacksRef.current.onToast(res.message);
+            syncVitalHudDom();
+            pushSurvivalSnapshot();
+          },
+          onLootCrate: (_crateId, label, loot) => {
+            const names: string[] = [];
+            for (const entry of loot) {
+              addItemToInventory(inventory, entry.itemId, entry.qty);
+              names.push(`${entry.qty}× ${getItemName(entry.itemId)}`);
+            }
+            survival.backpackWeightKg = computeInventoryWeightKg(inventory);
+            callbacksRef.current.onToast(
+              t('prop.lootedCrate', { label, items: names.join(', ') })
+            );
+            syncVitalHudDom();
+            pushSurvivalSnapshot();
+          },
+        }
       );
       propCircleColliders = propsCtx.circleColliders;
       const activeBp = getActiveBlueprint();
-      minimap = createMinimapRenderer(activeBp, propsCtx.boardwalkZones);
+      minimap = createMinimapRenderer(activeBp, propsCtx.boardwalkZones, fogOfWar);
 
       const searchParams = new URLSearchParams(window.location.search);
       const viewParam = searchParams.get('view');
@@ -1498,13 +3022,37 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         wasmActive: engine.isWasmActive,
         totalMushrooms: propsCtx.mushroomCountTotal,
       });
+      syncVitalHudDom();
+      pushSurvivalSnapshot();
 
       lastTime = performance.now();
       tick();
     });
 
+    const unsubscribeLang = subscribeLanguage(() => {
+      lastPromptKey = '';
+      lastCondText = '';
+      hudTimer = 1;
+      if (hudRefs.biomeEl.current) {
+        const b = getBiomeInfo(player.pos.x, player.pos.z);
+        hudRefs.biomeEl.current.textContent = getLocalizedBiomeLabel(b.id, b.label);
+      }
+      if (hudRefs.timeWeatherEl.current) {
+        hudRefs.timeWeatherEl.current.textContent = `${formatGameHour(weatherSky.timeOfDay)} · ${getWeatherLabel(weatherSky.currentWeather)}`;
+      }
+      syncVitalHudDom();
+      updateInteractionHover();
+      if (player.carrying) {
+        callbacksRef.current.onCarryChange(
+          t('hud.carrying', { name: getEntryName(player.carrying) })
+        );
+      }
+      pushSurvivalSnapshot();
+    });
+
     return () => {
       disposed = true;
+      unsubscribeLang();
       if (isTimeoutFrame) window.clearTimeout(frameId);
       else cancelAnimationFrame(frameId);
 

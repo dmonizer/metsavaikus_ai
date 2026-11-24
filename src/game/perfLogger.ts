@@ -59,6 +59,15 @@ export interface FramePerfSample {
   lowPowerGpu?: boolean;
   programsDelta?: number;
   drsMs?: number;
+  survival?: {
+    hp: number;
+    en: number;
+    hyd: number;
+    full: number;
+    tempC: number;
+    wet: number;
+    kg: number;
+  };
 }
 
 export interface PerfReportEntry {
@@ -128,6 +137,15 @@ export interface PerfReportEntry {
     heapMB: number | null;
   };
   recentEvents: string[];
+  survival?: {
+    hp: number;
+    en: number;
+    hyd: number;
+    full: number;
+    tempC: number;
+    wet: number;
+    kg: number;
+  };
 }
 
 export interface PerfLoggerOptions {
@@ -415,6 +433,7 @@ export class FpsDropLogger {
         heapMB: s.jsHeapMB !== null ? r1(s.jsHeapMB) : null,
       },
       recentEvents: recent,
+      ...(s.survival ? { survival: s.survival } : {}),
     };
   }
 

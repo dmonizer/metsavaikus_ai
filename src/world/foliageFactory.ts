@@ -1215,9 +1215,25 @@ interface SubCellBaked {
   totalInstances: number;
 }
 
+export interface DeadfallLogTarget {
+  id: string;
+  vcx: number;
+  vcz: number;
+  cellIdx: number;
+  slabIdx: number;
+  x: number;
+  y: number;
+  z: number;
+  scale: number;
+  rotY: number;
+  kicksRemaining: number;
+  broken: boolean;
+}
+
 interface ChunkBucketBaked {
   cells: SubCellBaked[];
   colliders: CircleCollider[];
+  deadfallLogs: DeadfallLogTarget[];
 }
 
 interface GrassTileBaked {
@@ -1350,6 +1366,9 @@ export class WorldVegetationSystem {
   private lastGrassFwdX = 0;
   private lastGrassFwdZ = 0;
   private grassHasPendingTiles = true;
+  private readonly brokenDeadfallIds = new Set<string>();
+  private readonly deadfallKicksRemaining = new Map<string, number>();
+  private forceVisRebuild = false;
 
   // Tree LOD InstancedMeshes (paired trunk+crown share identical instanceMatrix & instanceColor buffers!)
   private birchTrunk0!: THREE.InstancedMesh;
@@ -1496,6 +1515,7 @@ export class WorldVegetationSystem {
       const empty: ChunkBucketBaked = {
         cells: [],
         colliders: [],
+        deadfallLogs: [],
       };
       this.chunkCache.set(key, empty);
       return empty;
@@ -1757,6 +1777,7 @@ export class WorldVegetationSystem {
     }
 
     // 4. Deadfall logs & Glacial Granite Boulders
+    const deadfallIds: string[] = [];
     for (let i = 0; i < 4; i++) {
       const dx = minX + rand() * CHUNK_SIZE;
       const dz = minZ + rand() * CHUNK_SIZE;
@@ -1767,15 +1788,23 @@ export class WorldVegetationSystem {
       if (getSwampFactor(dx, dz) > 0.32) continue;
       if (!isDryLandForPlanting(dx, dz, 0.24, 1.15)) continue;
       const dy = getTerrainHeight(dx, dz);
+      const scale = 0.75 + rand() * 0.55;
+      const rotY = rand() * Math.PI * 2;
+      const rCol = 0.72 + rand() * 0.2;
+      const gCol = 0.78 + rand() * 0.22;
+      const bCol = 0.64 + rand() * 0.14;
+      const logId = `${vcx}_${vcz}_${i}`;
+      if (this.brokenDeadfallIds.has(logId)) continue;
+      deadfallIds.push(logId);
       deadfall.push({
         x: dx,
         y: dy - 0.04,
         z: dz,
-        scale: 0.75 + rand() * 0.55,
-        rotY: rand() * Math.PI * 2,
-        r: 0.72 + rand() * 0.2,
-        g: 0.78 + rand() * 0.22,
-        b: 0.64 + rand() * 0.14,
+        scale,
+        rotY,
+        r: rCol,
+        g: gCol,
+        b: bCol,
       });
     }
 
@@ -1815,10 +1844,23 @@ export class WorldVegetationSystem {
     const qMoss = partitionByQuadrant(mossHummock, centerX, centerZ);
     const qReed = partitionByQuadrant(reed, centerX, centerZ);
     const qBoulder = partitionByQuadrant(boulder, centerX, centerZ);
-    const qDeadfall = partitionByQuadrant(deadfall, centerX, centerZ);
+    const qDeadfall: [InstanceRecord[], InstanceRecord[], InstanceRecord[], InstanceRecord[]] = [
+      [],
+      [],
+      [],
+      [],
+    ];
+    const qDeadfallIds: [string[], string[], string[], string[]] = [[], [], [], []];
+    for (let i = 0; i < deadfall.length; i++) {
+      const rec = deadfall[i];
+      const idx = (rec.z >= centerZ ? 2 : 0) + (rec.x >= centerX ? 1 : 0);
+      qDeadfall[idx].push(rec);
+      qDeadfallIds[idx].push(deadfallIds[i]);
+    }
 
     const quarter = CHUNK_SIZE * 0.25;
     const cells: SubCellBaked[] = [];
+    const deadfallLogs: DeadfallLogTarget[] = [];
     for (let q = 0; q < 4; q++) {
       const sBirch = bakeRecords(qBirch[q], 6.0, 7.6);
       const sPine = bakeRecords(qPine[q], 7.4, 8.6);
@@ -1849,6 +1891,26 @@ export class WorldVegetationSystem {
         sBoulder.count +
         sDeadfall.count;
       if (totalInstances === 0) continue;
+
+      const cellIdx = cells.length;
+      for (let di = 0; di < qDeadfall[q].length; di++) {
+        const rec = qDeadfall[q][di];
+        const id = qDeadfallIds[q][di];
+        deadfallLogs.push({
+          id,
+          vcx,
+          vcz,
+          cellIdx,
+          slabIdx: di,
+          x: rec.x,
+          y: rec.y,
+          z: rec.z,
+          scale: rec.scale,
+          rotY: rec.rotY,
+          kicksRemaining: this.deadfallKicksRemaining.get(id) ?? 2,
+          broken: false,
+        });
+      }
 
       const qx = minX + ((q & 1) ? quarter * 3 : quarter);
       const qz = minZ + ((q & 2) ? quarter * 3 : quarter);
@@ -1883,6 +1945,7 @@ export class WorldVegetationSystem {
     const baked: ChunkBucketBaked = {
       cells,
       colliders,
+      deadfallLogs,
     };
 
     if (!this.indexedColliderChunks.has(key)) {
@@ -2811,7 +2874,13 @@ export class WorldVegetationSystem {
       (camPos.z - this.lastCullCamZ) * (camPos.z - this.lastCullCamZ);
     const fogDirty = Math.abs(fogDist - this.lastFogCullDist) > 6;
 
-    if (sig === this.lastVisibilitySig && moveSq < 1.2 && !rotDirty && !fogDirty) {
+    if (
+      !this.forceVisRebuild &&
+      sig === this.lastVisibilitySig &&
+      moveSq < 1.2 &&
+      !rotDirty &&
+      !fogDirty
+    ) {
       if (stats) {
         stats.treesRendered = this.cachedTreesCount;
         stats.foliageRendered = this.cachedFoliageCount + this.grassBladeMesh.count;
@@ -2821,6 +2890,7 @@ export class WorldVegetationSystem {
       return;
     }
 
+    this.forceVisRebuild = false;
     this.lastVisibilitySig = sig;
     this.lastCullCamX = camPos.x;
     this.lastCullCamZ = camPos.z;
@@ -2972,6 +3042,139 @@ export class WorldVegetationSystem {
       stats.culledInstances = this.cachedCulledCount;
       stats.candidateInstances = this.cachedCandidateCount;
     }
+  }
+
+  findTargetDeadfall(
+    camPos: THREE.Vector3,
+    camDir: THREE.Vector3,
+    maxDist = 4.8
+  ): DeadfallLogTarget | null {
+    const baseVcx = Math.floor(camPos.x / CHUNK_SIZE);
+    const baseVcz = Math.floor(camPos.z / CHUNK_SIZE);
+    let best: DeadfallLogTarget | null = null;
+    let bestProj = maxDist + 1;
+
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const bucket = this.chunkCache.get(`${baseVcx + dx}_${baseVcz + dz}`);
+        if (!bucket || bucket.deadfallLogs.length === 0) continue;
+        const logs = bucket.deadfallLogs;
+        for (let i = 0; i < logs.length; i++) {
+          const log = logs[i];
+          if (log.broken) continue;
+          // Quick bounding distance check (log half-length = 2.2 * scale)
+          const approxDx = log.x - camPos.x;
+          const approxDz = log.z - camPos.z;
+          const reach = maxDist + 2.4 * log.scale;
+          if (approxDx * approxDx + approxDz * approxDz > reach * reach) continue;
+
+          // Sample 5 points along the 4.4m fallen log spine in world space
+          const ax = Math.cos(log.rotY) * 2.1 * log.scale;
+          const az = -Math.sin(log.rotY) * 2.1 * log.scale;
+          const ly = log.y + 0.2 * log.scale;
+          const hitRadiusSq = (0.64 * log.scale) * (0.64 * log.scale);
+
+          for (let s = -2; s <= 2; s++) {
+            const frac = s * 0.45;
+            const px = log.x + ax * frac;
+            const pz = log.z + az * frac;
+            const vx = px - camPos.x;
+            const vy = ly - camPos.y;
+            const vz = pz - camPos.z;
+            const proj = vx * camDir.x + vy * camDir.y + vz * camDir.z;
+            if (proj < 0.25 || proj > maxDist || proj >= bestProj) continue;
+            const rx = vx - camDir.x * proj;
+            const ry = vy - camDir.y * proj;
+            const rz = vz - camDir.z * proj;
+            if (rx * rx + ry * ry + rz * rz <= hitRadiusSq) {
+              bestProj = proj;
+              best = log;
+            }
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  getNearestDeadfall(px: number, pz: number): DeadfallLogTarget | null {
+    const baseVcx = Math.floor(px / CHUNK_SIZE);
+    const baseVcz = Math.floor(pz / CHUNK_SIZE);
+    let best: DeadfallLogTarget | null = null;
+    let bestSq = Infinity;
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const bucket = this.getOrBakeChunk(baseVcx + dx, baseVcz + dz);
+        for (let i = 0; i < bucket.deadfallLogs.length; i++) {
+          const log = bucket.deadfallLogs[i];
+          if (log.broken) continue;
+          const dSq = (log.x - px) * (log.x - px) + (log.z - pz) * (log.z - pz);
+          if (dSq < bestSq) {
+            bestSq = dSq;
+            best = log;
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  kickDeadfall(
+    id: string
+  ): { hit: boolean; broken: boolean; x: number; y: number; z: number; rotY: number; scale: number } | null {
+    const parts = id.split('_');
+    if (parts.length < 3) return null;
+    const key = `${parts[0]}_${parts[1]}`;
+    const bucket = this.chunkCache.get(key);
+    if (!bucket) return null;
+    const log = bucket.deadfallLogs.find((l) => l.id === id);
+    if (!log || log.broken) return null;
+
+    log.kicksRemaining -= 1;
+    this.deadfallKicksRemaining.set(id, log.kicksRemaining);
+    const slab = bucket.cells[log.cellIdx]?.deadfall;
+
+    if (log.kicksRemaining > 0) {
+      // First kick cracks & jolts the fallen log
+      log.rotY += 0.12;
+      if (slab && log.slabIdx < slab.count) {
+        _bakeDummy.position.set(log.x, log.y + 0.03, log.z);
+        _bakeDummy.rotation.set(0.06, log.rotY, 0.1);
+        _bakeDummy.scale.setScalar(log.scale);
+        _bakeDummy.updateMatrix();
+        _bakeDummy.matrix.toArray(slab.matrices, log.slabIdx * 16);
+      }
+      this.forceVisRebuild = true;
+      return {
+        hit: true,
+        broken: false,
+        x: log.x,
+        y: log.y,
+        z: log.z,
+        rotY: log.rotY,
+        scale: log.scale,
+      };
+    }
+
+    // Second kick shatters the fallen log completely
+    log.broken = true;
+    this.brokenDeadfallIds.add(id);
+    this.deadfallKicksRemaining.delete(id);
+    if (slab && log.slabIdx < slab.count) {
+      const mOff = log.slabIdx * 16;
+      for (let k = 0; k < 16; k++) slab.matrices[mOff + k] = 0;
+      slab.bounds[log.slabIdx * 4 + 3] = 0;
+    }
+    this.forceVisRebuild = true;
+    return {
+      hit: true,
+      broken: true,
+      x: log.x,
+      y: log.y,
+      z: log.z,
+      rotY: log.rotY,
+      scale: log.scale,
+    };
   }
 
   consumeDiagnostics(): {

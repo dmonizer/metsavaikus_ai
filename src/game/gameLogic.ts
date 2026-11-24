@@ -1,3 +1,5 @@
+import { t } from '../i18n/i18n';
+
 export type MushroomSpecies =
   | 'kukeseen'
   | 'kivipuravik'
@@ -110,6 +112,9 @@ export interface InteractableDescriptor {
   gatherable?: boolean;
   carryable?: boolean;
   kickable?: boolean;
+  breakable?: boolean;
+  pickupLabel?: string;
+  secondaryActionLabel?: string;
   hasUse?: boolean;
 }
 
@@ -125,20 +130,24 @@ export function buildInteractionPrompt(
   if (!target || isCarrying) return null;
 
   const actions: string[] = [];
-  if (target.gatherable) {
-    actions.push('[E] Gather');
+  if (target.pickupLabel) {
+    actions.push(`[E] ${target.pickupLabel}`);
+  } else if (target.gatherable) {
+    actions.push(t('prompt.gather'));
   } else if (target.carryable) {
-    actions.push('[E] Pick up');
+    actions.push(t('prompt.pickUp'));
   } else if (target.hasUse) {
-    actions.push('[E] Use');
+    actions.push(t('prompt.use'));
   }
 
-  // Gatherable items (like mushrooms) are never kickable/throwable
-  if (!target.gatherable && target.kickable) {
-    actions.push('[F] Kick / Push');
+  // Secondary [F] action (e.g. Pack Up Tent) or Kick/Push for non-gatherables
+  if (target.secondaryActionLabel) {
+    actions.push(`[F] ${target.secondaryActionLabel}`);
+  } else if (!target.gatherable && target.kickable) {
+    actions.push(target.breakable ? t('prompt.kickBreak') : t('prompt.kickPush'));
   }
 
-  actions.push('[R] Inspect');
+  actions.push(t('prompt.inspect'));
 
   return {
     title: target.name,
@@ -266,6 +275,9 @@ export function formatResolutionSummary(
 ): string {
   const pct = Math.round(scale * 100);
   const { width, height } = computeScaledBackbuffer(viewportW, viewportH, scale);
-  return isAuto ? `Auto · ${pct}% (${width}×${height})` : `${pct}% (${width}×${height})`;
+  return isAuto
+    ? `${t('title.auto')} · ${pct}% (${width}×${height})`
+    : `${pct}% (${width}×${height})`;
 }
+
 

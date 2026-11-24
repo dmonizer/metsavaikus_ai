@@ -18,6 +18,9 @@ import { SoundEngine } from './soundEngine';
 import { SkyFrameState } from './weatherAndSky';
 import { sphereIntersectsFrustum } from './forestFrustumCuller';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
+import { ItemId } from '../game/itemCatalog';
+import { ShelterQuality } from '../game/survivalEngine';
+import { getMushroomCopy, t } from '../i18n/i18n';
 
 export interface CircleCollider {
   x: number;
@@ -48,11 +51,19 @@ export interface InteractiveEntry {
   mesh: THREE.Object3D;
   name: string;
   desc: string;
+  getName?: () => string;
+  getDesc?: () => string;
+  getPickupLabel?: () => string;
+  getSecondaryActionLabel?: () => string;
   gatherable: boolean;
   species?: MushroomSpecies;
   gathered?: boolean;
+  pickupItemId?: ItemId;
+  pickupLabel?: string;
   carryable: boolean;
   kickable: boolean;
+  breakable?: boolean;
+  onKick?: () => void;
   onTouch?: () => void;
   onUse?: () => void;
   radius: number;
@@ -64,6 +75,53 @@ export interface InteractiveEntry {
   onGroundYOffset: number;
 }
 
+export interface SleepSpotInfo {
+  kind: 'bed' | 'campfire' | 'tent' | 'sleeping_bag';
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+  shelter: ShelterQuality;
+  campfireId?: string;
+  tentId?: string;
+}
+
+export interface CampfireInfo {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+  lit: boolean;
+}
+
+export interface TentInfo {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+}
+
+export interface WorldInteractionHandlers {
+  onOpenSleep?: (spot: SleepSpotInfo) => void;
+  onOpenCampfire?: (campfire: CampfireInfo) => void;
+  onPackUpTent?: (tentId: string) => void;
+  onRefillWell?: (source: 'clean_well' | 'stale_well', label: string) => void;
+  onLootCrate?: (
+    crateId: string,
+    label: string,
+    loot: Array<{ itemId: ItemId; qty: number }>
+  ) => void;
+}
+
+export interface WorldEnvironmentAtPoint {
+  shelter: ShelterQuality;
+  shelterLabel: string | null;
+  nearLitCampfireFactor: number;
+  nearestCampfire: CampfireInfo | null;
+}
+
 export interface WorldPropsContext {
   circleColliders: CircleCollider[];
   boxColliders: BoxCollider[];
@@ -73,6 +131,7 @@ export interface WorldPropsContext {
   dynamicObjects: InteractiveEntry[];
   mushroomCountTotal: number;
   heroMushroomPos: { x: number; z: number } | null;
+  primaryCampfirePos: { x: number; y: number; z: number };
   updateDynamicProps: (
     elapsed: number,
     camX: number,
@@ -83,6 +142,22 @@ export interface WorldPropsContext {
     weather?: string
   ) => void;
   gatherMushroom: (entry: InteractiveEntry) => MushroomSpecies | null;
+  collectPickupItem: (entry: InteractiveEntry) => ItemId | null;
+  shatterWoodAt: (x: number, y: number, z: number, yaw: number, pieceCount?: number) => number;
+  placePlayerCampfire: (x: number, z: number) => { ok: boolean; campfire?: CampfireInfo; message: string };
+  placePlayerTent: (
+    x: number,
+    z: number,
+    yaw: number
+  ) => { ok: boolean; tent?: TentInfo; message: string };
+  packUpPlayerTent: (tentId: string) => boolean;
+  getTents: () => TentInfo[];
+  getBreakableStumps: () => Array<{ x: number; z: number; entry: InteractiveEntry }>;
+  getPickupItems: () => Array<{ x: number; z: number; entry: InteractiveEntry }>;
+  getEnvironmentStateAt: (x: number, z: number) => WorldEnvironmentAtPoint;
+  setCampfireLit: (id: string, lit: boolean) => boolean;
+  getCampfireInfo: (id: string) => CampfireInfo | null;
+  getCampfires: () => CampfireInfo[];
   isWaterVisible: () => boolean;
   isMistVisible: () => boolean;
   dispose: () => void;
@@ -185,7 +260,8 @@ export function buildArchitectureAndProps(
   textures: WorldTextures,
   sound: SoundEngine,
   showToast: (msg: string) => void,
-  isSoftwareGl: boolean
+  isSoftwareGl: boolean,
+  handlers?: WorldInteractionHandlers
 ): WorldPropsContext {
   const bp = getActiveBlueprint();
   const rand = seededRand(bp.seed + 1337);
@@ -198,6 +274,42 @@ export function buildArchitectureAndProps(
   const mushroomNodes: Array<{ mesh: THREE.Object3D; x: number; z: number; entry: InteractiveEntry }> = [];
   const structureNodes: Array<{ obj: THREE.Object3D; x: number; z: number; maxDistSq: number }> = [];
   const disposables: Array<{ dispose: () => void }> = [];
+
+  interface ShelterZone {
+    id?: string;
+    cx: number;
+    cz: number;
+    halfW: number;
+    halfD: number;
+    cosY: number;
+    sinY: number;
+    quality: ShelterQuality;
+    label: string;
+  }
+  interface CampfireEntry {
+    id: string;
+    label: string;
+    x: number;
+    y: number;
+    z: number;
+    lit: boolean;
+    flames: THREE.Mesh;
+  }
+  interface TentEntry {
+    id: string;
+    x: number;
+    y: number;
+    z: number;
+    yaw: number;
+    group: THREE.Group;
+    interactiveEntry: InteractiveEntry;
+    geometries: THREE.BufferGeometry[];
+  }
+  const shelterZones: ShelterZone[] = [];
+  const campfires: CampfireEntry[] = [];
+  const tents: TentEntry[] = [];
+  let tentCounter = 0;
+  let crateCounter = 0;
 
   const shadows = !isSoftwareGl;
 
@@ -232,11 +344,19 @@ export function buildArchitectureAndProps(
       mesh,
       name: opts.name,
       desc: opts.desc,
+      getName: opts.getName,
+      getDesc: opts.getDesc,
+      getPickupLabel: opts.getPickupLabel,
+      getSecondaryActionLabel: opts.getSecondaryActionLabel,
       gatherable: !!opts.gatherable,
       species: opts.species,
       gathered: false,
-      carryable: !!opts.carryable && !opts.gatherable,
+      pickupItemId: opts.pickupItemId,
+      pickupLabel: opts.pickupLabel,
+      carryable: !!opts.carryable && !opts.gatherable && !opts.pickupItemId,
       kickable: !!opts.kickable && !opts.gatherable,
+      breakable: !!opts.breakable,
+      onKick: opts.onKick,
       onTouch: opts.onTouch,
       onUse: opts.onUse,
       radius: opts.radius ?? 0.35,
@@ -247,6 +367,7 @@ export function buildArchitectureAndProps(
       resting: false,
       onGroundYOffset: opts.onGroundYOffset ?? (opts.radius ?? 0.35),
     };
+    mesh.updateMatrixWorld(true);
     mesh.userData.interactive = entry;
     mesh.traverse((child) => {
       child.userData.interactive = entry;
@@ -491,6 +612,40 @@ export function buildArchitectureAndProps(
     polygonOffsetUnits: -1,
   });
 
+  const bedWoolMat = new THREE.MeshStandardMaterial({
+    color: 0x6f4b3e,
+    roughness: 0.94,
+    metalness: 0.0,
+    envMapIntensity: 0.2,
+  });
+  const bedLinenMat = new THREE.MeshStandardMaterial({
+    color: 0xd6cdb9,
+    roughness: 0.92,
+    metalness: 0.0,
+    envMapIntensity: 0.25,
+  });
+  const staleWellWaterMat = new THREE.MeshStandardMaterial({
+    color: 0x2c3b20,
+    roughness: 0.28,
+    metalness: 0.05,
+    envMapIntensity: 0.65,
+  });
+  const cleanWellWaterMat = new THREE.MeshStandardMaterial({
+    color: 0x1a3846,
+    roughness: 0.14,
+    metalness: 0.08,
+    envMapIntensity: 0.9,
+  });
+  const crateWoodMat = new THREE.MeshStandardMaterial({
+    map: textures.plankWood,
+    normalMap: textures.plankNormal,
+    normalScale: new THREE.Vector2(1.1, 1.1),
+    color: 0x9b7952,
+    roughness: 0.88,
+    metalness: 0.0,
+    envMapIntensity: 0.3,
+  });
+
   disposables.push(
     weatheredLogMat,
     warmLogMat,
@@ -503,7 +658,12 @@ export function buildArchitectureAndProps(
     chimneyWhiteMat,
     activeWinMat,
     darkWinMat,
-    contactShadowMat
+    contactShadowMat,
+    bedWoolMat,
+    bedLinenMat,
+    staleWellWaterMat,
+    cleanWellWaterMat,
+    crateWoodMat
   );
 
   function addBatchedMesh(
@@ -907,24 +1067,143 @@ export function buildArchitectureAndProps(
       doorCollider.active = !doorOpen;
 
       registerInteractive(doorMesh, {
-        name: abandoned ? 'Old Cabin Door' : `${name} Door`,
-        desc: abandoned
-          ? 'Warped timber creaks on rusted hinges.'
-          : 'Heavy split-pine door smelling of woodsmoke.',
+        name: abandoned ? t('prop.oldCabinDoor') : t('prop.namedDoor', { name }),
+        desc: abandoned ? t('prop.doorDescAbandoned') : t('prop.doorDescIntact'),
+        getName: () => (abandoned ? t('prop.oldCabinDoor') : t('prop.namedDoor', { name })),
+        getDesc: () => (abandoned ? t('prop.doorDescAbandoned') : t('prop.doorDescIntact')),
         onUse: () => {
           doorOpen = !doorOpen;
           if (doorCollider) doorCollider.active = !doorOpen;
           doorPivot.rotation.y = doorOpen ? -Math.PI * 0.58 : 0;
           sound.playImpact(0.7);
-          showToast(doorOpen ? 'Door opened.' : 'Door closed.');
+          showToast(doorOpen ? t('prop.doorOpened') : t('prop.doorClosed'));
         },
         onTouch: () =>
-          showToast(
-            abandoned
-              ? 'The weathered wood is damp and splintering.'
-              : 'Solid hand-planed Estonian pine.'
-          ),
+          showToast(abandoned ? t('prop.doorTouchAbandoned') : t('prop.doorTouchIntact')),
       });
+    }
+
+    // Shelter zone registration for roofed houses/huts
+    if (decay === 'intact' || decay === 'sagging') {
+      shelterZones.push({
+        cx: x,
+        cz: z,
+        halfW: w * 0.5 - 0.15,
+        halfD: d * 0.5 - 0.15,
+        cosY: Math.cos(rotY),
+        sinY: Math.sin(rotY),
+        quality: !abandoned && decay === 'intact' ? 'warm_house' : 'drafty_hut',
+        label: name,
+      });
+    }
+
+    // Interactive Bed inside roofed usable houses & intact bog huts
+    if (decay === 'intact' || decay === 'sagging') {
+      const bedShelter: ShelterQuality =
+        !abandoned && decay === 'intact' ? 'warm_house' : 'drafty_hut';
+      const bedGroup = new THREE.Group();
+      const bedLx = -w * 0.28;
+      const bedLz = -d * 0.12;
+      bedGroup.position.set(bedLx, 0.43, bedLz);
+
+      const frameGeo = new THREE.BoxGeometry(1.05, 0.34, 1.95);
+      const blanketGeo = new THREE.BoxGeometry(0.98, 0.16, 1.52);
+      const pillowGeo = new THREE.BoxGeometry(0.76, 0.14, 0.36);
+      disposables.push(frameGeo, blanketGeo, pillowGeo);
+
+      const frameMesh = new THREE.Mesh(frameGeo, timberTrimMat);
+      frameMesh.position.y = 0.17;
+      const blanketMesh = new THREE.Mesh(blanketGeo, bedWoolMat);
+      blanketMesh.position.set(0, 0.39, 0.18);
+      const pillowMesh = new THREE.Mesh(pillowGeo, bedLinenMat);
+      pillowMesh.position.set(0, 0.42, -0.72);
+      bedGroup.add(frameMesh, blanketMesh, pillowMesh);
+      group.add(bedGroup);
+
+      const cosR = Math.cos(rotY);
+      const sinR = Math.sin(rotY);
+      const bedWorldX = x + bedLx * cosR + bedLz * sinR;
+      const bedWorldZ = z - bedLx * sinR + bedLz * cosR;
+
+      registerInteractive(bedGroup, {
+        name: abandoned ? t('prop.bunkName', { name }) : t('prop.bedName', { name }),
+        desc: bedShelter === 'warm_house' ? t('prop.bedDescWarm') : t('prop.bedDescDrafty'),
+        getName: () => (abandoned ? t('prop.bunkName', { name }) : t('prop.bedName', { name })),
+        getDesc: () =>
+          bedShelter === 'warm_house' ? t('prop.bedDescWarm') : t('prop.bedDescDrafty'),
+        onUse: () => {
+          handlers?.onOpenSleep?.({
+            kind: 'bed',
+            label: abandoned ? t('prop.bunkName', { name }) : t('prop.bedSpotLabel', { name }),
+            x: bedWorldX,
+            y: y + 0.85,
+            z: bedWorldZ,
+            shelter: bedShelter,
+          });
+        },
+        onTouch: () =>
+          showToast(bedShelter === 'warm_house' ? t('prop.bedTouchWarm') : t('prop.bedTouchDrafty')),
+      });
+
+      // Village / cabin provision pantry crate (lootable once for rations, batteries & matches)
+      if (!abandoned || decay === 'intact') {
+        const crateId = `crate_${crateCounter++}`;
+        const crateLx = w * 0.27;
+        const crateLz = -d * 0.24;
+        const crateGeo = new THREE.BoxGeometry(0.74, 0.56, 0.54);
+        disposables.push(crateGeo);
+        const crateMesh = new THREE.Mesh(crateGeo, crateWoodMat);
+        crateMesh.position.set(crateLx, 0.43 + 0.28, crateLz);
+        group.add(crateMesh);
+
+        const lootPool: Array<Array<{ itemId: ItemId; qty: number }>> = [
+          [
+            { itemId: 'rye_bread', qty: 1 },
+            { itemId: 'smoked_sausage', qty: 1 },
+            { itemId: 'matches', qty: 1 },
+          ],
+          [
+            { itemId: 'raw_steak', qty: 1 },
+            { itemId: 'chocolate_bar', qty: 1 },
+            { itemId: 'extra_battery', qty: 1 },
+          ],
+          [
+            { itemId: 'dried_berries', qty: 1 },
+            { itemId: 'chocolate_bar', qty: 1 },
+            { itemId: 'matches', qty: 1 },
+          ],
+          [
+            { itemId: 'smoked_sausage', qty: 1 },
+            { itemId: 'extra_battery', qty: 1 },
+          ],
+        ];
+        const crateLoot = lootPool[crateCounter % lootPool.length];
+        let looted = false;
+
+        registerInteractive(crateMesh, {
+          name: abandoned ? t('prop.oldSupplyBox') : t('prop.pantryCrate', { name }),
+          desc: t('prop.crateDesc'),
+          getName: () => (abandoned ? t('prop.oldSupplyBox') : t('prop.pantryCrate', { name })),
+          getDesc: () => t('prop.crateDesc'),
+          onUse: () => {
+            if (looted) {
+              showToast(t('prop.crateEmpty'));
+              return;
+            }
+            looted = true;
+            crateMesh.scale.y = 0.72;
+            crateMesh.position.y = 0.43 + 0.2;
+            sound.playImpact(0.5);
+            handlers?.onLootCrate?.(
+              crateId,
+              abandoned ? t('prop.oldSupplyBox') : t('prop.pantryCrate', { name }),
+              crateLoot
+            );
+          },
+          onTouch: () =>
+            showToast(looted ? t('prop.crateTouchEmpty') : t('prop.crateTouchFull')),
+        });
+      }
     }
 
     function addLocalWallCollider(lx: number, lz: number, lw: number, ld: number): void {
@@ -995,6 +1274,93 @@ export function buildArchitectureAndProps(
     disposables.push(fenceGeo);
   }
 
+  function buildWaterWell(
+    wx: number,
+    wz: number,
+    label: string,
+    stale: boolean
+  ): void {
+    const wy = getTerrainHeight(wx, wz);
+    const wellGroup = new THREE.Group();
+    wellGroup.position.set(wx, wy, wz);
+
+    const wellShadowGeo = new THREE.PlaneGeometry(3.2, 3.2);
+    wellShadowGeo.rotateX(-Math.PI / 2);
+    const wellShadow = new THREE.Mesh(wellShadowGeo, contactShadowMat);
+    wellShadow.position.y = 0.03;
+    wellGroup.add(wellShadow);
+    disposables.push(wellShadowGeo);
+
+    const stoneGeo = new THREE.CylinderGeometry(0.92, 1.04, stale ? 0.84 : 1.0, 12);
+    const stoneCyl = new THREE.Mesh(stoneGeo, stonePlinthMat);
+    stoneCyl.position.y = stale ? 0.42 : 0.5;
+    if (stale) stoneCyl.rotation.z = 0.07;
+    stoneCyl.castShadow = shadows;
+    stoneCyl.receiveShadow = true;
+    wellGroup.add(stoneCyl);
+    disposables.push(stoneGeo);
+
+    const waterDiscGeo = new THREE.CircleGeometry(0.76, 12);
+    waterDiscGeo.rotateX(-Math.PI / 2);
+    const waterDisc = new THREE.Mesh(
+      waterDiscGeo,
+      stale ? staleWellWaterMat : cleanWellWaterMat
+    );
+    waterDisc.position.y = stale ? 0.72 : 0.84;
+    wellGroup.add(waterDisc);
+    disposables.push(waterDiscGeo);
+
+    if (!stale) {
+      const postGeo = new THREE.BoxGeometry(0.14, 2.0, 0.14);
+      const roofGeo = new THREE.ConeGeometry(1.42, 0.96, 4);
+      disposables.push(postGeo, roofGeo);
+      [-0.85, 0.85].forEach((px) => {
+        const post = new THREE.Mesh(postGeo, timberTrimMat);
+        post.position.set(px, 1.5, 0);
+        post.castShadow = shadows;
+        wellGroup.add(post);
+      });
+      const wellRoof = new THREE.Mesh(roofGeo, shingleMat);
+      wellRoof.position.y = 2.85;
+      wellRoof.rotation.y = Math.PI / 4;
+      wellRoof.castShadow = shadows;
+      wellGroup.add(wellRoof);
+    } else {
+      // Broken crooked well post on decrepit abandoned hut well
+      const brokenPostGeo = new THREE.BoxGeometry(0.13, 1.25, 0.13);
+      disposables.push(brokenPostGeo);
+      const post = new THREE.Mesh(brokenPostGeo, timberTrimMat);
+      post.position.set(-0.82, 1.0, 0);
+      post.rotation.z = 0.22;
+      wellGroup.add(post);
+    }
+
+    scene.add(wellGroup);
+    structureNodes.push({ obj: wellGroup, x: wx, z: wz, maxDistSq: 220 * 220 });
+    circleColliders.push({ x: wx, z: wz, r: 1.1 });
+
+    registerInteractive(stoneCyl, {
+      name: stale
+        ? t('prop.wellDecrepitName', { label })
+        : t('prop.wellCleanName', { label }),
+      desc: stale ? t('prop.wellDecrepitDesc') : t('prop.wellCleanDesc'),
+      getName: () =>
+        stale
+          ? t('prop.wellDecrepitName', { label })
+          : t('prop.wellCleanName', { label }),
+      getDesc: () => (stale ? t('prop.wellDecrepitDesc') : t('prop.wellCleanDesc')),
+      onUse: () => {
+        sound.playFootstep('water');
+        if (handlers?.onRefillWell) {
+          handlers.onRefillWell(stale ? 'stale_well' : 'clean_well', label);
+        } else {
+          showToast(stale ? t('prop.wellDecrepitUse') : t('prop.wellCleanUse'));
+        }
+      },
+      onTouch: () => showToast(stale ? t('prop.wellDecrepitTouch') : t('prop.wellCleanTouch')),
+    });
+  }
+
   // Build all 4 Procedural Villages
   for (let vi = 0; vi < bp.villages.length; vi++) {
     const v = bp.villages[vi];
@@ -1015,57 +1381,11 @@ export function buildArchitectureAndProps(
       buildSplitPoleFence(f.x0, f.z0, f.x1, f.z1);
     }
 
-    if (vi === 0 || vi === 2) {
-      const wx = v.x - 4.5;
-      const wz = v.z + 9.5;
-      const wy = getTerrainHeight(wx, wz);
-      const wellGroup = new THREE.Group();
-      wellGroup.position.set(wx, wy, wz);
-
-      const wellShadowGeo = new THREE.PlaneGeometry(3.2, 3.2);
-      wellShadowGeo.rotateX(-Math.PI / 2);
-      const wellShadow = new THREE.Mesh(wellShadowGeo, contactShadowMat);
-      wellShadow.position.y = 0.03;
-      wellGroup.add(wellShadow);
-      disposables.push(wellShadowGeo);
-
-      const stoneCyl = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.95, 1.05, 1.0, 12),
-        stonePlinthMat
-      );
-      stoneCyl.position.y = 0.5;
-      stoneCyl.castShadow = shadows;
-      stoneCyl.receiveShadow = true;
-      wellGroup.add(stoneCyl);
-
-      [-0.85, 0.85].forEach((px) => {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.0, 0.14), timberTrimMat);
-        post.position.set(px, 1.5, 0);
-        post.castShadow = shadows;
-        wellGroup.add(post);
-      });
-      const wellRoof = new THREE.Mesh(new THREE.ConeGeometry(1.42, 0.96, 4), shingleMat);
-      wellRoof.position.y = 2.85;
-      wellRoof.rotation.y = Math.PI / 4;
-      wellRoof.castShadow = shadows;
-      wellGroup.add(wellRoof);
-      scene.add(wellGroup);
-      structureNodes.push({ obj: wellGroup, x: wx, z: wz, maxDistSq: 220 * 220 });
-      circleColliders.push({ x: wx, z: wz, r: 1.1 });
-
-      registerInteractive(stoneCyl, {
-        name: `${v.name} Water Well (Kaev)`,
-        desc: 'Cold groundwater glimmers deep below.',
-        onUse: () => {
-          sound.playFootstep('water');
-          showToast('You draw a splash of icy Estonian spring water.');
-        },
-        onTouch: () => showToast('Cool, moss-covered granite fieldstones.'),
-      });
-    }
+    // Every village has a usable clean spring well
+    buildWaterWell(v.x - 4.5, v.z + 9.5, v.name, false);
   }
 
-  // Build Abandoned Decay Huts on Elevated Swamp Islands
+  // Build Abandoned Decay Huts on Elevated Swamp Islands + Usable or Decrepit Wells
   for (const isl of bp.swampIslands) {
     if (!isl.hut) continue;
     buildEstonianLogHouse(isl.x, isl.z, isl.hut.rotY, {
@@ -1078,6 +1398,14 @@ export function buildArchitectureAndProps(
       porch: isl.hut.decayState === 'intact',
       name: `${isl.name} — ${isl.hut.name}`,
     });
+
+    // Intact huts have a clean spring well; decrepit/sagging/roofless/ruined huts have stale contaminated wells!
+    const wellX = isl.x + Math.cos(isl.hut.rotY + 0.7) * (isl.hut.w * 0.5 + 3.2);
+    const wellZ = isl.z + Math.sin(isl.hut.rotY + 0.7) * (isl.hut.d * 0.5 + 3.2);
+    if (getTerrainHeight(wellX, wellZ) > SWAMP_WATER_Y + 0.08) {
+      const isDecrepit = isl.hut.decayState !== 'intact';
+      buildWaterWell(wellX, wellZ, isl.name, isDecrepit);
+    }
   }
 
   // Pooled 2-slot dynamic PointLight system: replaces 8-9 global PointLights (#define NUM_POINT_LIGHTS 9 -> 2)
@@ -1101,16 +1429,17 @@ export function buildArchitectureAndProps(
   pooledPointLights[1].visible = true;
   scene.add(pooledPointLights[0], pooledPointLights[1]);
 
-  // Interactive Campfire Pit near starting homestead Vana-Kase
-  let fireLit = true;
-  const fireFlames = new THREE.Mesh(
-    new THREE.ConeGeometry(0.32, 0.82, 7),
-    new THREE.MeshBasicMaterial({ color: 0xff8c24 })
-  );
-  {
-    const v0 = bp.villages[0];
-    const fx = v0.x + 1.5;
-    const fz = v0.z + 10.5;
+  const flameMat = new THREE.MeshBasicMaterial({ color: 0xff8c24 });
+  const charLogMat = new THREE.MeshStandardMaterial({ color: 0x261a12, roughness: 0.95 });
+  disposables.push(flameMat, charLogMat);
+
+  function buildCampfirePit(
+    id: string,
+    label: string,
+    fx: number,
+    fz: number,
+    initiallyLit: boolean
+  ): CampfireEntry {
     const fy = getTerrainHeight(fx, fz);
     const pit = new THREE.Group();
     pit.position.set(fx, fy, fz);
@@ -1121,20 +1450,38 @@ export function buildArchitectureAndProps(
       sg.translate(Math.cos(a) * 0.72, 0.12, Math.sin(a) * 0.72);
       stoneParts.push(prepNonIndexed(sg));
     }
-    const ringMesh = new THREE.Mesh(mergeGeometries(stoneParts)!, stonePlinthMat);
+    const ringGeo = mergeGeometries(stoneParts)!;
+    const ringMesh = new THREE.Mesh(ringGeo, stonePlinthMat);
     ringMesh.castShadow = shadows;
     pit.add(ringMesh);
+    disposables.push(ringGeo);
 
-    const logs = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.1, 0.1, 0.9, 6),
-      new THREE.MeshStandardMaterial({ color: 0x261a12, roughness: 0.95 })
-    );
-    logs.rotation.z = Math.PI / 2;
-    logs.position.y = 0.14;
-    pit.add(logs);
-    fireFlames.position.y = 0.45;
-    pit.add(fireFlames);
+    const logGeo1 = new THREE.CylinderGeometry(0.085, 0.095, 0.88, 6);
+    const log1 = new THREE.Mesh(logGeo1, charLogMat);
+    log1.rotation.z = Math.PI / 2;
+    log1.rotation.y = 0.25;
+    log1.position.set(0, 0.12, 0.06);
+    const log2 = new THREE.Mesh(logGeo1, charLogMat);
+    log2.rotation.z = Math.PI / 2;
+    log2.rotation.y = -0.82;
+    log2.position.set(0.04, 0.18, -0.05);
+    const log3 = new THREE.Mesh(logGeo1, charLogMat);
+    log3.rotation.z = Math.PI / 2;
+    log3.rotation.y = 1.25;
+    log3.position.set(-0.05, 0.21, 0.02);
+    pit.add(log1, log2, log3);
+    disposables.push(logGeo1);
+
+    const flameGeo = new THREE.ConeGeometry(0.32, 0.82, 7);
+    const flames = new THREE.Mesh(flameGeo, flameMat);
+    flames.position.y = 0.45;
+    flames.visible = initiallyLit;
+    pit.add(flames);
+    disposables.push(flameGeo);
     scene.add(pit);
+
+    const entry: CampfireEntry = { id, label, x: fx, y: fy, z: fz, lit: initiallyLit, flames };
+    campfires.push(entry);
 
     virtualPointLights.push({
       anchor: pit,
@@ -1144,25 +1491,61 @@ export function buildArchitectureAndProps(
       distance: 22,
       decay: 1.6,
       flicker: true,
-      isLit: () => fireLit,
+      isLit: () => entry.lit,
     });
 
-    registerInteractive(logs, {
-      name: 'Campfire (Lõke)',
-      desc: 'Crackling alder logs.',
+    const getCampfireLabel = () =>
+      entry.label === 'Wilderness' ? t('prop.campfireWilderness') : entry.label;
+    registerInteractive(pit, {
+      name: t('prop.campfireName', { label: getCampfireLabel() }),
+      desc: t('prop.campfireDesc'),
+      getName: () => t('prop.campfireName', { label: getCampfireLabel() }),
+      getDesc: () => t('prop.campfireDesc'),
       onUse: () => {
-        fireLit = !fireLit;
-        fireFlames.visible = fireLit;
-        sound.playImpact(0.5);
-        showToast(fireLit ? 'You stoke the campfire back to life.' : 'You bank the embers.');
+        if (handlers?.onOpenCampfire) {
+          handlers.onOpenCampfire({
+            id: entry.id,
+            label: entry.label,
+            x: entry.x,
+            y: entry.y,
+            z: entry.z,
+            lit: entry.lit,
+          });
+        } else {
+          entry.lit = !entry.lit;
+          entry.flames.visible = entry.lit;
+          sound.playImpact(0.5);
+          showToast(entry.lit ? t('prop.campfireStoke') : t('prop.campfireBank'));
+        }
       },
       onTouch: () =>
-        showToast(fireLit ? 'Warmth radiates from the birch embers!' : 'Cold ash and charred wood.'),
+        showToast(entry.lit ? t('prop.campfireTouchLit') : t('prop.campfireTouchCold')),
     });
+
+    return entry;
+  }
+
+  // Starting homestead campfire starts lit; secondary village campfires can be ignited with Lighter/Matches
+  const primaryFire = buildCampfirePit(
+    'fire_v0',
+    bp.villages[0].name,
+    bp.villages[0].x + 1.5,
+    bp.villages[0].z + 10.5,
+    true
+  );
+  for (let vi = 1; vi < bp.villages.length; vi++) {
+    const v = bp.villages[vi];
+    buildCampfirePit(`fire_v${vi}`, v.name, v.x + 2.0, v.z + 10.2, false);
   }
 
   // Procedural Signposts
-  function createSignpost(x: number, z: number, rotY: number, title: string, message: string): void {
+  function createSignpost(
+    x: number,
+    z: number,
+    rotY: number,
+    getTitle: () => string,
+    getMessage: () => string
+  ): void {
     const y = getTerrainHeight(x, z);
     const g = new THREE.Group();
     g.position.set(x, y, z);
@@ -1178,10 +1561,12 @@ export function buildArchitectureAndProps(
     circleColliders.push({ x, z, r: 0.22 });
 
     registerInteractive(board, {
-      name: title,
-      desc: 'Weathered wooden trail marker.',
-      onUse: () => showToast(message),
-      onTouch: () => showToast(message),
+      name: getTitle(),
+      desc: t('prop.signpostDesc'),
+      getName: getTitle,
+      getDesc: () => t('prop.signpostDesc'),
+      onUse: () => showToast(getMessage()),
+      onTouch: () => showToast(getMessage()),
     });
   }
 
@@ -1189,8 +1574,8 @@ export function buildArchitectureAndProps(
     -3.8,
     -5.5,
     0.3,
-    'Signpost (Teeviit)',
-    `↑ ${bp.villages[0].name} · → Kõrgesoo Raba & Swamp Islands · 4 Villages across Metsavaikus`
+    () => t('prop.signpostMainTitle'),
+    () => t('prop.signpostMainMsg', { village: bp.villages[0].name })
   );
 
   // ============================================================================
@@ -1205,8 +1590,8 @@ export function buildArchitectureAndProps(
       trailStart.x - 2.5,
       trailStart.z - 2.0,
       -0.7,
-      'Bog Trailhead (Rabarada)',
-      '"KÕRGESOO RABA — Keep to the wooden boardwalk (laudtee) to reach the bog islands."'
+      () => t('prop.signpostBogTitle'),
+      () => t('prop.signpostBogMsg')
     );
 
     const plankMat = new THREE.MeshStandardMaterial({
@@ -1415,8 +1800,10 @@ export function buildArchitectureAndProps(
     mesh.receiveShadow = true;
     scene.add(mesh);
     registerInteractive(mesh, {
-      name: 'Wooden Crate',
-      desc: 'Heavy weathered shipping crate.',
+      name: t('prop.woodenCrate'),
+      desc: t('prop.woodenCrateDesc'),
+      getName: () => t('prop.woodenCrate'),
+      getDesc: () => t('prop.woodenCrateDesc'),
       carryable: true,
       kickable: true,
       isDynamic: true,
@@ -1434,8 +1821,10 @@ export function buildArchitectureAndProps(
     mesh.receiveShadow = true;
     scene.add(mesh);
     registerInteractive(mesh, {
-      name: 'Rusted Oil Drum',
-      desc: 'Empty weathered metal barrel.',
+      name: t('prop.oilDrum'),
+      desc: t('prop.oilDrumDesc'),
+      getName: () => t('prop.oilDrum'),
+      getDesc: () => t('prop.oilDrumDesc'),
       carryable: false,
       kickable: true,
       isDynamic: true,
@@ -1477,8 +1866,10 @@ export function buildArchitectureAndProps(
     });
 
     registerInteractive(group, {
-      name: 'Storm Lantern (Tormilatern)',
-      desc: 'Matte-black hurricane kerosene lantern glowing against the mist.',
+      name: t('prop.lanternName'),
+      desc: t('prop.lanternDesc'),
+      getName: () => t('prop.lanternName'),
+      getDesc: () => t('prop.lanternDesc'),
       carryable: true,
       kickable: true,
       isDynamic: true,
@@ -1488,30 +1879,238 @@ export function buildArchitectureAndProps(
       onTouch: () => {
         lit = !lit;
         flame.visible = lit;
-        showToast(lit ? 'Lantern lit.' : 'Lantern dimmed.');
+        showToast(lit ? t('prop.lanternLit') : t('prop.lanternDimmed'));
       },
     });
   }
 
+  const splitWoodMat = new THREE.MeshStandardMaterial({
+    map: textures.birchBark,
+    color: 0xd9c29c,
+    roughness: 0.78,
+  });
+  const deadwoodBarkMat = new THREE.MeshStandardMaterial({
+    map: textures.spruceBark,
+    color: 0x76624e,
+    roughness: 0.93,
+  });
+  const stumpMossMat = new THREE.MeshStandardMaterial({
+    color: 0x4d6b38,
+    roughness: 0.92,
+  });
+  const splitPieceGeo = new THREE.CylinderGeometry(0.068, 0.082, 0.56, 6);
+  const barkCapGeo = new THREE.BoxGeometry(0.52, 0.04, 0.12);
+  const chipGeo = new THREE.BoxGeometry(0.11, 0.035, 0.22);
+  const woodHitProxyGeo = new THREE.SphereGeometry(0.42, 6, 6);
+  const woodHitProxyMat = new THREE.MeshBasicMaterial({ visible: false });
+  disposables.push(
+    splitWoodMat,
+    deadwoodBarkMat,
+    stumpMossMat,
+    splitPieceGeo,
+    barkCapGeo,
+    chipGeo,
+    woodHitProxyGeo,
+    woodHitProxyMat
+  );
+
+  const breakableStumps: Array<{ x: number; z: number; entry: InteractiveEntry }> = [];
+  const pickupItems: Array<{ x: number; z: number; entry: InteractiveEntry }> = [];
+
+  function spawnSplitWoodPiece(
+    x: number,
+    y: number,
+    z: number,
+    vx = 0,
+    vy = 0,
+    vz = 0
+  ): InteractiveEntry {
+    const piece = new THREE.Group();
+    const core = new THREE.Mesh(splitPieceGeo, splitWoodMat);
+    core.rotation.z = Math.PI / 2;
+    core.castShadow = shadows;
+    core.receiveShadow = true;
+    const barkCap = new THREE.Mesh(barkCapGeo, deadwoodBarkMat);
+    barkCap.position.y = 0.065;
+    const hitProxy = new THREE.Mesh(woodHitProxyGeo, woodHitProxyMat);
+    hitProxy.position.y = 0.05;
+    piece.add(core, barkCap, hitProxy);
+    piece.position.set(x, y, z);
+    piece.rotation.y = rand() * Math.PI * 2;
+    scene.add(piece);
+
+    const entry = registerInteractive(piece, {
+      name: t('prop.splitFirewoodName'),
+      desc: t('prop.splitFirewoodDesc'),
+      getName: () => t('prop.splitFirewoodName'),
+      getDesc: () => t('prop.splitFirewoodDesc'),
+      pickupItemId: 'firewood',
+      pickupLabel: t('prompt.takeWood'),
+      getPickupLabel: () => t('prompt.takeWood'),
+      carryable: false,
+      kickable: true,
+      isDynamic: true,
+      radius: 0.16,
+      mass: 0.75,
+      onGroundYOffset: 0.09,
+    });
+    entry.vel.set(vx, vy, vz);
+    entry.angVel.set((rand() - 0.5) * 6, (rand() - 0.5) * 6, (rand() - 0.5) * 6);
+    entry.resting = vx === 0 && vy === 0 && vz === 0;
+    pickupItems.push({ x, z, entry });
+    return entry;
+  }
+
+  function shatterWoodAt(
+    x: number,
+    _y: number,
+    z: number,
+    yaw: number,
+    pieceCount?: number
+  ): number {
+    const count = pieceCount ?? 3 + (rand() > 0.45 ? 1 : 0);
+    for (let i = 0; i < count; i++) {
+      const ang = yaw + (i / count) * Math.PI * 2 + (rand() - 0.5) * 0.5;
+      const dist = 0.28 + rand() * 0.55;
+      const px = x + Math.cos(ang) * dist;
+      const pz = z + Math.sin(ang) * dist;
+      const py = getTerrainHeight(px, pz) + 0.24;
+      spawnSplitWoodPiece(
+        px,
+        py,
+        pz,
+        Math.cos(ang) * (1.7 + rand() * 1.3),
+        1.7 + rand() * 1.0,
+        Math.sin(ang) * (1.7 + rand() * 1.3)
+      );
+    }
+
+    // Leave a few small wood splinters on the ground where the timber broke
+    for (let c = 0; c < 4; c++) {
+      const chip = new THREE.Mesh(chipGeo, c % 2 === 0 ? splitWoodMat : deadwoodBarkMat);
+      const ca = rand() * Math.PI * 2;
+      const cd = 0.15 + rand() * 0.72;
+      const cx = x + Math.cos(ca) * cd;
+      const cz = z + Math.sin(ca) * cd;
+      chip.position.set(cx, getTerrainHeight(cx, cz) + 0.025, cz);
+      chip.rotation.y = rand() * Math.PI;
+      scene.add(chip);
+    }
+    return count;
+  }
+
+  function spawnLyingStump(x: number, z: number): void {
+    const y = getTerrainHeight(x, z);
+    if (y <= SWAMP_WATER_Y + 0.14) return;
+    const yaw = rand() * Math.PI * 2;
+    const scale = 0.88 + rand() * 0.34;
+
+    // Composite 5-part fallen weathered treestump (trunk + root flare + broken limb + moss patch + heartwood end)
+    const g = new THREE.Group();
+    g.position.set(x, y, z);
+    g.rotation.y = yaw;
+
+    const trunkLen = 1.65 * scale;
+    const trunkR = 0.23 * scale;
+    const trunkGeo = new THREE.CylinderGeometry(trunkR * 0.82, trunkR * 1.12, trunkLen, 8);
+    const trunk = new THREE.Mesh(trunkGeo, deadwoodBarkMat);
+    trunk.rotation.z = Math.PI / 2;
+    trunk.position.set(0, trunkR * 0.82, 0);
+    trunk.castShadow = shadows;
+    trunk.receiveShadow = true;
+
+    const heartGeo = new THREE.CylinderGeometry(trunkR * 0.74, trunkR * 0.74, 0.04, 8);
+    const heartEnd = new THREE.Mesh(heartGeo, splitWoodMat);
+    heartEnd.rotation.z = Math.PI / 2;
+    heartEnd.position.set(trunkLen * 0.5 + 0.01, trunkR * 0.82, 0);
+
+    const rootGeo = new THREE.ConeGeometry(trunkR * 0.52, 0.62 * scale, 5);
+    const rootA = new THREE.Mesh(rootGeo, deadwoodBarkMat);
+    rootA.position.set(-trunkLen * 0.52, trunkR * 1.1, 0.22 * scale);
+    rootA.rotation.set(0.55, 0, 1.05);
+    const rootB = new THREE.Mesh(rootGeo, deadwoodBarkMat);
+    rootB.position.set(-trunkLen * 0.52, trunkR * 0.75, -0.24 * scale);
+    rootB.rotation.set(-0.6, 0, 1.25);
+
+    const stubGeo = new THREE.CylinderGeometry(0.055 * scale, 0.085 * scale, 0.48 * scale, 6);
+    const stub = new THREE.Mesh(stubGeo, deadwoodBarkMat);
+    stub.position.set(0.2 * scale, trunkR * 1.45, 0.12 * scale);
+    stub.rotation.set(0.35, 0, -0.55);
+
+    const mossGeo = new THREE.BoxGeometry(0.68 * scale, 0.05, 0.24 * scale);
+    const moss = new THREE.Mesh(mossGeo, stumpMossMat);
+    moss.position.set(-0.12 * scale, trunkR * 1.62, 0);
+
+    g.add(trunk, heartEnd, rootA, rootB, stub, moss);
+    scene.add(g);
+    disposables.push(trunkGeo, heartGeo, rootGeo, stubGeo, mossGeo);
+
+    let kicksRemaining = 2;
+    const stumpEntry = registerInteractive(g, {
+      name: t('prop.lyingStumpName'),
+      desc: t('prop.lyingStumpDesc'),
+      getName: () => t('prop.lyingStumpName'),
+      getDesc: () => t('prop.lyingStumpDesc'),
+      kickable: true,
+      breakable: true,
+      radius: 0.65 * scale,
+      mass: 4.5,
+      onTouch: () => showToast(t('prop.lyingStumpTouch')),
+    });
+
+    stumpEntry.onKick = () => {
+      if (stumpEntry.gathered) return;
+      kicksRemaining--;
+      if (kicksRemaining > 0) {
+        // First kick cracks & jolts the lying treestump
+        g.rotation.z += 0.12;
+        g.rotation.y += 0.09;
+        g.updateMatrixWorld(true);
+        sound.playImpact(1.1);
+        showToast(t('prop.stumpCracked'));
+        return;
+      }
+
+      // Second kick shatters the stump into 3-4 physical Split Firewood pieces + ground splinters
+      stumpEntry.gathered = true;
+      g.visible = false;
+      sound.playImpact(1.45);
+      const pieceCount = shatterWoodAt(x, y, z, yaw);
+      showToast(t('prop.stumpShattered', { count: pieceCount }));
+    };
+
+    breakableStumps.push({ x, z, entry: stumpEntry });
+  }
+
   function spawnFirewoodLog(x: number, z: number): void {
     const y = getTerrainHeight(x, z) + 0.12;
+    const logGroup = new THREE.Group();
+    logGroup.position.set(x, y, z);
+    logGroup.rotation.y = rand() * Math.PI;
     const mesh = new THREE.Mesh(logGeo, logMat);
     mesh.rotation.z = Math.PI / 2;
-    mesh.rotation.y = rand() * Math.PI;
-    mesh.position.set(x, y, z);
     mesh.castShadow = shadows;
     mesh.receiveShadow = true;
-    scene.add(mesh);
-    registerInteractive(mesh, {
-      name: 'Birch Firewood (Kasehalg)',
-      desc: 'Split birch log ready for the stove.',
-      carryable: true,
+    const hitProxy = new THREE.Mesh(woodHitProxyGeo, woodHitProxyMat);
+    hitProxy.position.y = 0.04;
+    logGroup.add(mesh, hitProxy);
+    scene.add(logGroup);
+    const entry = registerInteractive(logGroup, {
+      name: t('prop.birchFirewoodName'),
+      desc: t('prop.birchFirewoodDesc'),
+      getName: () => t('prop.birchFirewoodName'),
+      getDesc: () => t('prop.birchFirewoodDesc'),
+      pickupItemId: 'firewood',
+      pickupLabel: t('prompt.takeWood'),
+      getPickupLabel: () => t('prompt.takeWood'),
+      carryable: false,
       kickable: true,
       isDynamic: true,
       radius: 0.2,
       mass: 0.9,
       onGroundYOffset: 0.12,
     });
+    pickupItems.push({ x, z, entry });
   }
 
   function spawnStone(x: number, z: number): void {
@@ -1523,8 +2122,10 @@ export function buildArchitectureAndProps(
     mesh.receiveShadow = true;
     scene.add(mesh);
     registerInteractive(mesh, {
-      name: 'Glacial Fieldstone (Raie-kivi)',
-      desc: 'Smooth granite left by Ice Age glaciers.',
+      name: t('prop.fieldstoneName'),
+      desc: t('prop.fieldstoneDesc'),
+      getName: () => t('prop.fieldstoneName'),
+      getDesc: () => t('prop.fieldstoneDesc'),
       carryable: true,
       kickable: true,
       isDynamic: true,
@@ -1543,13 +2144,28 @@ export function buildArchitectureAndProps(
     for (let k = 0; k < 3; k++) {
       spawnFirewoodLog(v.x + 3.2 + (rand() - 0.5) * 1.4, v.z + 7.2 + (rand() - 0.5) * 1.4);
     }
+    // 2 lying treestumps near each village forest edge
+    spawnLyingStump(v.x - 9.5, v.z + 15.0);
+    spawnLyingStump(v.x + 11.5, v.z + 13.5);
   }
+  // Guaranteed easy-to-spot lying treestump right beside the starting road edge
+  spawnLyingStump(roadCenterX(0) - 4.4, -0.8);
+  spawnLyingStump(roadCenterX(-8) + 4.8, -8.5);
+
   for (const isl of bp.swampIslands) {
     if (isl.hut) {
       spawnCrate(isl.x + 3.4, isl.z + 1.8, 0.58);
       if (isl.hut.decayState !== 'ruins') {
         spawnLantern(isl.x - 2.8, isl.z + 2.2, false);
       }
+      spawnLyingStump(isl.x - 3.6, isl.z - 2.8);
+    }
+  }
+  for (let i = 0; i < 55; i++) {
+    const lx = (rand() - 0.5) * 920;
+    const lz = (rand() - 0.5) * 920;
+    if (getSwampFactor(lx, lz) < 0.32 && distToRoadDetail(lx, lz).dist > 4.2) {
+      spawnLyingStump(lx, lz);
     }
   }
   for (let i = 0; i < 42; i++) {
@@ -2185,21 +2801,30 @@ export function buildArchitectureAndProps(
     mushroomCountTotal++;
 
     const info = MUSHROOM_SPECIES_INFO[species];
-    const tag =
-      info.edibility === 'poisonous'
-        ? ' [POISONOUS]'
-        : info.edibility === 'inedible'
-          ? ' [Inedible]'
-          : '';
+    const getMushroomTitle = () => {
+      const copy = getMushroomCopy(species);
+      const tag =
+        info.edibility === 'poisonous'
+          ? t('prop.mushroomTagPoison')
+          : info.edibility === 'inedible'
+            ? t('prop.mushroomTagInedible')
+            : '';
+      return `${copy.name}${tag}`;
+    };
     const entry = registerInteractive(g, {
-      name: `${info.english} (${info.estonian})${tag}`,
-      desc: info.note,
+      name: getMushroomTitle(),
+      desc: getMushroomCopy(species).note,
+      getName: getMushroomTitle,
+      getDesc: () => getMushroomCopy(species).note,
       gatherable: true,
       species,
       carryable: false,
       kickable: false,
       radius: 0.18,
-      onTouch: () => showToast(`${info.estonian}: ${info.note}`),
+      onTouch: () => {
+        const copy = getMushroomCopy(species);
+        showToast(`${copy.name}: ${copy.note}`);
+      },
     });
     mushroomNodes.push({ mesh: g, x, z, entry });
   }
@@ -2287,6 +2912,378 @@ export function buildArchitectureAndProps(
     return entry.species;
   }
 
+  function getEnvironmentStateAt(px: number, pz: number): WorldEnvironmentAtPoint {
+    let shelter: ShelterQuality = 'outdoor';
+    let shelterLabel: string | null = null;
+    for (let i = 0; i < shelterZones.length; i++) {
+      const sz = shelterZones[i];
+      const dx = px - sz.cx;
+      const dz = pz - sz.cz;
+      // Rotate into building local frame (inverse of rotY)
+      const lx = dx * sz.cosY - dz * sz.sinY;
+      const lz = dx * sz.sinY + dz * sz.cosY;
+      if (Math.abs(lx) <= sz.halfW && Math.abs(lz) <= sz.halfD) {
+        shelter = sz.quality;
+        shelterLabel = sz.label;
+        break;
+      }
+    }
+
+    let nearLitCampfireFactor = 0;
+    let nearestCampfire: CampfireInfo | null = null;
+    let nearestDistSq = 100; // within 10m
+    for (let i = 0; i < campfires.length; i++) {
+      const cf = campfires[i];
+      const dx = px - cf.x;
+      const dz = pz - cf.z;
+      const dSq = dx * dx + dz * dz;
+      if (dSq < nearestDistSq) {
+        nearestDistSq = dSq;
+        nearestCampfire = {
+          id: cf.id,
+          label: cf.label,
+          x: cf.x,
+          y: cf.y,
+          z: cf.z,
+          lit: cf.lit,
+        };
+      }
+      if (cf.lit && dSq < 9.5 * 9.5) {
+        const d = Math.sqrt(dSq);
+        const factor = clamp(1 - (d - 1.5) / 7.5, 0, 1);
+        if (factor > nearLitCampfireFactor) nearLitCampfireFactor = factor;
+      }
+    }
+
+    return { shelter, shelterLabel, nearLitCampfireFactor, nearestCampfire };
+  }
+
+  function setCampfireLit(id: string, lit: boolean): boolean {
+    const cf = campfires.find((c) => c.id === id);
+    if (!cf) return false;
+    cf.lit = lit;
+    cf.flames.visible = lit;
+    return true;
+  }
+
+  function getCampfireInfo(id: string): CampfireInfo | null {
+    const cf = campfires.find((c) => c.id === id);
+    if (!cf) return null;
+    return { id: cf.id, label: cf.label, x: cf.x, y: cf.y, z: cf.z, lit: cf.lit };
+  }
+
+  // Shared PBR materials for player-pitched 3D waterproof trekking tents
+  const tentRainflyMat = new THREE.MeshStandardMaterial({
+    color: 0x4b6e47,
+    emissive: 0x1b2b1a,
+    emissiveIntensity: 0.65,
+    roughness: 0.78,
+    metalness: 0.04,
+    side: THREE.DoubleSide,
+  });
+  const tentInnerMat = new THREE.MeshStandardMaterial({
+    color: 0x202b22,
+    roughness: 0.92,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+  const tentGroundsheetMat = new THREE.MeshStandardMaterial({
+    color: 0x2a312c,
+    roughness: 0.68,
+    metalness: 0.06,
+  });
+  const tentPadMat = new THREE.MeshStandardMaterial({
+    color: 0xc27b3c,
+    roughness: 0.86,
+    metalness: 0.0,
+  });
+  const tentPoleMat = new THREE.MeshStandardMaterial({
+    color: 0xbac4c9,
+    roughness: 0.28,
+    metalness: 0.78,
+  });
+  const tentGuyLineMat = new THREE.MeshStandardMaterial({
+    color: 0xd6c79c,
+    roughness: 0.82,
+    metalness: 0.05,
+  });
+  disposables.push(
+    tentRainflyMat,
+    tentInnerMat,
+    tentGroundsheetMat,
+    tentPadMat,
+    tentPoleMat,
+    tentGuyLineMat
+  );
+
+  function packUpPlayerTent(tentId: string): boolean {
+    const idx = tents.findIndex((tt) => tt.id === tentId);
+    if (idx < 0) return false;
+    const target = tents[idx];
+    tents.splice(idx, 1);
+
+    target.interactiveEntry.gathered = true;
+    scene.remove(target.group);
+
+    const ioIdx = interactiveObjects.indexOf(target.interactiveEntry);
+    if (ioIdx >= 0) interactiveObjects.splice(ioIdx, 1);
+    const imIdx = interactiveMeshes.indexOf(target.group);
+    if (imIdx >= 0) interactiveMeshes.splice(imIdx, 1);
+
+    const szIdx = shelterZones.findIndex((sz) => sz.id === tentId);
+    if (szIdx >= 0) shelterZones.splice(szIdx, 1);
+
+    for (const geo of target.geometries) {
+      geo.dispose();
+    }
+    return true;
+  }
+
+  function placePlayerTent(
+    x: number,
+    z: number,
+    yaw: number
+  ): { ok: boolean; tent?: TentInfo; message: string } {
+    const groundY = getTerrainHeight(x, z);
+    if (groundY <= SWAMP_WATER_Y + 0.14) {
+      return { ok: false, message: t('prop.tentTooWet') };
+    }
+    // Check overlap with solid buildings, wells, campfires, or existing tents
+    for (let i = 0; i < boxColliders.length; i++) {
+      const b = boxColliders[i];
+      if (!b.active) continue;
+      if (x >= b.minX - 1.15 && x <= b.maxX + 1.15 && z >= b.minZ - 1.15 && z <= b.maxZ + 1.15) {
+        return { ok: false, message: t('prop.tentBlocked') };
+      }
+    }
+    for (let i = 0; i < circleColliders.length; i++) {
+      const c = circleColliders[i];
+      const dx = x - c.x;
+      const dz = z - c.z;
+      const minR = c.r + 1.05;
+      if (dx * dx + dz * dz < minR * minR) {
+        return { ok: false, message: t('prop.tentBlocked') };
+      }
+    }
+    for (let i = 0; i < campfires.length; i++) {
+      const dx = x - campfires[i].x;
+      const dz = z - campfires[i].z;
+      if (dx * dx + dz * dz < 2.2 * 2.2) {
+        return { ok: false, message: t('prop.tentBlocked') };
+      }
+    }
+    for (let i = 0; i < tents.length; i++) {
+      const dx = x - tents[i].x;
+      const dz = z - tents[i].z;
+      if (dx * dx + dz * dz < 3.0 * 3.0) {
+        return { ok: false, message: t('prop.tentBlocked') };
+      }
+    }
+
+    const id = `tent_player_${++tentCounter}`;
+    const tentGroup = new THREE.Group();
+    tentGroup.position.set(x, groundY, z);
+    tentGroup.rotation.y = yaw;
+    const geos: THREE.BufferGeometry[] = [];
+
+    // 1. Soft ground contact shadow under footprint
+    const shadowGeo = new THREE.PlaneGeometry(3.2, 3.6);
+    shadowGeo.rotateX(-Math.PI / 2);
+    geos.push(shadowGeo);
+    const shadowMesh = new THREE.Mesh(shadowGeo, contactShadowMat);
+    shadowMesh.position.y = 0.025;
+    tentGroup.add(shadowMesh);
+
+    // 2. Waterproof bathtub groundsheet (grounded at bottom-center pivot y = 0)
+    const floorGeo = new THREE.BoxGeometry(1.92, 0.08, 2.48);
+    geos.push(floorGeo);
+    const floorMesh = new THREE.Mesh(floorGeo, tentGroundsheetMat);
+    floorMesh.position.set(0, 0.04, 0);
+    floorMesh.receiveShadow = true;
+    tentGroup.add(floorMesh);
+
+    // 3. Insulated sleeping pad inside tent floor
+    const padGeo = new THREE.BoxGeometry(0.84, 0.055, 1.92);
+    geos.push(padGeo);
+    const padMesh = new THREE.Mesh(padGeo, tentPadMat);
+    padMesh.position.set(-0.18, 0.1, -0.05);
+    padMesh.receiveShadow = true;
+    tentGroup.add(padMesh);
+
+    // 4 & 5. Sloped waterproof A-frame rainfly roof panels (left & right eaves)
+    const ridgeH = 1.38;
+    const halfSpan = 1.06;
+    const slopeLen = Math.hypot(halfSpan, ridgeH - 0.08);
+    const slopeAngle = Math.atan2(halfSpan, ridgeH - 0.08);
+    const flyLen = 2.66;
+
+    const panelGeo = new THREE.BoxGeometry(slopeLen, 0.035, flyLen);
+    geos.push(panelGeo);
+    const leftFly = new THREE.Mesh(panelGeo, tentRainflyMat);
+    leftFly.position.set(-halfSpan * 0.5, 0.08 + (ridgeH - 0.08) * 0.5, 0);
+    leftFly.rotation.z = Math.PI * 0.5 - slopeAngle;
+    leftFly.castShadow = shadows;
+    leftFly.receiveShadow = true;
+
+    const rightFly = new THREE.Mesh(panelGeo, tentRainflyMat);
+    rightFly.position.set(halfSpan * 0.5, 0.08 + (ridgeH - 0.08) * 0.5, 0);
+    rightFly.rotation.z = -(Math.PI * 0.5 - slopeAngle);
+    rightFly.castShadow = shadows;
+    rightFly.receiveShadow = true;
+    tentGroup.add(leftFly, rightFly);
+
+    // 6. Rear closed gable triangle wall + dark interior vestibule backing
+    const gableShape = new THREE.Shape();
+    gableShape.moveTo(-0.98, 0.06);
+    gableShape.lineTo(0.98, 0.06);
+    gableShape.lineTo(0, ridgeH - 0.02);
+    gableShape.closePath();
+    const gableGeo = new THREE.ShapeGeometry(gableShape);
+    geos.push(gableGeo);
+
+    const rearGable = new THREE.Mesh(gableGeo, tentRainflyMat);
+    rearGable.position.set(0, 0, -1.24);
+    rearGable.castShadow = shadows;
+    rearGable.receiveShadow = true;
+    tentGroup.add(rearGable);
+
+    const innerBack = new THREE.Mesh(gableGeo, tentInnerMat);
+    innerBack.position.set(0, 0, -1.2);
+    tentGroup.add(innerBack);
+
+    // 7. Front portal gable frame with open triangular doorway
+    const frontPortalShape = new THREE.Shape();
+    frontPortalShape.moveTo(-0.98, 0.06);
+    frontPortalShape.lineTo(0.98, 0.06);
+    frontPortalShape.lineTo(0, ridgeH - 0.02);
+    frontPortalShape.closePath();
+    const doorHole = new THREE.Path();
+    doorHole.moveTo(-0.56, 0.08);
+    doorHole.lineTo(0.56, 0.08);
+    doorHole.lineTo(0, ridgeH - 0.24);
+    doorHole.closePath();
+    frontPortalShape.holes.push(doorHole);
+    const frontPortalGeo = new THREE.ShapeGeometry(frontPortalShape);
+    geos.push(frontPortalGeo);
+    const frontPortal = new THREE.Mesh(frontPortalGeo, tentRainflyMat);
+    frontPortal.position.set(0, 0, 1.24);
+    frontPortal.castShadow = shadows;
+    tentGroup.add(frontPortal);
+
+    // 8. Rolled-back canvas doorway flap tied along right portal edge
+    const flapGeo = new THREE.CylinderGeometry(0.065, 0.075, 1.18, 8);
+    geos.push(flapGeo);
+    const rolledFlap = new THREE.Mesh(flapGeo, tentRainflyMat);
+    rolledFlap.position.set(0.32, 0.64, 1.27);
+    rolledFlap.rotation.z = 0.48;
+    tentGroup.add(rolledFlap);
+
+    // 9. Brushed aluminum ridge pole & end support poles
+    const ridgePoleGeo = new THREE.CylinderGeometry(0.024, 0.024, flyLen + 0.08, 8);
+    ridgePoleGeo.rotateX(Math.PI / 2);
+    geos.push(ridgePoleGeo);
+    const ridgePole = new THREE.Mesh(ridgePoleGeo, tentPoleMat);
+    ridgePole.position.set(0, ridgeH + 0.01, 0);
+    tentGroup.add(ridgePole);
+
+    const endPoleGeo = new THREE.CylinderGeometry(0.02, 0.022, ridgeH, 8);
+    const doorPoleLen = Math.hypot(0.56, ridgeH - 0.16);
+    const doorPoleGeo = new THREE.CylinderGeometry(0.017, 0.019, doorPoleLen, 8);
+    geos.push(endPoleGeo, doorPoleGeo);
+    const frontLeftPole = new THREE.Mesh(doorPoleGeo, tentPoleMat);
+    frontLeftPole.position.set(-0.3, (ridgeH - 0.04) * 0.5, 1.27);
+    frontLeftPole.rotation.z = -Math.atan2(0.56, ridgeH - 0.16);
+    const frontRightPole = new THREE.Mesh(doorPoleGeo, tentPoleMat);
+    frontRightPole.position.set(0.3, (ridgeH - 0.04) * 0.5, 1.27);
+    frontRightPole.rotation.z = Math.atan2(0.56, ridgeH - 0.16);
+    const rearPole = new THREE.Mesh(endPoleGeo, tentPoleMat);
+    rearPole.position.set(0, ridgeH * 0.5, -1.29);
+    tentGroup.add(frontLeftPole, frontRightPole, rearPole);
+
+    // 10. Four taut guy-lines & metallic stakes anchored into the ground
+    const stakeGeo = new THREE.CylinderGeometry(0.015, 0.01, 0.24, 6);
+    const guyGeo = new THREE.CylinderGeometry(0.008, 0.008, 1.18, 5);
+    geos.push(stakeGeo, guyGeo);
+    const corners: Array<[number, number]> = [
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
+    ];
+    for (const [sx, sz] of corners) {
+      const stake = new THREE.Mesh(stakeGeo, tentPoleMat);
+      stake.position.set(sx * 1.48, 0.08, sz * 1.12);
+      stake.rotation.z = sx * 0.28;
+      tentGroup.add(stake);
+
+      const guy = new THREE.Mesh(guyGeo, tentGuyLineMat);
+      guy.position.set(sx * 1.12, 0.44, sz * 1.12);
+      guy.rotation.z = sx * 0.72;
+      tentGroup.add(guy);
+    }
+
+    scene.add(tentGroup);
+
+    // Register waterproof tent shelter zone (protects player in rain & windchill)
+    shelterZones.push({
+      id,
+      cx: x,
+      cz: z,
+      halfW: 1.55,
+      halfD: 1.85,
+      cosY: Math.cos(-yaw),
+      sinY: Math.sin(-yaw),
+      quality: 'tent',
+      label: t('prop.tentSpotLabel'),
+    });
+
+    const interactiveEntry = registerInteractive(tentGroup, {
+      name: t('prop.tentName'),
+      desc: t('prop.tentDesc'),
+      getName: () => t('prop.tentName'),
+      getDesc: () => t('prop.tentDesc'),
+      getPickupLabel: () => t('prop.tentSleepAction'),
+      getSecondaryActionLabel: () => t('prop.tentPackUpAction'),
+      onUse: () => {
+        if (handlers?.onOpenSleep) {
+          handlers.onOpenSleep({
+            kind: 'tent',
+            label: t('prop.tentSpotLabel'),
+            x,
+            y: groundY + 0.15,
+            z,
+            shelter: 'tent',
+            tentId: id,
+          });
+        }
+      },
+      onKick: () => {
+        if (packUpPlayerTent(id)) {
+          handlers?.onPackUpTent?.(id);
+        }
+      },
+      onTouch: () => showToast(t('prop.tentTouch')),
+    });
+
+    tents.push({
+      id,
+      x,
+      y: groundY,
+      z,
+      yaw,
+      group: tentGroup,
+      interactiveEntry,
+      geometries: geos,
+    });
+
+    sound.playImpact(0.65);
+    return {
+      ok: true,
+      tent: { id, x, y: groundY, z, yaw },
+      message: t('prop.tentPitched'),
+    };
+  }
+
   return {
     circleColliders,
     boxColliders,
@@ -2296,6 +3293,7 @@ export function buildArchitectureAndProps(
     dynamicObjects,
     mushroomCountTotal,
     heroMushroomPos,
+    primaryCampfirePos: { x: primaryFire.x, y: primaryFire.y, z: primaryFire.z },
     updateDynamicProps: (
       elapsed: number,
       camX: number,
@@ -2305,8 +3303,11 @@ export function buildArchitectureAndProps(
       maxRenderDist = 225,
       weather?: string
     ) => {
-      if (fireLit) {
-        fireFlames.scale.y = 0.85 + Math.sin(elapsed * 20.0) * 0.2;
+      for (let i = 0; i < campfires.length; i++) {
+        const cf = campfires[i];
+        if (cf.lit) {
+          cf.flames.scale.y = 0.85 + Math.sin(elapsed * 20.0 + i * 1.7) * 0.2;
+        }
       }
 
       // Bind the 2 pooled PointLights to the 2 nearest lit campfires/lanterns within 38m (zero GC, constant NUM_POINT_LIGHTS=2)
@@ -2434,9 +3435,85 @@ export function buildArchitectureAndProps(
       }
     },
     gatherMushroom,
+    collectPickupItem: (entry: InteractiveEntry): ItemId | null => {
+      if (!entry.pickupItemId || entry.gathered) return null;
+      entry.gathered = true;
+      entry.resting = true;
+      entry.mesh.visible = false;
+      sound.playImpact(0.42);
+      return entry.pickupItemId;
+    },
+    shatterWoodAt,
+    placePlayerCampfire: (
+      x: number,
+      z: number
+    ): { ok: boolean; campfire?: CampfireInfo; message: string } => {
+      const groundY = getTerrainHeight(x, z);
+      if (groundY <= SWAMP_WATER_Y + 0.08) {
+        return {
+          ok: false,
+          message: t('prop.campfireTooWet'),
+        };
+      }
+      for (let i = 0; i < campfires.length; i++) {
+        const dx = campfires[i].x - x;
+        const dz = campfires[i].z - z;
+        if (dx * dx + dz * dz < 3.2 * 3.2) {
+          return {
+            ok: false,
+            message: t('prop.campfireTooClose'),
+          };
+        }
+      }
+      const id = `fire_player_${campfires.length + 1}`;
+      const created = buildCampfirePit(id, 'Wilderness', x, z, false);
+      sound.playImpact(0.75);
+      return {
+        ok: true,
+        campfire: {
+          id: created.id,
+          label: created.label,
+          x: created.x,
+          y: created.y,
+          z: created.z,
+          lit: created.lit,
+        },
+        message: t('prop.campfireStacked'),
+      };
+    },
+    getBreakableStumps: () => breakableStumps.filter((s) => !s.entry.gathered),
+    placePlayerTent,
+    packUpPlayerTent,
+    getTents: () =>
+      tents.map((tt) => ({
+        id: tt.id,
+        x: tt.x,
+        y: tt.y,
+        z: tt.z,
+        yaw: tt.yaw,
+      })),
+    getPickupItems: () =>
+      pickupItems
+        .filter((p) => !p.entry.gathered)
+        .map((p) => ({ x: p.entry.mesh.position.x, z: p.entry.mesh.position.z, entry: p.entry })),
+    getEnvironmentStateAt,
+    setCampfireLit,
+    getCampfireInfo,
+    getCampfires: () =>
+      campfires.map((c) => ({
+        id: c.id,
+        label: c.label,
+        x: c.x,
+        y: c.y,
+        z: c.z,
+        lit: c.lit,
+      })),
     isWaterVisible: () => swampWater.visible,
     isMistVisible: () => mistInst.visible,
     dispose: () => {
+      for (const tt of tents) {
+        for (const geo of tt.geometries) geo.dispose();
+      }
       for (const d of disposables) d.dispose();
     },
   };
