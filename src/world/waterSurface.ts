@@ -76,12 +76,23 @@ function buildSmoothBogDepthTexture(
   const span = radius * 2;
   const invDenom = 1 / Math.max(1, size - 1);
 
+  const rimStart = Math.max(0, radius - 10);
+  const rimSpan = Math.max(1, radius - 1.5 - rimStart);
   for (let iz = 0; iz < size; iz++) {
     const wz = centerZ - radius + iz * invDenom * span;
+    const dz = wz - centerZ;
     const row = iz * size;
     for (let ix = 0; ix < size; ix++) {
       const wx = centerX - radius + ix * invDenom * span;
-      raw[row + ix] = SWAMP_WATER_Y - getTerrainHeight(wx, wz);
+      const dx = wx - centerX;
+      let d = SWAMP_WATER_Y - getTerrainHeight(wx, wz);
+      const r = Math.hypot(dx, dz);
+      if (r > rimStart) {
+        const t = Math.min(1, (r - rimStart) / rimSpan);
+        const rimFade = 1 - t * t * (3 - 2 * t);
+        d = DEPTH_ENCODE_MIN + (d - DEPTH_ENCODE_MIN) * rimFade;
+      }
+      raw[row + ix] = d;
     }
   }
 
@@ -307,8 +318,10 @@ export function createReflectiveBogWater(
 
         float effDepth = safeDepth + swashShift;
         float depth = max(bodyDepth + swashShift * 0.5, 0.0);
-        // Smoothly feathered shoreline alpha eliminates hard polygonal Z-buffer intersections
-        float edgeAlpha = smoothstep(-0.008, 0.095, effDepth);
+        // Smoothly feathered shoreline alpha + radial disc rim taper eliminates hard polygonal edges
+        float rimDist = length(p - uCenter);
+        float rimMask = 1.0 - smoothstep(uRadius - 10.0, uRadius - 1.5, rimDist);
+        float edgeAlpha = smoothstep(-0.008, 0.095, effDepth) * rimMask;
         if (edgeAlpha < 0.01) discard;
 
         float shoreCalm = smoothstep(0.0, 0.24, depth);

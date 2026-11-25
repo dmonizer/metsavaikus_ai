@@ -604,6 +604,34 @@ export class SoundscapeEngine {
     this.mixer.updateCountsAndDucking(activeByBus, clampedRealDt);
   }
 
+  /**
+   * Immediately halts any active player movement / long gait loops (footsteps, gravel, wading,
+   * swimming) and resets stride tracking so collapsing, pausing, or restarting never leaves
+   * a looping locomotion voice playing.
+   */
+  stopMovementLoops(immediate = false): void {
+    const nowRealMs = this.realClock.nowMs();
+    for (const inst of this.instances.getInstances()) {
+      if (inst.state === 'completed') continue;
+      const isMovementVoice =
+        inst.sound.id === this.activeGaitSoundId ||
+        Boolean(inst.sound.playback.isLongGaitLoop) ||
+        inst.sound.bus === 'player.movement';
+      if (!isMovementVoice) continue;
+
+      if (!immediate && inst.sound.playback.onConditionLost === 'pause') {
+        if (inst.state !== 'paused') {
+          this.instances.requestConditionStop(inst, this.backend, nowRealMs);
+        }
+      } else {
+        this.instances.disposeInstance(inst, this.backend);
+      }
+    }
+    this.activeGaitSoundId = null;
+    this.stepAccumM = 0;
+    this.prevLocomotionMoving = false;
+  }
+
   private syncContinuousAndBiomeLayers(
     world: WorldContext,
     nowSimMs: number,

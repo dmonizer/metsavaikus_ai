@@ -873,6 +873,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (document.pointerLockElement) document.exitPointerLock?.();
       keysHeld.clear();
       keysJustPressed.clear();
+      player.vel.set(0, 0, 0);
+      lastIsMoving = false;
+      lastWantRun = false;
+      lastCrouching = false;
+      lastIsSwimming = false;
+      lastIsSwampWading = false;
+      playerSpeedMps = 0;
+      lastLocomotion = 'idle';
+      soundscape.engine.stopMovementLoops(true);
       uiModalOpen = false;
       sleepSession = null;
       seatedTent = null;
@@ -1322,8 +1331,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         totalDistanceMoved = 0;
         playerExertion = 0;
         prevOnGround = true;
+        lastIsMoving = false;
+        lastWantRun = false;
+        lastCrouching = false;
+        lastIsSwimming = false;
+        lastIsSwampWading = false;
+        playerSpeedMps = 0;
+        lastLocomotion = 'idle';
         keysHeld.clear();
         keysJustPressed.clear();
+        soundscape.engine.stopMovementLoops(true);
         sound.resume();
         callbacksRef.current.onPhaseChange('playing');
         syncVitalHudDom();
@@ -2204,6 +2221,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
         if (phaseRef.current === 'playing') {
           if (document.pointerLockElement) document.exitPointerLock?.();
+          lastIsMoving = false;
+          playerSpeedMps = 0;
+          lastLocomotion = 'idle';
+          soundscape.engine.stopMovementLoops();
           sound.suspend();
           keysHeld.clear();
           callbacksRef.current.onPhaseChange('paused');
@@ -2917,6 +2938,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
     };
 
+    let prevTickPhase: GamePhase = phaseRef.current;
+
     function tick(): void {
       if (disposed) return;
       const now = performance.now();
@@ -2933,6 +2956,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       diagResetTimer += rawDt;
 
       const curPhase = phaseRef.current;
+      if (curPhase !== prevTickPhase) {
+        if (curPhase !== 'playing') {
+          lastIsMoving = false;
+          playerSpeedMps = 0;
+          lastLocomotion = 'idle';
+          soundscape.engine.stopMovementLoops(curPhase === 'collapsing' || curPhase === 'collapsed' || curPhase === 'title');
+        }
+        if (curPhase === 'paused' || curPhase === 'collapsed') {
+          sound.suspend();
+        }
+        prevTickPhase = curPhase;
+      }
 
       let playerMs = 0;
       let propsMs = 0;
@@ -3028,7 +3063,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           pushSurvivalSnapshot();
         }
         if (p >= 1) {
+          soundscape.engine.stopMovementLoops(true);
+          sound.suspend();
           phaseRef.current = 'collapsed';
+          prevTickPhase = 'collapsed';
           callbacksRef.current.onPhaseChange('collapsed');
           pushSurvivalSnapshot();
         }
@@ -3099,7 +3137,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         simClockMs += Math.max(dt * 1000, hourDelta * 3_600_000);
 
         // Dynamic 3D spatial ambient soundscape + full SoundscapeEngine step
-        if (curPhase === 'playing' || curPhase === 'sleeping') {
+        if (curPhase === 'playing' || curPhase === 'sleeping' || curPhase === 'collapsing') {
           const curBiomeId = getBiomeInfo(player.pos.x, player.pos.z).id;
           sound.updateSpatialAmbience(dt, {
             listenerX: camera.position.x,

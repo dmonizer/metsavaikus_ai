@@ -459,4 +459,44 @@ test('forestFrustumCuller classifies spheres accurately, tightens fog horizon, a
   inst.dispose();
 });
 
+test('Non-bog valleys and bog water disc perimeter stay cleanly above SWAMP_WATER_Y across seeds (no straight water cutoff edge)', () => {
+  for (const seed of [2026, 4042, 7777, 9999]) {
+    const bp = setActiveWorldSeed(seed);
+    const waterRadius = bp.bogRadius + 28;
+    let bogWaterCount = 0;
+
+    for (let z = -540; z <= 540; z += 12) {
+      for (let x = -540; x <= 540; x += 12) {
+        const h = getTerrainHeight(x, z, bp);
+        const swamp = getSwampFactor(x, z, undefined, bp);
+        const distBog = Math.hypot(x - bp.bogCenterX, z - bp.bogCenterZ);
+
+        if (swamp === 0) {
+          assert.ok(
+            h > SWAMP_WATER_Y + 0.25,
+            `Seed ${seed}: non-bog terrain at (${x}, ${z}) dipped to ${h.toFixed(2)} <= water ${SWAMP_WATER_Y}`
+          );
+        }
+        if (distBog >= waterRadius - 12 && distBog <= waterRadius + 12) {
+          assert.ok(
+            h > SWAMP_WATER_Y + 0.2,
+            `Seed ${seed}: terrain near bog water disc rim (dist=${distBog.toFixed(1)}, r=${waterRadius.toFixed(1)}) dipped to ${h.toFixed(2)}`
+          );
+        }
+        if (swamp > 0.4 && h < SWAMP_WATER_Y - 0.15) {
+          bogWaterCount++;
+        }
+      }
+    }
+
+    assert.ok(
+      bogWaterCount > 25,
+      `Seed ${seed}: bog basin should retain organic water pools, found ${bogWaterCount}`
+    );
+  }
+
+  setActiveWorldSeed(2026);
+});
+
+
 

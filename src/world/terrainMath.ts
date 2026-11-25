@@ -169,6 +169,15 @@ export function evaluateTerrainFromNoise(
     }
   }
 
+  // Smoothly keep dry-countryside valleys above the bog water table so only the peat bog
+  // basin itself dips below SWAMP_WATER_Y (eliminating phantom sunken pockets outside the
+  // bog and preventing water from ever reaching or clipping against the bog disc perimeter).
+  const dryFloorY = SWAMP_WATER_Y + 0.38;
+  const dryKnee = 1.6;
+  if (h < dryFloorY + dryKnee) {
+    h = dryFloorY + dryKnee * Math.exp((h - (dryFloorY + dryKnee)) / dryKnee);
+  }
+
   // Peat bog depression with organic sphagnum hummocks above water and deeper laugas pools below water
   const bogPools = nBog;
   const rawSwampH = -1.68 + bogPools * 0.92;

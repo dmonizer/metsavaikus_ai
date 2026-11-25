@@ -1166,3 +1166,91 @@ test('queued concurrencyPolicy on a saturated bus never freezes step() and recov
   );
   engine.dispose();
 });
+
+test('stopMovementLoops immediately stops active walking, gravel, wading, and swimming loops on collapse', () => {
+  const { engine, realClock, backend } = createTestEngine();
+
+  const cases: Array<{
+    soundId: string;
+    activity: WorldContext['player']['activity'];
+    gait: WorldContext['player']['gait'];
+    surface: WorldContext['player']['surfaceMaterial'];
+  }> = [
+    { soundId: 'forest_floor_walk', activity: 'walking', gait: 'walk', surface: 'forest_floor' },
+    { soundId: 'gravel_walk_loop', activity: 'walking', gait: 'walk', surface: 'gravel' },
+    { soundId: 'water_wade_loop', activity: 'wading', gait: 'wade', surface: 'water' },
+    { soundId: 'water_swim_loop', activity: 'swimming', gait: 'swim', surface: 'water' },
+  ];
+
+  let simMs = 1000;
+  let dist = 0;
+  for (const c of cases) {
+    dist += 1.2;
+    simMs += 100;
+    realClock.advanceMs(100);
+    engine.step(
+      0.1,
+      makeWorld({
+        simMs,
+        activity: c.activity,
+        gait: c.gait,
+        surface: c.surface,
+        distMoved: dist,
+        biome: c.surface === 'water' ? 'swamp' : 'forest',
+      })
+    );
+
+    const activeRec = backend.records.filter((r) => r.soundId === c.soundId).at(-1);
+    assert.ok(activeRec, `Expected ${c.soundId} to start while moving`);
+    assert.equal(activeRec.stopped, false, `Expected ${c.soundId} to be playing before collapse`);
+
+    // Simulate sudden loss of consciousness (stopMovementLoops without waiting for another step)
+    engine.stopMovementLoops(true);
+    assert.equal(
+      activeRec.stopped,
+      true,
+      `${c.soundId} MUST stop immediately when stopMovementLoops(true) is called on collapse`
+    );
+
+    // Stepping during collapsing with idle locomotion must keep the movement loop silent
+    simMs += 100;
+    realClock.advanceMs(100);
+    const countBeforeIdle = backend.records.filter((r) => r.soundId === c.soundId).length;
+    engine.step(
+      0.1,
+      makeWorld({
+        simMs,
+        activity: 'idle',
+        gait: null,
+        surface: c.surface,
+        distMoved: dist,
+        biome: c.surface === 'water' ? 'swamp' : 'forest',
+      })
+    );
+    assert.equal(
+      backend.records.filter((r) => r.soundId === c.soundId).length,
+      countBeforeIdle,
+      `${c.soundId} must not restart during idle collapse`
+    );
+  }
+
+  // After waking/restarting, moving again resumes movement loops cleanly
+  dist += 1.2;
+  simMs += 100;
+  realClock.advanceMs(100);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs,
+      activity: 'walking',
+      gait: 'walk',
+      surface: 'forest_floor',
+      distMoved: dist,
+    })
+  );
+  const resumed = backend.records.filter((r) => r.soundId === 'forest_floor_walk').at(-1);
+  assert.ok(resumed && resumed.stopped === false, 'Movement loop should resume cleanly after restart');
+
+  engine.dispose();
+});
+
