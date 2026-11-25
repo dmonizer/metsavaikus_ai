@@ -269,7 +269,12 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'thunder_clap',
     bus: 'environment.weather.thunder',
     trigger: { type: 'event', event: 'weather.thunder' },
-    assets: [{ assetId: 'thunder_clap_close_mp3' }],
+    assets: [
+      { assetId: 'thunder_clap_close_mp3' },
+      { assetId: 'thunder_clap_close_02_mp3' },
+      { assetId: 'thunder_clap_close_03_mp3' },
+      { assetId: 'thunder_clap_close_04_mp3' },
+    ],
     playback: {
       volume: [0.75, 1.0],
       pitch: [0.92, 1.06],

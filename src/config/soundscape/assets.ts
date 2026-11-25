@@ -93,9 +93,30 @@ export const SOUNDSCAPE_ASSETS: AssetDefinition[] = [
   },
   {
     id: 'thunder_clap_close_mp3',
-    file: 'weather/thunder/thunder-clap-close.mp3',
+    file: 'weather/thunder/thunder-clap-close-01.mp3',
     preload: true,
     durationSec: 7.157531,
+    tags: ['thunder', 'weather'],
+  },
+  {
+    id: 'thunder_clap_close_02_mp3',
+    file: 'weather/thunder/thunder-clap-close-02.mp3',
+    preload: true,
+    durationSec: 3.816000,
+    tags: ['thunder', 'weather'],
+  },
+  {
+    id: 'thunder_clap_close_03_mp3',
+    file: 'weather/thunder/thunder-clap-close-03.mp3',
+    preload: true,
+    durationSec: 5.904000,
+    tags: ['thunder', 'weather'],
+  },
+  {
+    id: 'thunder_clap_close_04_mp3',
+    file: 'weather/thunder/thunder-clap-close-04.mp3',
+    preload: true,
+    durationSec: 8.088000,
     tags: ['thunder', 'weather'],
   },
   {
