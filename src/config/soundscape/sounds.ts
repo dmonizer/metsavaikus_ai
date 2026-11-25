@@ -57,7 +57,11 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'marsh_ambience',
     bus: 'environment.ambience',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_marsh_ambience' }],
+    assets: [
+      { assetId: 'proc_marsh_ambience' },
+      { assetId: 'proc_marsh_ambience_01' },
+      { assetId: 'proc_marsh_ambience_02' },
+    ],
     playback: {
       volume: 0.25,
       loop: { count: 'infinite' },
@@ -339,7 +343,17 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'forest_birds_chirp',
     bus: 'environment.wildlife.birds',
     trigger: { type: 'stochastic' },
-    assets: [{ assetId: 'proc_bird_chirp' }],
+    assets: [
+      { assetId: 'proc_bird_chirp' },
+      { assetId: 'proc_bird_chirp_02' },
+      { assetId: 'proc_bird_chirp_03' },
+      { assetId: 'proc_bird_chirp_04' },
+      { assetId: 'proc_bird_chirp_05' },
+      { assetId: 'proc_bird_chirp_06' },
+      { assetId: 'proc_bird_chirp_07' },
+      { assetId: 'proc_bird_chirp_08' },
+      { assetId: 'proc_bird_chirp_09' },
+    ],
     playback: {
       volume: [0.22, 0.42],
       pitch: [0.92, 1.1],
@@ -678,7 +692,10 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'red_fox_screech',
     bus: 'environment.wildlife.mammals',
     trigger: { type: 'stochastic' },
-    assets: [{ assetId: 'red_fox_screech_mp3' }],
+    assets: [
+      { assetId: 'red_fox_screech_mp3' },
+      { assetId: 'red_fox_screech_02_mp3' },
+    ],
     playback: {
       volume: [0.25, 0.52],
       pitch: [0.97, 1.04],
@@ -850,7 +867,12 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'wooden_floor_walk',
     bus: 'player.movement',
     trigger: { type: 'event', event: 'material.step.wooden_floor' },
-    assets: [{ assetId: 'proc_wooden_floor_step' }],
+    assets: [
+      { assetId: 'proc_wooden_floor_step' },
+      { assetId: 'proc_wooden_floor_step_02' },
+      { assetId: 'proc_wooden_floor_step_03' },
+      { assetId: 'proc_wooden_floor_step_04' },
+    ],
     playback: {
       volume: 0.52,
       pitch: [0.92, 1.08],
@@ -868,7 +890,10 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'grass_walk_step',
     bus: 'player.movement',
     trigger: { type: 'event', event: 'material.step.grass' },
-    assets: [{ assetId: 'proc_grass_step' }],
+    assets: [
+      { assetId: 'proc_grass_step' },
+      { assetId: 'proc_grass_step_02' },
+    ],
     playback: {
       volume: 0.44,
       pitch: [0.92, 1.1],
@@ -1152,7 +1177,10 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'crate_smash_break',
     bus: 'objects',
     trigger: { type: 'event', event: 'object.break.crate' },
-    assets: [{ assetId: 'wooden_crate_smash_mp3' }],
+    assets: [
+      { assetId: 'wooden_crate_smash_mp3' },
+      { assetId: 'crate_breaking_01_mp3' },
+    ],
     playback: {
       volume: [0.75, 0.98],
       pitch: [0.95, 1.05],

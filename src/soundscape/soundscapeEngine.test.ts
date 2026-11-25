@@ -770,6 +770,11 @@ test('reaction chain depth guard, voice budget eviction/virtualisation, music to
       maxEventsPerChain: 4,
       maxActiveVoices: 4,
     },
+    // Keep incidental wildlife from taking the slot this test expects wind to
+    // regain once the auditioned one-shot has finished.
+    sounds: DEFAULT_SOUNDSCAPE_CONFIG.sounds.map((sound) => sound.trigger.type === 'stochastic'
+      ? { ...sound, schedule: { ...sound.schedule, probabilityPerAttempt: 0 } }
+      : sound),
     reactions: [
       {
         id: 'infinite_loop_rx',
@@ -802,12 +807,14 @@ test('reaction chain depth guard, voice budget eviction/virtualisation, music to
 
   // Music disable stops music independently while transient voices finish & virtualised wind_open automatically resumes
   engine.setMusicEnabled(false);
-  for (let i = 0; i < 26; i++) {
+  const howlDurationSec = loopConfig.assets.find((asset) => asset.id === 'wolf_howl_mp3')!.durationSec!;
+  const recoverySteps = Math.ceil((howlDurationSec / 0.97 + 2) / 0.25);
+  for (let i = 0; i < recoverySteps; i++) {
     realClock.advanceMs(250);
     engine.step(0.25, makeWorld({ simMs: 1200 + i * 250, windSpeed: 0.9 }));
   }
   assert.equal(engine.getDiagnosticsSnapshot().music.enabled, false);
-  assert.ok(backend.records.some((r) => r.soundId === 'wind_open' && !r.stopped));
+  assert.ok(backend.records.some((r) => r.soundId === 'wind_open' && !r.stopped), JSON.stringify(engine.getDiagnosticsSnapshot().voices));
 
   // Invalid hot reload preserves valid config
   const badRes = engine.reloadConfigFromJson('{ invalid json');
@@ -826,3 +833,42 @@ test('reaction chain depth guard, voice budget eviction/virtualisation, music to
   assert.equal(backend.disposed, true);
   assert.ok(backend.records.every((r) => r.stopped));
 });
+
+for (const pitch of [0.5, 1, 2]) {
+  test(`one-shot reserves its slot for the entire clip at pitch ${pitch}`, () => {
+    const config = structuredClone(DEFAULT_SOUNDSCAPE_CONFIG);
+    config.assets = [{ id: 'test_clip', file: 'test-clip.mp3', durationSec: 4 }];
+    config.sounds = [{
+      id: 'test_one_shot',
+      bus: 'player.movement',
+      trigger: { type: 'event', event: 'test.play' },
+      assets: [{ assetId: 'test_clip' }],
+      playback: { pitch, maxInstances: 1, concurrencyPolicy: 'reject_new' },
+      spatial: { mode: 'non_spatial' },
+    }];
+    config.materials = [];
+    config.biomes = [];
+    config.reactions = [];
+    config.disturbances = [];
+    config.music = [];
+    const { engine, realClock, backend } = createTestEngine({ config });
+    engine.step(0, makeWorld({ simMs: 1000 }));
+    assert.equal(engine.auditionSound('test_one_shot'), true);
+
+    // Playback follows real time, even when the simulation runs much faster.
+    const playbackSec = 4 / pitch;
+    const stepSec = 0.05;
+    const steps = Math.round(playbackSec / stepSec);
+    for (let i = 1; i < steps; i++) {
+      realClock.advanceMs(stepSec * 1000);
+      engine.step(stepSec, makeWorld({ simMs: 1000 + i * 10000, timeAccel: 200 }));
+    }
+    assert.equal(backend.records[0].stopped, false, 'Clip must finish before its slot is released');
+    assert.equal(engine.auditionSound('test_one_shot'), false, 'Concurrent trigger must be rejected');
+    realClock.advanceMs(stepSec * 2000);
+    engine.step(stepSec * 2, makeWorld({ simMs: 1000 + (steps + 1) * 10000, timeAccel: 200 }));
+    assert.equal(backend.records[0].stopped, true);
+    assert.equal(engine.auditionSound('test_one_shot'), true, 'Slot becomes available after playback');
+    engine.dispose();
+  });
+}

@@ -572,7 +572,8 @@ export class InstanceManager {
         inst.sourceInsideSameStructure = world.structure.quality !== 'outdoor';
       }
 
-      // Advance logical playback timer
+      // Track position within the source clip. Playback rate changes both its
+      // wall-clock lifetime and the source offset used when resuming a voice.
       if (inst.pauseBetweenLoopsUntilRealMs !== null) {
         if (nowRealMs >= inst.pauseBetweenLoopsUntilRealMs) {
           inst.pauseBetweenLoopsUntilRealMs = null;
@@ -600,7 +601,7 @@ export class InstanceManager {
           }
         }
       } else {
-        inst.elapsedSec += dtRealSec;
+        inst.elapsedSec += dtRealSec * inst.pitch;
         const duration = Math.max(0.1, inst.backendHandle?.durationSec ?? inst.durationSec);
         if (inst.elapsedSec >= duration) {
           inst.loopsCompleted += 1;

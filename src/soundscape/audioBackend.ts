@@ -50,24 +50,18 @@ export interface AudioBackend {
   dispose(): void;
 }
 
-// Safely map Vite-bundled MP3 assets at compile time while staying Node/tsx test-safe.
-const SHIPPED_MP3_GLOB: Record<string, string> =
-  typeof import.meta !== 'undefined' && typeof import.meta.glob === 'function'
-    ? (import.meta.glob('../../assets/sounds/*.mp3', {
+// Vite expands the glob at compile time; Node/tsx tests use the mock backend.
+const SHIPPED_AUDIO_GLOB: Record<string, string> =
+  typeof window !== 'undefined'
+    ? (import.meta.glob(['../assets/sounds/**/*.mp3', '!../assets/sounds/RAW/**'], {
         eager: true,
         query: '?url',
         import: 'default',
       }) as Record<string, string>)
     : {};
 
-function resolveShippedMp3Url(assetFile: string): string | null {
-  const cleanName = assetFile.split('/').pop() ?? assetFile;
-  for (const [key, url] of Object.entries(SHIPPED_MP3_GLOB)) {
-    if (key.endsWith(`/${cleanName}`) || key === cleanName) {
-      return url;
-    }
-  }
-  return null;
+function resolveShippedAudioUrl(assetFile: string): string | null {
+  return SHIPPED_AUDIO_GLOB[`../assets/sounds/${assetFile}`] ?? null;
 }
 
 export interface MockVoiceRecord {
@@ -293,7 +287,7 @@ export class WebAudioHybridBackend implements AudioBackend {
     const inFlight = this.loadingPromises.get(asset.file);
     if (inFlight) return inFlight;
 
-    const url = resolveShippedMp3Url(asset.file);
+    const url = resolveShippedAudioUrl(asset.file);
     if (!url || typeof fetch !== 'function') {
       this.failedAssets.add(asset.file);
       return null;
@@ -389,7 +383,7 @@ export class WebAudioHybridBackend implements AudioBackend {
     let stopped = false;
 
     const cachedBuf = !params.asset.procedural ? this.decodedBuffers.get(params.asset.file) : null;
-    let durationSec = cachedBuf ? cachedBuf.duration : params.asset.durationSec ?? 2.0;
+    const getDurationSec = () => this.decodedBuffers.get(params.asset.file)?.duration ?? params.asset.durationSec ?? 2.0;
 
     if (cachedBuf) {
       const src = ctx.createBufferSource();
@@ -453,7 +447,7 @@ export class WebAudioHybridBackend implements AudioBackend {
 
     return {
       instanceId: params.instanceId,
-      durationSec,
+      get durationSec() { return getDurationSec(); },
       stop: (fadeSec: number) => {
         if (stopped) return;
         stopped = true;
