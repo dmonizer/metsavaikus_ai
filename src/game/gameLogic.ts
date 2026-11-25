@@ -280,4 +280,54 @@ export function formatResolutionSummary(
     : `${pct}% (${width}×${height})`;
 }
 
+export const POINTER_LOCK_REACQUIRE_COOLDOWN_MS = 1400;
 
+export function canRequestPointerLock(
+  nowMs: number,
+  lastExitedAtMs: number,
+  isCurrentlyLocked: boolean
+): boolean {
+  if (isCurrentlyLocked) return false;
+  if (lastExitedAtMs > 0 && nowMs - lastExitedAtMs < POINTER_LOCK_REACQUIRE_COOLDOWN_MS) {
+    return false;
+  }
+  return true;
+}
+
+export function safeRequestPointerLock(
+  target: { requestPointerLock?: () => unknown } | null | undefined,
+  nowMs: number,
+  lastExitedAtMs: number,
+  isCurrentlyLocked: boolean,
+  onRejected?: () => void
+): boolean {
+  if (!target || typeof target.requestPointerLock !== 'function') return false;
+  if (!canRequestPointerLock(nowMs, lastExitedAtMs, isCurrentlyLocked)) return false;
+
+  try {
+    const result = target.requestPointerLock() as { catch?: (fn: () => void) => unknown } | undefined;
+    if (result && typeof result.catch === 'function') {
+      result.catch(() => {
+        onRejected?.();
+      });
+    }
+    return true;
+  } catch {
+    onRejected?.();
+    return false;
+  }
+}
+
+export function clampMouseLookDelta(
+  movementX: number,
+  movementY: number,
+  maxStepPx = 240
+): { dx: number; dy: number } {
+  if (!Number.isFinite(movementX) || !Number.isFinite(movementY)) {
+    return { dx: 0, dy: 0 };
+  }
+  if (Math.abs(movementX) > maxStepPx || Math.abs(movementY) > maxStepPx) {
+    return { dx: 0, dy: 0 };
+  }
+  return { dx: movementX, dy: movementY };
+}

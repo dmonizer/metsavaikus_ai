@@ -580,8 +580,9 @@ export class WeatherAndSkySystem {
 
   private readonly isSoftwareGl: boolean;
   private readonly isLowPowerGpu: boolean;
-  private readonly shadowExtent = 36;
-  private readonly shadowTexelSize: number;
+  private readonly shadowRes: number;
+  private shadowExtent = 36;
+  private shadowTexelSize: number;
 
   // Reusable colors & vectors (zero per-frame GC allocation)
   private readonly sunDir = new THREE.Vector3(0.5, 0.55, 0.35).normalize();
@@ -619,6 +620,7 @@ export class WeatherAndSkySystem {
     this.isSoftwareGl = isSoftwareGl;
     this.isLowPowerGpu = isLowPowerGpu;
     const shadowRes = isLowPowerGpu ? 768 : 1024;
+    this.shadowRes = shadowRes;
     this.shadowTexelSize = (this.shadowExtent * 2) / shadowRes;
 
     scene.background = new THREE.Color(0xb9d1df);
@@ -773,6 +775,21 @@ export class WeatherAndSkySystem {
     this.sunbeams.mesh.visible = enabled;
   }
 
+  setShadowExtent(extent: number): boolean {
+    const clamped = Math.max(20, Math.min(72, Math.round(extent)));
+    if (Math.abs(clamped - this.shadowExtent) < 0.5) return false;
+    this.shadowExtent = clamped;
+    this.shadowTexelSize = (clamped * 2) / this.shadowRes;
+    const cam = this.sunLight.shadow.camera;
+    cam.left = -clamped;
+    cam.right = clamped;
+    cam.top = clamped;
+    cam.bottom = -clamped;
+    cam.updateProjectionMatrix();
+    this.sunLight.shadow.needsUpdate = true;
+    return true;
+  }
+
   update(
     dt: number,
     playerPos: THREE.Vector3,
@@ -781,7 +798,8 @@ export class WeatherAndSkySystem {
     flashEl: HTMLElement | null,
     camForward?: THREE.Vector3,
     timeScale = 1,
-    shelter: AmbientShelter = 'outdoor'
+    shelter: AmbientShelter = 'outdoor',
+    fogDensityScale = 1.0
   ): SkyFrameState {
     const scaledCloudDt = dt * (timeScale > 1 ? Math.min(14, timeScale * 0.4) : 1);
     this.elapsed += scaledCloudDt;
@@ -886,8 +904,8 @@ export class WeatherAndSkySystem {
     fog.color.copy(this.curHorizon);
 
     const swampHere = getSwampFactor(playerPos.x, playerPos.z);
-    let targetFog = 0.0052 + swampHere * 0.0095;
-    if (weather === 'mist') targetFog += 0.0135;
+    let targetFog = (0.0052 + swampHere * 0.0095) * fogDensityScale;
+    if (weather === 'mist') targetFog += 0.0135 * Math.min(1.04, fogDensityScale);
     else if (weather === 'rain') targetFog += 0.0085;
     else if (weather === 'storm') targetFog += 0.014;
     if (this.snapFogNextFrame) {

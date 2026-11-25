@@ -27,6 +27,16 @@ import {
   FrustumCullStatus,
   sphereIntersectsFrustum,
 } from './forestFrustumCuller';
+import { computeTreeLodFadeBands } from '../game/qualityGovernor';
+import {
+  buildDeterministicShuffle,
+  computeGrassClumpScale,
+  computeOpennessFactor,
+  computeRoadVergeCoverage,
+  computeTallUndergrowthScale,
+  generateR2TileSamples,
+  shouldKeepTallUndergrowth,
+} from './grassScatter';
 
 function seededRand(seed: number): () => number {
   let s = (seed | 0) ^ 0x85ebca6b;
@@ -391,16 +401,16 @@ function buildBirchGeometries() {
   }
   const crownLod0 = mergeGeometries(leafParts)!;
 
-  // LOD1: 8 broader crossed birch sprig sprays
+  // LOD1: 10 broader crossed birch sprig sprays with slimmer nested trunk to prevent overlap Z-fighting
   const lod1Bot = new THREE.Vector3(0, -0.1, 0);
   const lod1Top = new THREE.Vector3(0.26, 8.5, 0.1);
   const l1b1 = lod1Bot.clone().lerp(lod1Top, 0.6);
   const l1b2 = lod1Bot.clone().lerp(lod1Top, 0.64);
   const trunkLod1 = applyHeightGradient(
     mergeGeometries([
-      buildConnectedTube({ start: lod1Bot, end: lod1Top, rBot: 0.21, rTop: 0.05, radialSegs: 5, overlapStart: 0.02 }),
-      buildConnectedTube({ start: l1b1, end: l1b1.clone().add(new THREE.Vector3(-0.95, 2.0, 0.65)), rBot: 0.06, rTop: 0.025, radialSegs: 4, overlapStart: 0.05 }),
-      buildConnectedTube({ start: l1b2, end: l1b2.clone().add(new THREE.Vector3(0.9, 1.95, -0.65)), rBot: 0.06, rTop: 0.025, radialSegs: 4, overlapStart: 0.05 }),
+      buildConnectedTube({ start: lod1Bot, end: lod1Top, rBot: 0.195, rTop: 0.042, radialSegs: 5, overlapStart: 0.02 }),
+      buildConnectedTube({ start: l1b1, end: l1b1.clone().add(new THREE.Vector3(-0.95, 2.0, 0.65)), rBot: 0.052, rTop: 0.02, radialSegs: 4, overlapStart: 0.05 }),
+      buildConnectedTube({ start: l1b2, end: l1b2.clone().add(new THREE.Vector3(0.9, 1.95, -0.65)), rBot: 0.052, rTop: 0.02, radialSegs: 4, overlapStart: 0.05 }),
     ])!,
     0.2,
     2.2,
@@ -408,20 +418,20 @@ function buildBirchGeometries() {
     new THREE.Color(0xffffff)
   );
   const crownLod1Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 3.5 + rand() * 0.5;
-    const t = i / 8;
-    const r = (1 - t * 0.4) * (0.35 + rand() * 0.8);
-    const y = 4.9 + t * 3.8;
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 4.0 + rand() * 0.45;
+    const t = i / 10;
+    const r = (1 - t * 0.42) * (0.35 + rand() * 0.85);
+    const y = 4.75 + t * 4.0;
     crownLod1Parts.push(
       makeArchedSprigCard(
-        2.55 + rand() * 0.55,
-        2.75 + rand() * 0.6,
+        2.65 + rand() * 0.55,
+        2.8 + rand() * 0.55,
         0.35,
         0.18 + Math.cos(a) * r,
         y,
         0.1 + Math.sin(a) * r,
-        0.48 + (rand() - 0.5) * 0.55,
+        0.5 + (rand() - 0.5) * 0.5,
         a,
         (rand() - 0.5) * 0.4,
         t > 0.45 ? colMid : colInner,
@@ -432,17 +442,17 @@ function buildBirchGeometries() {
   }
   const crownLod1 = mergeGeometries(crownLod1Parts)!;
 
-  // LOD2: 3 crossed photo-sprig silhouettes (crisp far treeline, minimal overdraw!)
+  // LOD2: 3 crossed photo-sprig silhouettes angled to match LOD1 crown breadth
   const crownLod2Parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * Math.PI;
     crownLod2Parts.push(
-      makeArchedSprigCard(3.8, 5.2, 0.25, 0.16, 4.7, 0.08, 0.08, a, 0, colInner, colSun, 7.2)
+      makeArchedSprigCard(3.9, 4.9, 0.3, 0.16, 4.6, 0.08, 0.22, a, 0, colInner, colSun, 7.1)
     );
   }
   const crownLod2 = mergeGeometries(crownLod2Parts)!;
-  const trunkLod2 = makeBranchCyl(0.06, 0.19, 7.6, 4, 0, -0.1, 0, 0, 0, -0.03);
-  applyHeightGradient(trunkLod2, 0.2, 2.0, new THREE.Color(0x45423d), new THREE.Color(0xd8d3c9));
+  const trunkLod2 = makeBranchCyl(0.05, 0.18, 7.6, 4, 0, -0.1, 0, 0, 0, -0.03);
+  applyHeightGradient(trunkLod2, 0.2, 2.0, new THREE.Color(0x3a3732), new THREE.Color(0xffffff));
 
   return { trunkLod0, crownLod0, trunkLod1, crownLod1, trunkLod2, crownLod2 };
 }
@@ -525,9 +535,9 @@ function buildPineGeometries() {
 
   const trunkLod1 = applyHeightGradient(
     mergeGeometries([
-      makeBranchCyl(0.055, 0.23, 13.6, 5, 0, -0.1, 0, 0, 0, 0),
-      makeBranchCyl(0.025, 0.068, 2.2, 4, 0, 11.2, 0, 0.2, 0.5, 1.0),
-      makeBranchCyl(0.025, 0.068, 2.2, 4, 0, 11.5, 0, -0.2, 2.1, -1.0),
+      makeBranchCyl(0.048, 0.21, 13.6, 5, 0, -0.1, 0, 0, 0, 0),
+      makeBranchCyl(0.02, 0.056, 2.2, 4, 0, 11.2, 0, 0.2, 0.5, 1.0),
+      makeBranchCyl(0.02, 0.056, 2.2, 4, 0, 11.5, 0, -0.2, 2.1, -1.0),
     ])!,
     2.4,
     8.8,
@@ -535,20 +545,20 @@ function buildPineGeometries() {
     new THREE.Color(0xe69f70)
   );
   const crownLod1Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 3.5 + rand() * 0.45;
-    const t = i / 7;
-    const r = (1 - t * 0.45) * (0.35 + rand() * 1.1);
-    const y = 10.8 + t * 2.8;
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 4.5 + rand() * 0.4;
+    const t = i / 10;
+    const r = (1 - t * 0.46) * (0.38 + rand() * 1.15);
+    const y = 10.65 + t * 3.0;
     crownLod1Parts.push(
       makeArchedSprigCard(
-        2.75 + rand() * 0.5,
-        2.5 + rand() * 0.45,
-        0.3,
+        2.85 + rand() * 0.45,
+        2.6 + rand() * 0.45,
+        0.32,
         Math.cos(a) * r,
         y,
         Math.sin(a) * r,
-        0.85 + (rand() - 0.5) * 0.45,
+        0.86 + (rand() - 0.5) * 0.45,
         a,
         (rand() - 0.5) * 0.35,
         t < 0.4 ? pineInner : pineMid,
@@ -559,13 +569,13 @@ function buildPineGeometries() {
   }
   const crownLod1 = mergeGeometries(crownLod1Parts)!;
 
-  const trunkLod2 = makeBranchCyl(0.07, 0.22, 13.2, 4, 0, -0.1, 0, 0, 0, 0);
-  applyHeightGradient(trunkLod2, 2.4, 8.5, new THREE.Color(0x504944), new THREE.Color(0xd28d60));
+  const trunkLod2 = makeBranchCyl(0.05, 0.195, 13.2, 4, 0, -0.1, 0, 0, 0, 0);
+  applyHeightGradient(trunkLod2, 2.4, 8.8, new THREE.Color(0x524c48), new THREE.Color(0xe69f70));
   const crownLod2Parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * Math.PI;
     crownLod2Parts.push(
-      makeArchedSprigCard(4.5, 3.8, 0.28, 0, 10.6, 0, 0.14, a, 0, pineInner, pineSun, 12.5)
+      makeArchedSprigCard(4.6, 3.9, 0.34, 0, 10.5, 0, 0.36, a, 0, pineInner, pineSun, 12.4)
     );
   }
   const crownLod2 = mergeGeometries(crownLod2Parts)!;
@@ -661,8 +671,8 @@ function buildSpruceGeometries() {
   }
   const crownLod0 = mergeGeometries(boughParts)!;
 
-  // LOD1: 9 tiered drooping photo-boughs
-  const trunkLod1 = makeBranchCyl(0.04, 0.23, 11.0, 5, 0, -0.1, 0, 0, 0, 0);
+  // LOD1: 9 tiered drooping photo-boughs (nested trunk radius prevents Z-fighting)
+  const trunkLod1 = makeBranchCyl(0.035, 0.21, 11.0, 5, 0, -0.1, 0, 0, 0, 0);
   const c1Parts: THREE.BufferGeometry[] = [];
   const lod1Tiers = [
     { y: 2.4, w: 2.55, l: 2.55, count: 3 },
@@ -680,13 +690,13 @@ function buildSpruceGeometries() {
   }
   const crownLod1 = mergeGeometries(c1Parts)!;
 
-  // LOD2: 4 crossed silhouette bough cards forming a realistic tapered spruce spire
-  const trunkLod2 = makeBranchCyl(0.06, 0.22, 4.0, 4, 0, -0.1, 0, 0, 0, 0);
+  // LOD2: 6 crossed conical silhouette bough cards matching LOD1 tapered spruce profile
+  const trunkLod2 = makeBranchCyl(0.04, 0.19, 9.8, 4, 0, -0.1, 0, 0, 0, 0);
   const c2Parts: THREE.BufferGeometry[] = [];
-  for (let i = 0; i < 2; i++) {
-    const a = (i / 2) * Math.PI;
-    c2Parts.push(makeArchedSprigCard(4.3, 5.4, 0.18, 0, 1.8, 0, 0.08, a, 0, spInner, spMid, 6.0));
-    c2Parts.push(makeArchedSprigCard(2.9, 5.2, 0.12, 0, 6.1, 0, 0.06, a + 0.7, 0, spMid, spTip, 8.2));
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI;
+    c2Parts.push(makeArchedSprigCard(4.2, 5.2, 0.24, 0, 1.9, 0, 0.36, a, 0, spInner, spMid, 6.0));
+    c2Parts.push(makeArchedSprigCard(2.8, 5.0, 0.18, 0, 5.9, 0, 0.26, a + 0.52, 0, spMid, spTip, 8.2));
   }
   const crownLod2 = mergeGeometries(c2Parts)!;
 
@@ -853,26 +863,28 @@ function buildJuniperBushGeo(): THREE.BufferGeometry {
  */
 function buildGrassTuftGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const rootCol = new THREE.Color(0x6c7a52);
+  const rootCol = new THREE.Color(0x5e6e46);
   const tipCol = new THREE.Color(0xeef4cc);
-  const hw = 0.45;
-  const h = 0.42;
+  const planeConfigs = [
+    { ang: -0.08, hw: 0.54, h: 0.44, tilt: 0.14 },
+    { ang: 1.01, hw: 0.56, h: 0.50, tilt: 0.19 },
+    { ang: 2.09, hw: 0.52, h: 0.56, tilt: -0.17 },
+  ];
 
-  // 2 crossed photo-card planes (4 tris total, 33% less alpha-tested Early-Z overdraw than 3 planes!)
-  for (let p = 0; p < 2; p++) {
-    const ang = p * (Math.PI * 0.5) + (p === 1 ? 0.16 : -0.1);
-    const tilt = 0.11;
+  // 3 splayed crossed photo-card planes (6 tris total) for lush, gap-free omnidirectional ground coverage
+  for (let p = 0; p < planeConfigs.length; p++) {
+    const { ang, hw, h, tilt } = planeConfigs[p];
     const positions = new Float32Array([
-      -hw, -0.02, 0,
-       hw, -0.02, 0,
-       hw * 1.06, h, tilt,
-      -hw * 1.06, h, tilt,
+      -hw, -0.025, 0,
+       hw, -0.025, 0,
+       hw * 1.12, h, tilt,
+      -hw * 1.12, h, tilt,
     ]);
     const uvs = new Float32Array([
-      0.03, 0.0,
-      0.97, 0.0,
-      0.97, 0.98,
-      0.03, 0.98,
+      0.02, 0.0,
+      0.98, 0.0,
+      0.98, 0.98,
+      0.02, 0.98,
     ]);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -892,6 +904,58 @@ function buildGrassTuftGeo(): THREE.BufferGeometry {
       cols[i * 3 + 1] = c.g;
       cols[i * 3 + 2] = c.b;
       // Upward-biased terrain normal so clumps blend seamlessly into ground lighting from every angle
+      nrms[i * 3] = 0;
+      nrms[i * 3 + 1] = 1;
+      nrms[i * 3 + 2] = 0;
+    }
+    nonIdx.setAttribute('normal', new THREE.BufferAttribute(nrms, 3));
+    nonIdx.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    parts.push(nonIdx);
+  }
+  return mergeGeometries(parts)!;
+}
+
+function buildTallUndergrowthGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const rootCol = new THREE.Color(0x52643c);
+  const tipCol = new THREE.Color(0xf2f4d4);
+  const planeConfigs = [
+    { ang: 0.12, hw: 0.56, h: 0.92, tilt: 0.2 },
+    { ang: 1.18, hw: 0.58, h: 1.08, tilt: -0.22 },
+    { ang: 2.24, hw: 0.54, h: 1.24, tilt: 0.25 },
+  ];
+
+  for (let p = 0; p < planeConfigs.length; p++) {
+    const { ang, hw, h, tilt } = planeConfigs[p];
+    const positions = new Float32Array([
+      -hw, -0.03, 0,
+       hw, -0.03, 0,
+       hw * 1.15, h, tilt,
+      -hw * 1.15, h, tilt,
+    ]);
+    const uvs = new Float32Array([
+      0.02, 0.0,
+      0.98, 0.0,
+      0.98, 0.99,
+      0.02, 0.99,
+    ]);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    g.rotateY(ang);
+    const nonIdx = g.toNonIndexed();
+    g.dispose();
+
+    const pos = nonIdx.attributes.position;
+    const nrms = new Float32Array(pos.count * 3);
+    const cols = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const t = Math.min(1, Math.max(0, pos.getY(i) / h));
+      const c = rootCol.clone().lerp(tipCol, t);
+      cols[i * 3] = c.r;
+      cols[i * 3 + 1] = c.g;
+      cols[i * 3 + 2] = c.b;
       nrms[i * 3] = 0;
       nrms[i * 3 + 1] = 1;
       nrms[i * 3 + 2] = 0;
@@ -1033,6 +1097,11 @@ function buildFallenLogGeo(): THREE.BufferGeometry {
 // Synchronized Traveling-Gust Wind + Backlit Subsurface Scattering Shader
 // ============================================================================
 
+interface FadeUniformPair {
+  start: { value: number };
+  end: { value: number };
+}
+
 interface WindUniformSet {
   time: { value: number };
   strength: { value: number };
@@ -1048,6 +1117,80 @@ interface WindShaderOpts {
   leafAmp: number;
   leafFreq: number;
   sssStrength?: number;
+  fade?: FadeUniformPair;
+  lodIn?: FadeUniformPair;
+  heightFadeScale?: number;
+}
+
+function buildDistFadeFragSnippet(hasFade: boolean, hasLodIn: boolean): string {
+  const condParts: string[] = [];
+  if (hasFade) condParts.push('vDistFade < 0.999');
+  if (hasLodIn) condParts.push('vLodIn < 0.999');
+  const checks: string[] = [];
+  if (hasLodIn) {
+    checks.push('if (vLodIn < 0.999 && (vLodIn <= 0.002 || fadeNoise > vLodIn)) discard;');
+  }
+  if (hasFade) {
+    checks.push('if (vDistFade < 0.999 && (vDistFade <= 0.002 || fadeNoise > vDistFade)) discard;');
+  }
+  return `if (${condParts.join(' || ')}) {
+  float fadeNoise = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  ${checks.join('\n  ')}
+}
+`;
+}
+
+function addDistanceFade(
+  mat: THREE.MeshLambertMaterial | THREE.MeshStandardMaterial,
+  fade?: FadeUniformPair,
+  lodIn?: FadeUniformPair
+): void {
+  if (!fade && !lodIn) return;
+  const hasFade = Boolean(fade);
+  const hasLodIn = Boolean(lodIn);
+  const fragSnippet = buildDistFadeFragSnippet(hasFade, hasLodIn);
+  mat.customProgramCacheKey = () => `dist_fade_v2_${hasFade ? 1 : 0}_${hasLodIn ? 1 : 0}`;
+  mat.onBeforeCompile = (shader) => {
+    if (fade) {
+      shader.uniforms.uFadeStart = fade.start;
+      shader.uniforms.uFadeEnd = fade.end;
+    }
+    if (lodIn) {
+      shader.uniforms.uInStart = lodIn.start;
+      shader.uniforms.uInEnd = lodIn.end;
+    }
+
+    const vertHeader =
+      (fade ? `uniform float uFadeStart;\nuniform float uFadeEnd;\nvarying float vDistFade;\n` : '') +
+      (lodIn ? `uniform float uInStart;\nuniform float uInEnd;\nvarying float vLodIn;\n` : '');
+    const fragHeader =
+      (fade ? `varying float vDistFade;\n` : '') +
+      (lodIn ? `varying float vLodIn;\n` : '');
+
+    shader.vertexShader =
+      vertHeader +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        #ifdef USE_INSTANCING
+          vec4 fadeOriginWorld = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          vec2 fadePosXZ = fadeOriginWorld.xz;
+        #else
+          vec2 fadePosXZ = (modelMatrix * vec4(transformed, 1.0)).xz;
+        #endif
+        float fadeCamDist = length(fadePosXZ - cameraPosition.xz);
+        ${fade ? 'vDistFade = 1.0 - smoothstep(uFadeStart, max(uFadeStart + 1.0, uFadeEnd), fadeCamDist);' : ''}
+        ${lodIn ? 'vLodIn = smoothstep(uInStart, max(uInStart + 1.0, uInEnd), fadeCamDist);' : ''}
+        `
+      );
+
+    shader.fragmentShader =
+      fragHeader +
+      shader.fragmentShader.replace(
+        '#include <clipping_planes_fragment>',
+        `#include <clipping_planes_fragment>\n${fragSnippet}`
+      );
+  };
 }
 
 function addWindSway(
@@ -1056,7 +1199,11 @@ function addWindSway(
   opts: WindShaderOpts
 ): void {
   const sss = opts.sssStrength ?? 0;
-  const cacheKey = `wind_sss_${opts.bendStart}_${opts.bendSpan}_${opts.bendAmp}_${opts.leafAmp}_${opts.leafFreq}_${sss}`;
+  const hasFade = opts.fade ? 1 : 0;
+  const hasLodIn = opts.lodIn ? 1 : 0;
+  const hasDistTest = hasFade || hasLodIn ? 1 : 0;
+  const heightFadeScale = opts.heightFadeScale ?? 0;
+  const cacheKey = `wind_sss_${opts.bendStart}_${opts.bendSpan}_${opts.bendAmp}_${opts.leafAmp}_${opts.leafFreq}_${sss}_fade_${hasFade}_in_${hasLodIn}_hf_${heightFadeScale}`;
   mat.customProgramCacheKey = () => cacheKey;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uWindTime = uniforms.time;
@@ -1064,9 +1211,23 @@ function addWindSway(
     shader.uniforms.uWindDir = uniforms.dir;
     shader.uniforms.uSssSunDir = uniforms.sunDir;
     shader.uniforms.uSssSunColor = uniforms.sunColor;
+    if (opts.fade) {
+      shader.uniforms.uFadeStart = opts.fade.start;
+      shader.uniforms.uFadeEnd = opts.fade.end;
+    }
+    if (opts.lodIn) {
+      shader.uniforms.uInStart = opts.lodIn.start;
+      shader.uniforms.uInEnd = opts.lodIn.end;
+    }
 
     shader.vertexShader =
       `uniform float uWindTime;\nuniform float uWindStrength;\nuniform vec2 uWindDir;\n` +
+      (opts.fade
+        ? `uniform float uFadeStart;\nuniform float uFadeEnd;\nvarying float vDistFade;\n`
+        : '') +
+      (opts.lodIn
+        ? `uniform float uInStart;\nuniform float uInEnd;\nvarying float vLodIn;\n`
+        : '') +
       (sss > 0
         ? `uniform vec3 uSssSunDir;\nuniform vec3 uSssSunColor;\nvarying vec3 vSssAdd;\n`
         : '') +
@@ -1076,9 +1237,22 @@ function addWindSway(
       '#include <begin_vertex>',
       `#include <begin_vertex>
       #ifdef USE_INSTANCING
-        vec2 wPosXZ = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+        vec4 instOriginWorld = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        vec2 wPosXZ = instOriginWorld.xz;
       #else
-        vec2 wPosXZ = vec2(0.0);
+        vec2 wPosXZ = (modelMatrix * vec4(transformed, 1.0)).xz;
+      #endif
+      #if ${hasDistTest}
+        float fadeCamDist = length(wPosXZ - cameraPosition.xz);
+        #if ${hasFade}
+          vDistFade = 1.0 - smoothstep(uFadeStart, max(uFadeStart + 1.0, uFadeEnd), fadeCamDist);
+          #if ${heightFadeScale > 0 ? 1 : 0}
+            transformed.y *= mix(${heightFadeScale.toFixed(3)}, 1.0, vDistFade);
+          #endif
+        #endif
+        #if ${hasLodIn}
+          vLodIn = smoothstep(uInStart, max(uInStart + 1.0, uInEnd), fadeCamDist);
+        #endif
       #endif
       float instSeed = wPosXZ.x * 0.31 + wPosXZ.y * 0.47;
 
@@ -1104,6 +1278,19 @@ function addWindSway(
       #endif
       `
     );
+
+    if (opts.fade || opts.lodIn) {
+      const fragHeader =
+        (opts.fade ? `varying float vDistFade;\n` : '') +
+        (opts.lodIn ? `varying float vLodIn;\n` : '');
+      const fragSnippet = buildDistFadeFragSnippet(Boolean(opts.fade), Boolean(opts.lodIn));
+      shader.fragmentShader =
+        fragHeader +
+        shader.fragmentShader.replace(
+          '#include <clipping_planes_fragment>',
+          `#include <clipping_planes_fragment>\n${fragSnippet}`
+        );
+    }
 
     if (sss > 0) {
       // Vertex-stage backlit SSS eliminates per-fragment normalize/dot/smoothstep across millions of overdrawn alpha-tested foliage pixels!
@@ -1239,6 +1426,7 @@ interface ChunkBucketBaked {
 
 interface GrassTileBaked {
   slab: BakedSlab;
+  tallSlab: BakedSlab;
   cx: number;
   cy: number;
   cz: number;
@@ -1247,6 +1435,7 @@ interface GrassTileBaked {
 
 const EMPTY_GRASS_TILE: GrassTileBaked = {
   slab: EMPTY_SLAB,
+  tallSlab: EMPTY_SLAB,
   cx: 0,
   cy: 0,
   cz: 0,
@@ -1279,27 +1468,43 @@ export interface VegetationStats {
   candidateInstances?: number;
 }
 
-const CAP_LOD0 = 420;
-const CAP_LOD1 = 760;
-const CAP_LOD2 = 1280;
-const CAP_BOG_PINE = 300;
-const CAP_SAPLING = 720;
-const CAP_HAZEL = 880;
-const CAP_JUNIPER = 640;
-const CAP_FERN = 1040;
-const CAP_SHRUB = 1800;
-const CAP_MOSS = 680;
-const CAP_REED = 960;
-const CAP_BOULDER = 220;
-const CAP_DEADFALL = 180;
+export interface VegetationQualityOptions {
+  lod0Dist?: number;
+  lod1Dist?: number;
+  bushDist?: number;
+  understoryDist?: number;
+  boulderDist?: number;
+  bogDist?: number;
+  grassMaxRing?: 1 | 2 | 3 | 4;
+  grassRing1Step?: 1 | 2 | 3;
+  grassRing2Step?: 1 | 2 | 3;
+  grassRing3Step?: 1 | 2 | 3;
+  grassRing4Step?: 1 | 2 | 3;
+}
 
-// Each instanced photographic grass clump renders 3 crossed curved photo-cards (6 tris!)
-// Frustum culling trims 360-degree carpet to only camera-visible tiles (~65% fewer GPU instances!)
-const GRASS_BLADE_CAP = 5200;
+const CAP_LOD0 = 960;
+const CAP_LOD1 = 1850;
+const CAP_LOD2 = 2400;
+const CAP_BOG_PINE = 680;
+const CAP_SAPLING = 1800;
+const CAP_HAZEL = 2400;
+const CAP_JUNIPER = 1600;
+const CAP_FERN = 3600;
+const CAP_SHRUB = 5600;
+const CAP_MOSS = 1800;
+const CAP_REED = 2200;
+const CAP_BOULDER = 650;
+const CAP_DEADFALL = 480;
+
+// Each instanced photographic grass clump renders 3 crossed splayed photo-cards (6 tris!)
+// Non-grid R2 scatter + Fisher-Yates tile shuffling eliminates rows/lines across every ring.
+const GRASS_BLADE_CAP = 18500;
+const TALL_UNDERGROWTH_CAP = 6500;
 const GRASS_TILE_SIZE = 16;
-const GRASS_TILE_RADIUS = 2; // 5x5 minus 4 far corners = 21 tiles (~34-42m carpet radius)
-const GRASS_BLADE_SPACING = 0.68;
-const MAX_GRASS_TILE_CACHE = 180;
+const GRASS_TILE_RADIUS = 2; // Baseline 5x5; High expands to ring 3 (~48m), Ultra to ring 4 (~64m)
+const MAX_GRASS_TILE_CACHE = 420;
+const GRASS_TILE_SAMPLES = 760;
+const TALL_TILE_SAMPLES = 220;
 const MAX_CHUNK_CACHE = 450;
 const COLLIDER_CELL_SIZE = 8;
 
@@ -1310,6 +1515,18 @@ export class WorldVegetationSystem {
   readonly windDirUniform = { value: new THREE.Vector2(0.86, 0.51) };
   readonly sunDirUniform = { value: new THREE.Vector3(0.5, 0.6, 0.35).normalize() };
   readonly sunColorUniform = { value: new THREE.Color(0xfff1d6) };
+
+  private readonly lod0InFadeUniforms: FadeUniformPair = { start: { value: 50 }, end: { value: 56 } };
+  private readonly lod0OutFadeUniforms: FadeUniformPair = { start: { value: 56 }, end: { value: 62 } };
+  private readonly lod1InFadeUniforms: FadeUniformPair = { start: { value: 124 }, end: { value: 132 } };
+  private readonly lod1OutFadeUniforms: FadeUniformPair = { start: { value: 132 }, end: { value: 140 } };
+  private readonly treeFadeUniforms: FadeUniformPair = { start: { value: 184 }, end: { value: 226 } };
+  private readonly bogFadeUniforms: FadeUniformPair = { start: { value: 114 }, end: { value: 150 } };
+  private readonly bushFadeUniforms: FadeUniformPair = { start: { value: 88 }, end: { value: 124 } };
+  private readonly underFadeUniforms: FadeUniformPair = { start: { value: 54 }, end: { value: 86 } };
+  private readonly boulderFadeUniforms: FadeUniformPair = { start: { value: 112 }, end: { value: 146 } };
+  private readonly grassFadeUniforms: FadeUniformPair = { start: { value: 18 }, end: { value: 30 } };
+  private readonly tallGrassFadeUniforms: FadeUniformPair = { start: { value: 22 }, end: { value: 38 } };
 
   private readonly chunkCache = new Map<string, ChunkBucketBaked>();
   private readonly grassTileCache = new Map<string, GrassTileBaked>();
@@ -1322,10 +1539,12 @@ export class WorldVegetationSystem {
   private lastCullFwdX = 0;
   private lastCullFwdZ = 0;
   private lastFogCullDist = 225;
+  private lastQualitySig = '';
   private lastGrassTileX = 999999;
   private lastGrassTileZ = 999999;
   private lastGrassFwdX = 0;
   private lastGrassFwdZ = 0;
+  private lastGrassQualitySig = '';
   private grassHasPendingTiles = true;
   private readonly brokenDeadfallIds = new Set<string>();
   private readonly deadfallKicksRemaining = new Map<string, number>();
@@ -1364,8 +1583,9 @@ export class WorldVegetationSystem {
   private hazelLeafMesh!: THREE.InstancedMesh;
   private juniperMesh!: THREE.InstancedMesh;
 
-  // Ground Coverage + Player-Centered Frustum-Culled Grass Carpet
+  // Ground Coverage + Player-Centered Frustum-Culled Grass Carpet + Tall Randomized Undergrowth
   private grassBladeMesh!: THREE.InstancedMesh;
+  private tallUndergrowthMesh!: THREE.InstancedMesh;
   private fernMesh!: THREE.InstancedMesh;
   private shrubMesh!: THREE.InstancedMesh;
   private mossHummockMesh!: THREE.InstancedMesh;
@@ -1385,17 +1605,26 @@ export class WorldVegetationSystem {
 
   private readonly isLowPowerGpu: boolean;
   private readonly grassCap: number;
+  private readonly tallCap: number;
   private lastGrassMaxRing = GRASS_TILE_RADIUS;
   private readonly grassRingSortBuf: Array<{ tx: number; tz: number; dSq: number }> = [];
 
   constructor(textures: WorldTextures, isSoftwareGl: boolean, isLowPowerGpu: boolean, private readonly shelters: ShelterGeometry) {
     this.isLowPowerGpu = isLowPowerGpu;
-    this.grassCap = isLowPowerGpu ? 1850 : GRASS_BLADE_CAP;
+    this.grassCap = isSoftwareGl ? 2400 : isLowPowerGpu ? 11000 : GRASS_BLADE_CAP;
+    this.tallCap = isSoftwareGl ? 800 : isLowPowerGpu ? 3800 : TALL_UNDERGROWTH_CAP;
     this.buildInstancedLayers(textures, isSoftwareGl);
     this.group.traverse(node => {
       if (node instanceof THREE.InstancedMesh) node.receiveShadow = true;
     });
-    const groundLayers = [this.grassBladeMesh, this.fernMesh, this.shrubMesh, this.mossHummockMesh, this.reedMesh];
+    const groundLayers = [
+      this.grassBladeMesh,
+      this.tallUndergrowthMesh,
+      this.fernMesh,
+      this.shrubMesh,
+      this.mossHummockMesh,
+      this.reedMesh,
+    ];
     for (const mesh of groundLayers) {
       for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
         excludeShelterVegetation(material, shelters);
@@ -1655,12 +1884,12 @@ export class WorldVegetationSystem {
       }
     }
 
-    // 3. Multi-Layered Forest Understory
-    for (let i = 0; i < 120; i++) {
+    // 3. Multi-Layered Forest Understory (denser natural drifts of varied low-to-tall ferns, bilberry & moss)
+    for (let i = 0; i < 200; i++) {
       const gx = minX + rand() * CHUNK_SIZE;
       const gz = minZ + rand() * CHUNK_SIZE;
       if (Math.abs(gx) > WORLD_HALF - 3 || Math.abs(gz) > WORLD_HALF - 3) continue;
-      if (distToRoadDetail(gx, gz).dist < 2.2) continue;
+      if (distToRoadDetail(gx, gz).dist < 2.1) continue;
       if (this.isInsideBuilding(gx, gz)) continue;
 
       const gy = getTerrainHeight(gx, gz);
@@ -1672,23 +1901,23 @@ export class WorldVegetationSystem {
       const patch = smoothNoise(gx * 0.09, gz * 0.09);
 
       if (swamp > 0.36) {
-        if (gy <= SWAMP_WATER_Y + 0.35 && rand() < 0.65) {
+        if (gy <= SWAMP_WATER_Y + 0.35 && rand() < 0.68) {
           reed.push({
             x: gx,
             y: gy - 0.04,
             z: gz,
-            scale: 0.78 + rand() * 0.72,
+            scale: 0.72 + rand() * 0.92,
             rotY: rand() * Math.PI * 2,
             r: 0.74 + rand() * 0.22,
             g: 0.72 + rand() * 0.18,
             b: 0.42 + rand() * 0.12,
           });
-        } else if (gy > SWAMP_WATER_Y + 0.14 && rand() < 0.22) {
+        } else if (gy > SWAMP_WATER_Y + 0.14 && rand() < 0.26) {
           mossHummock.push({
             x: gx,
             y: gy - 0.05,
             z: gz,
-            scale: 0.8 + rand() * 0.7,
+            scale: 0.8 + rand() * 0.78,
             rotY: rand() * Math.PI * 2,
             r: 0.85,
             g: 0.88,
@@ -1701,34 +1930,34 @@ export class WorldVegetationSystem {
       // Dry-land forest floor understory must sit cleanly above lake water level
       if (gy < SWAMP_WATER_Y + 0.16) continue;
 
-      if (patch > 0.62 && rand() < 0.48) {
+      if (patch > 0.5 && rand() < 0.58) {
         fern.push({
           x: gx,
           y: gy - 0.03,
           z: gz,
-          scale: 0.82 + rand() * 0.58,
+          scale: 0.72 + rand() * 0.92,
           rotY: rand() * Math.PI * 2,
-          r: 0.82 + rand() * 0.2,
-          g: 0.92 + rand() * 0.14,
-          b: 0.75 + rand() * 0.14,
+          r: 0.8 + rand() * 0.22,
+          g: 0.9 + rand() * 0.16,
+          b: 0.72 + rand() * 0.14,
         });
-      } else if (rand() < 0.52) {
+      } else if (rand() < 0.62) {
         shrub.push({
           x: gx,
           y: gy - 0.03,
           z: gz,
-          scale: 0.85 + rand() * 0.68,
+          scale: 0.78 + rand() * 0.94,
           rotY: rand() * Math.PI * 2,
-          r: 0.86 + rand() * 0.2,
-          g: 0.94 + rand() * 0.18,
-          b: 0.78 + rand() * 0.14,
+          r: 0.84 + rand() * 0.22,
+          g: 0.92 + rand() * 0.18,
+          b: 0.76 + rand() * 0.14,
         });
-      } else if (rand() < 0.28 && getDistanceToNearestVillage(gx, gz).dist > 34) {
+      } else if (rand() < 0.3 && getDistanceToNearestVillage(gx, gz).dist > 34) {
         mossHummock.push({
           x: gx,
           y: gy - 0.04,
           z: gz,
-          scale: 0.78 + rand() * 0.72,
+          scale: 0.78 + rand() * 0.78,
           rotY: rand() * Math.PI * 2,
           r: 0.78 + rand() * 0.18,
           g: 0.88 + rand() * 0.14,
@@ -1996,8 +2225,8 @@ export class WorldVegetationSystem {
     const juniperGeo = buildJuniperBushGeo();
     const deadfallGeo = buildFallenLogGeo();
 
-    // PBR Normal-Mapped Bark Materials (Crisp woody relief!)
-    const birchBarkMat = new THREE.MeshStandardMaterial({
+    // PBR Normal-Mapped Bark Materials (LOD0) + Complementary Stochastic Crossfading (LOD0 <-> LOD1 <-> LOD2)
+    const birchBark0Mat = new THREE.MeshStandardMaterial({
       map: textures.birchBark,
       normalMap: textures.birchNormal,
       normalScale: new THREE.Vector2(0.85, 0.85),
@@ -2006,31 +2235,66 @@ export class WorldVegetationSystem {
       envMapIntensity: 0.45,
       vertexColors: true,
     });
-    addWindSway(birchBarkMat, windUniforms, {
+    addWindSway(birchBark0Mat, windUniforms, {
       bendStart: 0.3,
       bendSpan: 9.0,
       bendAmp: 0.24,
       leafAmp: 0,
       leafFreq: 0,
+      fade: this.lod0OutFadeUniforms,
     });
 
-    // Photographic Alpha-Tested Botanical Sprig Canopies with Backlit SSS
-    const birchLeafMat = new THREE.MeshLambertMaterial({
+    const birchLeaf0Mat = new THREE.MeshLambertMaterial({
       map: textures.birchLeafCard,
       alphaTest: 0.44,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
-    addWindSway(birchLeafMat, windUniforms, {
+    addWindSway(birchLeaf0Mat, windUniforms, {
       bendStart: 0.3,
       bendSpan: 9.0,
       bendAmp: 0.24,
       leafAmp: 0.12,
       leafFreq: 3.6,
       sssStrength: 0.48,
+      fade: this.lod0OutFadeUniforms,
     });
 
-    const pineBarkMat = new THREE.MeshStandardMaterial({
+    const birchLeaf1Mat = new THREE.MeshLambertMaterial({
+      map: textures.birchLeafCard,
+      alphaTest: 0.44,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(birchLeaf1Mat, windUniforms, {
+      bendStart: 0.3,
+      bendSpan: 9.0,
+      bendAmp: 0.24,
+      leafAmp: 0.12,
+      leafFreq: 3.6,
+      sssStrength: 0.48,
+      lodIn: this.lod0InFadeUniforms,
+      fade: this.lod1OutFadeUniforms,
+    });
+
+    const birchLeaf2Mat = new THREE.MeshLambertMaterial({
+      map: textures.birchLeafCard,
+      alphaTest: 0.44,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(birchLeaf2Mat, windUniforms, {
+      bendStart: 0.3,
+      bendSpan: 9.0,
+      bendAmp: 0.24,
+      leafAmp: 0.1,
+      leafFreq: 3.4,
+      sssStrength: 0.48,
+      lodIn: this.lod1InFadeUniforms,
+      fade: this.treeFadeUniforms,
+    });
+
+    const pineBark0Mat = new THREE.MeshStandardMaterial({
       map: textures.pineBark,
       normalMap: textures.pineNormal,
       normalScale: new THREE.Vector2(1.05, 1.05),
@@ -2039,26 +2303,63 @@ export class WorldVegetationSystem {
       envMapIntensity: 0.42,
       vertexColors: true,
     });
-    addWindSway(pineBarkMat, windUniforms, {
+    addWindSway(pineBark0Mat, windUniforms, {
       bendStart: 0.4,
       bendSpan: 13.5,
       bendAmp: 0.26,
       leafAmp: 0,
       leafFreq: 0,
+      fade: this.lod0OutFadeUniforms,
     });
-    const pineLeafMat = new THREE.MeshLambertMaterial({
+
+    const pineLeaf0Mat = new THREE.MeshLambertMaterial({
       map: textures.pineNeedleCard,
       alphaTest: 0.45,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
-    addWindSway(pineLeafMat, windUniforms, {
+    addWindSway(pineLeaf0Mat, windUniforms, {
       bendStart: 0.4,
       bendSpan: 13.5,
       bendAmp: 0.26,
       leafAmp: 0.08,
       leafFreq: 3.0,
       sssStrength: 0.38,
+      fade: this.lod0OutFadeUniforms,
+    });
+
+    const pineLeaf1Mat = new THREE.MeshLambertMaterial({
+      map: textures.pineNeedleCard,
+      alphaTest: 0.45,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(pineLeaf1Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 13.5,
+      bendAmp: 0.26,
+      leafAmp: 0.08,
+      leafFreq: 3.0,
+      sssStrength: 0.38,
+      lodIn: this.lod0InFadeUniforms,
+      fade: this.lod1OutFadeUniforms,
+    });
+
+    const pineLeaf2Mat = new THREE.MeshLambertMaterial({
+      map: textures.pineNeedleCard,
+      alphaTest: 0.45,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(pineLeaf2Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 13.5,
+      bendAmp: 0.26,
+      leafAmp: 0.07,
+      leafFreq: 2.9,
+      sssStrength: 0.38,
+      lodIn: this.lod1InFadeUniforms,
+      fade: this.treeFadeUniforms,
     });
 
     const bogPineBarkMat = new THREE.MeshStandardMaterial({
@@ -2075,6 +2376,7 @@ export class WorldVegetationSystem {
       bendAmp: 0.14,
       leafAmp: 0,
       leafFreq: 0,
+      fade: this.bogFadeUniforms,
     });
     const bogPineLeafMat = new THREE.MeshLambertMaterial({
       map: textures.pineNeedleCard,
@@ -2089,9 +2391,10 @@ export class WorldVegetationSystem {
       leafAmp: 0.06,
       leafFreq: 3.2,
       sssStrength: 0.42,
+      fade: this.bogFadeUniforms,
     });
 
-    const spruceBarkMat = new THREE.MeshStandardMaterial({
+    const spruceBark0Mat = new THREE.MeshStandardMaterial({
       map: textures.spruceBark,
       normalMap: textures.pineNormal,
       normalScale: new THREE.Vector2(0.95, 0.95),
@@ -2099,26 +2402,63 @@ export class WorldVegetationSystem {
       metalness: 0.0,
       envMapIntensity: 0.4,
     });
-    addWindSway(spruceBarkMat, windUniforms, {
+    addWindSway(spruceBark0Mat, windUniforms, {
       bendStart: 0.4,
       bendSpan: 10.5,
       bendAmp: 0.21,
       leafAmp: 0,
       leafFreq: 0,
+      fade: this.lod0OutFadeUniforms,
     });
-    const spruceLeafMat = new THREE.MeshLambertMaterial({
+
+    const spruceLeaf0Mat = new THREE.MeshLambertMaterial({
       map: textures.spruceBoughCard,
       alphaTest: 0.45,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
-    addWindSway(spruceLeafMat, windUniforms, {
+    addWindSway(spruceLeaf0Mat, windUniforms, {
       bendStart: 0.4,
       bendSpan: 10.5,
       bendAmp: 0.21,
       leafAmp: 0.075,
       leafFreq: 2.9,
       sssStrength: 0.36,
+      fade: this.lod0OutFadeUniforms,
+    });
+
+    const spruceLeaf1Mat = new THREE.MeshLambertMaterial({
+      map: textures.spruceBoughCard,
+      alphaTest: 0.45,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(spruceLeaf1Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 10.5,
+      bendAmp: 0.21,
+      leafAmp: 0.075,
+      leafFreq: 2.9,
+      sssStrength: 0.36,
+      lodIn: this.lod0InFadeUniforms,
+      fade: this.lod1OutFadeUniforms,
+    });
+
+    const spruceLeaf2Mat = new THREE.MeshLambertMaterial({
+      map: textures.spruceBoughCard,
+      alphaTest: 0.45,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(spruceLeaf2Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 10.5,
+      bendAmp: 0.21,
+      leafAmp: 0.06,
+      leafFreq: 2.8,
+      sssStrength: 0.36,
+      lodIn: this.lod1InFadeUniforms,
+      fade: this.treeFadeUniforms,
     });
 
     const saplingMat = new THREE.MeshLambertMaterial({
@@ -2134,6 +2474,7 @@ export class WorldVegetationSystem {
       leafAmp: 0.05,
       leafFreq: 3.6,
       sssStrength: 0.52,
+      fade: this.bushFadeUniforms,
     });
 
     const hazelStemMat = new THREE.MeshStandardMaterial({
@@ -2150,6 +2491,7 @@ export class WorldVegetationSystem {
       bendAmp: 0.14,
       leafAmp: 0,
       leafFreq: 0,
+      fade: this.bushFadeUniforms,
     });
     const hazelLeafMat = new THREE.MeshLambertMaterial({
       map: textures.bushLeafCard,
@@ -2164,6 +2506,7 @@ export class WorldVegetationSystem {
       leafAmp: 0.08,
       leafFreq: 4.3,
       sssStrength: 0.5,
+      fade: this.bushFadeUniforms,
     });
 
     const juniperMat = new THREE.MeshLambertMaterial({
@@ -2179,47 +2522,115 @@ export class WorldVegetationSystem {
       leafAmp: 0.045,
       leafFreq: 3.4,
       sssStrength: 0.36,
+      fade: this.bushFadeUniforms,
     });
 
     const shadows = !isSoftwareGl;
 
-    // Lightweight Lambert bark materials for mid/far LOD1 & LOD2 trunks (zero IBL/normal-map GPU waste at 70-200m!)
-    const birchBarkFarMat = new THREE.MeshLambertMaterial({
+    // Lightweight Lambert bark materials for LOD1 & LOD2 with matched wind sway & complementary LOD crossfade
+    const birchBark1Mat = new THREE.MeshLambertMaterial({
       map: textures.birchBark,
       vertexColors: true,
     });
-    const pineBarkFarMat = new THREE.MeshLambertMaterial({
+    addWindSway(birchBark1Mat, windUniforms, {
+      bendStart: 0.3,
+      bendSpan: 9.0,
+      bendAmp: 0.24,
+      leafAmp: 0,
+      leafFreq: 0,
+      lodIn: this.lod0InFadeUniforms,
+      fade: this.lod1OutFadeUniforms,
+    });
+    const birchBark2Mat = new THREE.MeshLambertMaterial({
+      map: textures.birchBark,
+      vertexColors: true,
+    });
+    addWindSway(birchBark2Mat, windUniforms, {
+      bendStart: 0.3,
+      bendSpan: 9.0,
+      bendAmp: 0.24,
+      leafAmp: 0,
+      leafFreq: 0,
+      lodIn: this.lod1InFadeUniforms,
+      fade: this.treeFadeUniforms,
+    });
+
+    const pineBark1Mat = new THREE.MeshLambertMaterial({
       map: textures.pineBark,
       vertexColors: true,
     });
-    const spruceBarkFarMat = new THREE.MeshLambertMaterial({
+    addWindSway(pineBark1Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 13.5,
+      bendAmp: 0.26,
+      leafAmp: 0,
+      leafFreq: 0,
+      lodIn: this.lod0InFadeUniforms,
+      fade: this.lod1OutFadeUniforms,
+    });
+    const pineBark2Mat = new THREE.MeshLambertMaterial({
+      map: textures.pineBark,
+      vertexColors: true,
+    });
+    addWindSway(pineBark2Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 13.5,
+      bendAmp: 0.26,
+      leafAmp: 0,
+      leafFreq: 0,
+      lodIn: this.lod1InFadeUniforms,
+      fade: this.treeFadeUniforms,
+    });
+
+    const spruceBark1Mat = new THREE.MeshLambertMaterial({
       map: textures.spruceBark,
+    });
+    addWindSway(spruceBark1Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 10.5,
+      bendAmp: 0.21,
+      leafAmp: 0,
+      leafFreq: 0,
+      lodIn: this.lod0InFadeUniforms,
+      fade: this.lod1OutFadeUniforms,
+    });
+    const spruceBark2Mat = new THREE.MeshLambertMaterial({
+      map: textures.spruceBark,
+    });
+    addWindSway(spruceBark2Mat, windUniforms, {
+      bendStart: 0.4,
+      bendSpan: 10.5,
+      bendAmp: 0.21,
+      leafAmp: 0,
+      leafFreq: 0,
+      lodIn: this.lod1InFadeUniforms,
+      fade: this.treeFadeUniforms,
     });
 
     // Trees: ONLY close LOD0 trunks cast & receive shadows; paired crowns share trunk GPU buffers (0 duplicate uploads)!
-    this.birchTrunk0 = this.createInstanced(birch.trunkLod0, birchBarkMat, CAP_LOD0, shadows, true);
-    this.birchCrown0 = this.createPairedFollower(this.birchTrunk0, birch.crownLod0, birchLeafMat, CAP_LOD0);
-    this.birchTrunk1 = this.createInstanced(birch.trunkLod1, birchBarkFarMat, CAP_LOD1, false, false);
-    this.birchCrown1 = this.createPairedFollower(this.birchTrunk1, birch.crownLod1, birchLeafMat, CAP_LOD1);
-    this.birchTrunk2 = this.createInstanced(birch.trunkLod2, birchBarkFarMat, CAP_LOD2, false, false);
-    this.birchCrown2 = this.createPairedFollower(this.birchTrunk2, birch.crownLod2, birchLeafMat, CAP_LOD2);
+    this.birchTrunk0 = this.createInstanced(birch.trunkLod0, birchBark0Mat, CAP_LOD0, shadows, true);
+    this.birchCrown0 = this.createPairedFollower(this.birchTrunk0, birch.crownLod0, birchLeaf0Mat, CAP_LOD0);
+    this.birchTrunk1 = this.createInstanced(birch.trunkLod1, birchBark1Mat, CAP_LOD1, false, false);
+    this.birchCrown1 = this.createPairedFollower(this.birchTrunk1, birch.crownLod1, birchLeaf1Mat, CAP_LOD1);
+    this.birchTrunk2 = this.createInstanced(birch.trunkLod2, birchBark2Mat, CAP_LOD2, false, false);
+    this.birchCrown2 = this.createPairedFollower(this.birchTrunk2, birch.crownLod2, birchLeaf2Mat, CAP_LOD2);
 
-    this.pineTrunk0 = this.createInstanced(pine.trunkLod0, pineBarkMat, CAP_LOD0, shadows, true);
-    this.pineCrown0 = this.createPairedFollower(this.pineTrunk0, pine.crownLod0, pineLeafMat, CAP_LOD0);
-    this.pineTrunk1 = this.createInstanced(pine.trunkLod1, pineBarkFarMat, CAP_LOD1, false, false);
-    this.pineCrown1 = this.createPairedFollower(this.pineTrunk1, pine.crownLod1, pineLeafMat, CAP_LOD1);
-    this.pineTrunk2 = this.createInstanced(pine.trunkLod2, pineBarkFarMat, CAP_LOD2, false, false);
-    this.pineCrown2 = this.createPairedFollower(this.pineTrunk2, pine.crownLod2, pineLeafMat, CAP_LOD2);
+    this.pineTrunk0 = this.createInstanced(pine.trunkLod0, pineBark0Mat, CAP_LOD0, shadows, true);
+    this.pineCrown0 = this.createPairedFollower(this.pineTrunk0, pine.crownLod0, pineLeaf0Mat, CAP_LOD0);
+    this.pineTrunk1 = this.createInstanced(pine.trunkLod1, pineBark1Mat, CAP_LOD1, false, false);
+    this.pineCrown1 = this.createPairedFollower(this.pineTrunk1, pine.crownLod1, pineLeaf1Mat, CAP_LOD1);
+    this.pineTrunk2 = this.createInstanced(pine.trunkLod2, pineBark2Mat, CAP_LOD2, false, false);
+    this.pineCrown2 = this.createPairedFollower(this.pineTrunk2, pine.crownLod2, pineLeaf2Mat, CAP_LOD2);
 
     this.bogPineTrunk = this.createInstanced(bogPine.trunk, bogPineBarkMat, CAP_BOG_PINE, shadows, true);
     this.bogPineCrown = this.createPairedFollower(this.bogPineTrunk, bogPine.crown, bogPineLeafMat, CAP_BOG_PINE);
 
-    this.spruceTrunk0 = this.createInstanced(spruce.trunkLod0, spruceBarkMat, CAP_LOD0, shadows, true);
-    this.spruceCrown0 = this.createPairedFollower(this.spruceTrunk0, spruce.crownLod0, spruceLeafMat, CAP_LOD0);
-    this.spruceTrunk1 = this.createInstanced(spruce.trunkLod1, spruceBarkFarMat, CAP_LOD1, false, false);
-    this.spruceCrown1 = this.createPairedFollower(this.spruceTrunk1, spruce.crownLod1, spruceLeafMat, CAP_LOD1);
-    this.spruceTrunk2 = this.createInstanced(spruce.trunkLod2, spruceBarkFarMat, CAP_LOD2, false, false);
-    this.spruceCrown2 = this.createPairedFollower(this.spruceTrunk2, spruce.crownLod2, spruceLeafMat, CAP_LOD2);
+    this.spruceTrunk0 = this.createInstanced(spruce.trunkLod0, spruceBark0Mat, CAP_LOD0, shadows, true);
+    this.spruceCrown0 = this.createPairedFollower(this.spruceTrunk0, spruce.crownLod0, spruceLeaf0Mat, CAP_LOD0);
+    this.spruceTrunk1 = this.createInstanced(spruce.trunkLod1, spruceBark1Mat, CAP_LOD1, false, false);
+    this.spruceCrown1 = this.createPairedFollower(this.spruceTrunk1, spruce.crownLod1, spruceLeaf1Mat, CAP_LOD1);
+    this.spruceTrunk2 = this.createInstanced(spruce.trunkLod2, spruceBark2Mat, CAP_LOD2, false, false);
+    this.spruceCrown2 = this.createPairedFollower(this.spruceTrunk2, spruce.crownLod2, spruceLeaf2Mat, CAP_LOD2);
 
     this.saplingMesh = this.createInstanced(saplingGeo, saplingMat, CAP_SAPLING, false, false);
     const deadfallMat = new THREE.MeshStandardMaterial({
@@ -2230,6 +2641,7 @@ export class WorldVegetationSystem {
       metalness: 0.0,
       envMapIntensity: 0.3,
     });
+    addDistanceFade(deadfallMat, this.bushFadeUniforms);
     this.deadfallMesh = this.createInstanced(deadfallGeo, deadfallMat, CAP_DEADFALL, false, true);
 
     // Solid Woodland Bushes (hazel leaves share hazel stem GPU buffers!)
@@ -2241,19 +2653,41 @@ export class WorldVegetationSystem {
     const bladeGeo = buildGrassTuftGeo();
     const bladeMat = new THREE.MeshLambertMaterial({
       map: textures.grassClumpCard,
-      alphaTest: 0.42,
+      alphaTest: 0.39,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
     addWindSway(bladeMat, windUniforms, {
       bendStart: 0.02,
-      bendSpan: 0.42,
-      bendAmp: 0.14,
-      leafAmp: 0.045,
+      bendSpan: 0.48,
+      bendAmp: 0.16,
+      leafAmp: 0.05,
       leafFreq: 5.0,
       sssStrength: 0.44,
+      fade: this.grassFadeUniforms,
+      heightFadeScale: 0.34,
     });
     this.grassBladeMesh = this.createInstanced(bladeGeo, bladeMat, this.grassCap, false, false, false);
+
+    // Randomized Taller Undergrowth Layer (tall wild grasses, feathery plumes, woodland herbs & sedges)
+    const tallGeo = buildTallUndergrowthGeo();
+    const tallMat = new THREE.MeshLambertMaterial({
+      map: textures.tallUndergrowthCard,
+      alphaTest: 0.40,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(tallMat, windUniforms, {
+      bendStart: 0.06,
+      bendSpan: 1.05,
+      bendAmp: 0.24,
+      leafAmp: 0.065,
+      leafFreq: 4.3,
+      sssStrength: 0.46,
+      fade: this.tallGrassFadeUniforms,
+      heightFadeScale: 0.36,
+    });
+    this.tallUndergrowthMesh = this.createInstanced(tallGeo, tallMat, this.tallCap, false, false, false);
 
     const fernGeo = buildPhotoFernRosetteGeo();
     const fernMat = new THREE.MeshLambertMaterial({
@@ -2269,6 +2703,7 @@ export class WorldVegetationSystem {
       leafAmp: 0.035,
       leafFreq: 3.9,
       sssStrength: 0.52,
+      fade: this.underFadeUniforms,
     });
     this.fernMesh = this.createInstanced(fernGeo, fernMat, CAP_FERN, false, false);
 
@@ -2284,6 +2719,7 @@ export class WorldVegetationSystem {
       leafAmp: 0.025,
       leafFreq: 4.2,
       sssStrength: 0.36,
+      fade: this.underFadeUniforms,
     });
     this.shrubMesh = this.createInstanced(shrubGeo, shrubMat, CAP_SHRUB, false, false);
 
@@ -2297,6 +2733,7 @@ export class WorldVegetationSystem {
       envMapIntensity: 0.35,
       vertexColors: true,
     });
+    addDistanceFade(mossMat, this.underFadeUniforms);
     this.mossHummockMesh = this.createInstanced(mossGeo, mossMat, CAP_MOSS, false, true);
 
     const reedGeo = buildOpaqueReedClumpGeo();
@@ -2311,6 +2748,7 @@ export class WorldVegetationSystem {
       leafAmp: 0.05,
       leafFreq: 4.1,
       sssStrength: 0.4,
+      fade: this.bogFadeUniforms,
     });
     this.reedMesh = this.createInstanced(reedGeo, reedMat, CAP_REED, false, false);
 
@@ -2324,6 +2762,7 @@ export class WorldVegetationSystem {
       metalness: 0.02,
       envMapIntensity: 0.4,
     });
+    addDistanceFade(boulderMat, this.boulderFadeUniforms);
     this.boulderMesh = this.createInstanced(boulderGeo, boulderMat, CAP_BOULDER, shadows, true);
   }
 
@@ -2346,98 +2785,174 @@ export class WorldVegetationSystem {
       return Math.hypot(tileCx - area.x, tileCz - area.z) <= reach;
     });
 
-    const cellsPerSide = Math.ceil(GRASS_TILE_SIZE / GRASS_BLADE_SPACING);
-    const maxTileBlades = cellsPerSide * cellsPerSide;
-    const tmpMat = new Float32Array(maxTileBlades * 16);
-    const tmpCol = new Float32Array(maxTileBlades * 3);
     const randSeed = getActiveBlueprint().seed | 0;
-    const baseIx = tx * cellsPerSide;
-    const baseIz = tz * cellsPerSide;
+    const grassSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, GRASS_TILE_SAMPLES, 13);
+    const tallSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, TALL_TILE_SAMPLES, 97);
 
-    let count = 0;
+    const rawMat = new Float32Array(grassSamples.length * 16);
+    const rawCol = new Float32Array(grassSamples.length * 3);
+    let grassCount = 0;
     let minY = Infinity;
     let maxY = -Infinity;
-    for (let gz = 0; gz < cellsPerSide; gz++) {
-      const bz = minZ + (gz + 0.5) * GRASS_BLADE_SPACING;
-      if (bz >= maxZ || bz < minWorld || bz > maxWorld) continue;
-      const iz = baseIz + gz;
-      for (let gx = 0; gx < cellsPerSide; gx++) {
-        const bx = minX + (gx + 0.5) * GRASS_BLADE_SPACING;
-        if (bx >= maxX || bx < minWorld || bx > maxWorld) continue;
-        const ix = baseIx + gx;
 
-        let h = Math.imul(ix, 374761393) ^ Math.imul(iz, 668265263) ^ randSeed;
-        h = Math.imul(h ^ (h >>> 13), 1274126177);
-        const r1 = ((h >>> 0) % 1000) / 1000;
-        const r2 = (((h >>> 10) >>> 0) % 1000) / 1000;
-        const r3 = (((h >>> 20) >>> 0) % 1000) / 1000;
+    for (let i = 0; i < grassSamples.length; i++) {
+      const s = grassSamples[i];
+      const px = minX + s.lx;
+      const pz = minZ + s.lz;
+      if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
+      if (localBuildings.some(area => containsFootprint(area, px, pz, 1.2))) continue;
 
-        const px = bx + (r1 - 0.5) * GRASS_BLADE_SPACING * 0.92;
-        const pz = bz + (r2 - 0.5) * GRASS_BLADE_SPACING * 0.92;
+      const roadInfo = distToRoadDetail(px, pz);
+      const vergeJitter = smoothNoise(px * 0.42, pz * 0.42) * 2 - 1;
+      const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4, false);
+      if (!verge.keep) continue;
 
-        const roadInfo = distToRoadDetail(px, pz);
-        if (roadInfo.dist < (roadInfo.isTrail ? 1.55 : 2.35)) continue;
+      const py = getTerrainHeight(px, pz);
+      if (py < SWAMP_WATER_Y + 0.12) continue;
 
-        if (localBuildings.some(area => containsFootprint(area, px, pz, 1.2))) continue;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
 
-        const py = getTerrainHeight(px, pz);
-        if (py < SWAMP_WATER_Y + 0.12) continue;
+      const isl = getNearestSwampIsland(px, pz);
+      const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
+      const nearVillage = getDistanceToNearestVillage(px, pz);
+      const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
+      const openness = computeOpennessFactor(
+        nearVillage.dist,
+        nearVillage.village?.clearingRadius ?? 0,
+        roadInfo.dist,
+        roadInfo.isTrail,
+        swamp,
+        isl.islandMask,
+        gladeNoise
+      );
+      const patchNoise = smoothNoise(px * 0.11, pz * 0.11);
+      const { sxz, sy } = computeGrassClumpScale(
+        swamp,
+        patchNoise,
+        s.r1,
+        s.r2,
+        s.r3,
+        verge.heightScale,
+        openness
+      );
 
-        if (py < minY) minY = py;
-        if (py > maxY) maxY = py;
+      _bakeDummy.position.set(px, py - 0.03, pz);
+      _bakeDummy.rotation.set((s.r4 - 0.5) * 0.24, s.r1 * Math.PI * 2, (s.r2 - 0.5) * 0.24);
+      _bakeDummy.scale.set(sxz, sy, sxz);
+      _bakeDummy.updateMatrix();
+      _bakeDummy.matrix.toArray(rawMat, grassCount * 16);
 
-        const isl = getNearestSwampIsland(px, pz);
-        const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
-        const sy = swamp > 0.35 ? 0.65 + r3 * 0.68 : 0.68 + r3 * 0.78;
-        const sxz = 0.88 + r2 * 0.48;
-        const rotY = r1 * Math.PI * 2;
-        const cosY = Math.cos(rotY);
-        const sinY = Math.sin(rotY);
-
-        const mOff = count * 16;
-        tmpMat[mOff] = cosY * sxz;
-        tmpMat[mOff + 1] = 0;
-        tmpMat[mOff + 2] = -sinY * sxz;
-        tmpMat[mOff + 3] = 0;
-        tmpMat[mOff + 4] = 0;
-        tmpMat[mOff + 5] = sy;
-        tmpMat[mOff + 6] = 0;
-        tmpMat[mOff + 7] = 0;
-        tmpMat[mOff + 8] = sinY * sxz;
-        tmpMat[mOff + 9] = 0;
-        tmpMat[mOff + 10] = cosY * sxz;
-        tmpMat[mOff + 11] = 0;
-        tmpMat[mOff + 12] = px;
-        tmpMat[mOff + 13] = py - 0.03;
-        tmpMat[mOff + 14] = pz;
-        tmpMat[mOff + 15] = 1;
-
-        const cOff = count * 3;
-        const tone = 0.78 + r2 * 0.3;
-        if (swamp > 0.35) {
-          tmpCol[cOff] = tone * 1.04;
-          tmpCol[cOff + 1] = tone * 0.88;
-          tmpCol[cOff + 2] = tone * 0.52;
-        } else {
-          tmpCol[cOff] = tone * (0.82 + r1 * 0.16);
-          tmpCol[cOff + 1] = tone * (0.94 + r3 * 0.14);
-          tmpCol[cOff + 2] = tone * 0.64;
-        }
-        count++;
+      const cOff = grassCount * 3;
+      const tone = 0.74 + s.r2 * 0.34;
+      if (swamp > 0.35) {
+        rawCol[cOff] = tone * (0.98 + s.r4 * 0.12);
+        rawCol[cOff + 1] = tone * (0.84 + s.r3 * 0.1);
+        rawCol[cOff + 2] = tone * 0.50;
+      } else {
+        rawCol[cOff] = tone * (0.78 + s.r1 * 0.2);
+        rawCol[cOff + 1] = tone * (0.9 + s.r3 * 0.18);
+        rawCol[cOff + 2] = tone * (0.58 + s.r4 * 0.12);
       }
+      grassCount++;
     }
 
-    if (count === 0) return EMPTY_GRASS_TILE;
-    const cy = (minY + maxY) * 0.5 + 0.35;
-    const halfY = (maxY - minY) * 0.5 + 0.8;
-    const halfXZ = GRASS_TILE_SIZE * 0.5 + 0.6;
+    const rawTallMat = new Float32Array(tallSamples.length * 16);
+    const rawTallCol = new Float32Array(tallSamples.length * 3);
+    let tallCount = 0;
+
+    for (let i = 0; i < tallSamples.length; i++) {
+      const s = tallSamples[i];
+      const px = minX + s.lx;
+      const pz = minZ + s.lz;
+      if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
+      if (localBuildings.some(area => containsFootprint(area, px, pz, 1.35))) continue;
+
+      const roadInfo = distToRoadDetail(px, pz);
+      const vergeJitter = smoothNoise(px * 0.38, pz * 0.38) * 2 - 1;
+      const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4, true);
+      if (!verge.keep) continue;
+
+      const py = getTerrainHeight(px, pz);
+      if (py < SWAMP_WATER_Y + 0.16) continue;
+
+      const isl = getNearestSwampIsland(px, pz);
+      const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
+      if (swamp > 0.42) continue;
+
+      const nearVillage = getDistanceToNearestVillage(px, pz);
+      const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
+      const openness = computeOpennessFactor(
+        nearVillage.dist,
+        nearVillage.village?.clearingRadius ?? 0,
+        roadInfo.dist,
+        roadInfo.isTrail,
+        swamp,
+        isl.islandMask,
+        gladeNoise
+      );
+
+      // Natural organic drift clustering in open areas, thinned to scattered wild long tufts in forest
+      const driftNoise =
+        smoothNoise(px * 0.095 + 7.2, pz * 0.095 - 4.1) * 0.62 +
+        smoothNoise(px * 0.25 - 2.5, pz * 0.25 + 9.4) * 0.38;
+      if (!shouldKeepTallUndergrowth(openness, driftNoise, s.r1, s.r4)) continue;
+      if (roadInfo.dist < 4.6 && s.r2 > 0.48) continue;
+
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+
+      const { sxz, sy } = computeTallUndergrowthScale(
+        driftNoise,
+        s.r1,
+        s.r2,
+        s.r3,
+        verge.heightScale,
+        openness
+      );
+      _bakeDummy.position.set(px, py - 0.035, pz);
+      _bakeDummy.rotation.set((s.r4 - 0.5) * 0.22, s.r2 * Math.PI * 2, (s.r3 - 0.5) * 0.22);
+      _bakeDummy.scale.set(sxz, sy, sxz);
+      _bakeDummy.updateMatrix();
+      _bakeDummy.matrix.toArray(rawTallMat, tallCount * 16);
+
+      const cOff = tallCount * 3;
+      const tone = 0.76 + s.r3 * 0.32;
+      const goldenShift = s.r4 > 0.72 ? 0.12 : 0;
+      rawTallCol[cOff] = tone * (0.82 + s.r1 * 0.16 + goldenShift);
+      rawTallCol[cOff + 1] = tone * (0.92 + s.r2 * 0.14);
+      rawTallCol[cOff + 2] = tone * (0.56 + s.r4 * 0.1);
+      tallCount++;
+    }
+
+    if (grassCount === 0 && tallCount === 0) return EMPTY_GRASS_TILE;
+
+    const shuffleSeed = (tx * 73856093) ^ (tz * 19349663) ^ randSeed;
+    const packShuffled = (matSrc: Float32Array, colSrc: Float32Array, count: number, seedOffset: number): BakedSlab => {
+      if (count === 0) return EMPTY_SLAB;
+      const order = buildDeterministicShuffle(count, shuffleSeed + seedOffset);
+      const matrices = new Float32Array(count * 16);
+      const colors = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        const srcIdx = order[i];
+        const sM = srcIdx * 16;
+        const dM = i * 16;
+        for (let k = 0; k < 16; k++) matrices[dM + k] = matSrc[sM + k];
+        const sC = srcIdx * 3;
+        const dC = i * 3;
+        colors[dC] = colSrc[sC];
+        colors[dC + 1] = colSrc[sC + 1];
+        colors[dC + 2] = colSrc[sC + 2];
+      }
+      return { count, matrices, colors, bounds: new Float32Array(0) };
+    };
+
+    const cy = (minY + maxY) * 0.5 + 0.45;
+    const halfY = (maxY - minY) * 0.5 + 1.25;
+    const halfXZ = GRASS_TILE_SIZE * 0.5 + 0.8;
     return {
-      slab: {
-        count,
-        matrices: tmpMat.slice(0, count * 16),
-        colors: tmpCol.slice(0, count * 3),
-        bounds: new Float32Array(0),
-      },
+      slab: packShuffled(rawMat, rawCol, grassCount, 1),
+      tallSlab: packShuffled(rawTallMat, rawTallCol, tallCount, 2),
       cx: tileCx,
       cy,
       cz: tileCz,
@@ -2451,16 +2966,31 @@ export class WorldVegetationSystem {
     frustumPlanes?: Float32Array,
     camForward?: THREE.Vector3,
     bakeBudget = 2,
-    maxRenderDist = 225
+    maxRenderDist = 225,
+    qualityOpts?: VegetationQualityOptions
   ): void {
     const ptx = Math.floor(camX / GRASS_TILE_SIZE);
     const ptz = Math.floor(camZ / GRASS_TILE_SIZE);
-    const maxRing =
+    const fallbackRing: 1 | 2 =
       this.isLowPowerGpu && maxRenderDist < 115 ? 1 : GRASS_TILE_RADIUS;
+    const maxRing = qualityOpts?.grassMaxRing ?? fallbackRing;
+    const ring1Step = qualityOpts?.grassRing1Step ?? (this.isLowPowerGpu ? 2 : 1);
+    const ring2Step = qualityOpts?.grassRing2Step ?? (this.isLowPowerGpu ? 3 : 2);
+    const ring3Step = qualityOpts?.grassRing3Step ?? 2;
+    const ring4Step = qualityOpts?.grassRing4Step ?? 2;
+    const grassEnd = Math.max(14, maxRing * GRASS_TILE_SIZE - 2);
+    this.grassFadeUniforms.end.value = grassEnd;
+    this.grassFadeUniforms.start.value = Math.max(6, grassEnd * 0.54);
+    const tallEnd = grassEnd + 10;
+    this.tallGrassFadeUniforms.end.value = tallEnd;
+    this.tallGrassFadeUniforms.start.value = Math.max(10, tallEnd * 0.56);
+    const grassQualitySig = `${maxRing}_${ring1Step}_${ring2Step}_${ring3Step}_${ring4Step}`;
+
     const tileMoved =
       ptx !== this.lastGrassTileX ||
       ptz !== this.lastGrassTileZ ||
-      maxRing !== this.lastGrassMaxRing;
+      maxRing !== this.lastGrassMaxRing ||
+      grassQualitySig !== this.lastGrassQualitySig;
 
     let rotChanged = false;
     if (camForward) {
@@ -2468,7 +2998,7 @@ export class WorldVegetationSystem {
       const fx = camForward.x / fl;
       const fz = camForward.z / fl;
       const dot = fx * this.lastGrassFwdX + fz * this.lastGrassFwdZ;
-      if (dot < 0.99) {
+      if (dot < 0.996) {
         rotChanged = true;
         this.lastGrassFwdX = fx;
         this.lastGrassFwdZ = fz;
@@ -2480,22 +3010,70 @@ export class WorldVegetationSystem {
     this.lastGrassTileX = ptx;
     this.lastGrassTileZ = ptz;
     this.lastGrassMaxRing = maxRing;
+    this.lastGrassQualitySig = grassQualitySig;
 
     let bakedThisCall = 0;
     let missingTiles = 0;
     const matArr = this.grassBladeMesh.instanceMatrix.array as Float32Array;
     const colArr = this.grassBladeMesh.instanceColor!.array as Float32Array;
+    const tallMatArr = this.tallUndergrowthMesh.instanceMatrix.array as Float32Array;
+    const tallColArr = this.tallUndergrowthMesh.instanceColor!.array as Float32Array;
     const grassCap = this.grassCap;
-    const lowPower = this.isLowPowerGpu;
+    const tallCap = this.tallCap;
     const sortBuf = this.grassRingSortBuf;
     let count = 0;
+    let tallCount = 0;
+
+    const appendShuffledSlab = (
+      slab: BakedSlab,
+      dstMat: Float32Array,
+      dstCol: Float32Array,
+      curCount: number,
+      cap: number,
+      ring: number,
+      step: number
+    ): number => {
+      if (slab.count === 0) return curCount;
+      const avail = cap - curCount;
+      if (avail <= 0) return curCount;
+
+      // Ring 0 (0-16m): full shuffled density, culling only clumps >2.2m behind camera
+      if (ring === 0 && camForward) {
+        const fx = camForward.x;
+        const fz = camForward.z;
+        const srcM = slab.matrices;
+        const srcC = slab.colors;
+        let outCount = curCount;
+        for (let i = 0; i < slab.count && outCount < cap; i++) {
+          const mOff = i * 16;
+          const gx = srcM[mOff + 12] - camX;
+          const gz = srcM[mOff + 14] - camZ;
+          if (gx * fx + gz * fz < -1.8 && gx * gx + gz * gz > 4.84) continue;
+          const dstM = outCount * 16;
+          for (let k = 0; k < 16; k++) dstMat[dstM + k] = srcM[mOff + k];
+          const cOff = i * 3;
+          const dstC = outCount * 3;
+          dstCol[dstC] = srcC[cOff];
+          dstCol[dstC + 1] = srcC[cOff + 1];
+          dstCol[dstC + 2] = srcC[cOff + 2];
+          outCount++;
+        }
+        return outCount;
+      }
+
+      // Pre-shuffled slab: taking floor(count / step) contiguous entries yields 100% stripe-free 2D random thinning!
+      const desired = step > 1 ? Math.max(1, Math.floor(slab.count / step)) : slab.count;
+      const take = desired <= avail ? desired : avail;
+      dstMat.set(take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16), curCount * 16);
+      dstCol.set(take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3), curCount * 3);
+      return curCount + take;
+    };
 
     for (let ring = 0; ring <= maxRing; ring++) {
       sortBuf.length = 0;
       for (let dz = -ring; dz <= ring; dz++) {
         for (let dx = -ring; dx <= ring; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
-          if (Math.abs(dx) === GRASS_TILE_RADIUS && Math.abs(dz) === GRASS_TILE_RADIUS) continue;
           const tx = ptx + dx;
           const tz = ptz + dz;
           const tileCx = (tx + 0.5) * GRASS_TILE_SIZE;
@@ -2508,17 +3086,28 @@ export class WorldVegetationSystem {
         sortBuf.sort((a, b) => a.dSq - b.dSq);
       }
 
+      const ringStep =
+        ring === 0
+          ? 1
+          : ring === 1
+            ? ring1Step
+            : ring === 2
+              ? ring2Step
+              : ring === 3
+                ? ring3Step
+                : ring4Step;
+
       for (let s = 0; s < sortBuf.length; s++) {
         const tx = sortBuf[s].tx;
         const tz = sortBuf[s].tz;
         const tileCx = (tx + 0.5) * GRASS_TILE_SIZE;
         const tileCz = (tz + 0.5) * GRASS_TILE_SIZE;
 
-        // Custom Frustum Culling on outer grass tiles (tighter 1.4m margin eliminates wasted side/rear tiles)
+        // Custom Frustum Culling on outer grass tiles with generous peripheral padding
         if (ring > 0 && frustumPlanes) {
           const cached = this.grassTileCache.get(`${tx}_${tz}`);
-          const cy = cached ? cached.cy : getTerrainHeight(tileCx, tileCz) + 0.4;
-          const r = (cached ? cached.r : 11.4) + 1.4;
+          const cy = cached ? cached.cy : getTerrainHeight(tileCx, tileCz) + 0.5;
+          const r = (cached ? cached.r : 11.8) + 3.4;
           if (!sphereIntersectsFrustum(frustumPlanes, tileCx, cy, tileCz, r)) {
             continue;
           }
@@ -2542,75 +3131,16 @@ export class WorldVegetationSystem {
           continue;
         }
 
-        const slab = tile.slab;
-        if (slab.count === 0) continue;
-        const avail = grassCap - count;
-        if (avail <= 0) continue;
-
-        // Ring 0 (underfoot 0-16m): 100% lush density, culling behind-camera clumps >2.2m behind player
-        if (ring === 0 && camForward) {
-          const fx = camForward.x;
-          const fz = camForward.z;
-          const srcM = slab.matrices;
-          const srcC = slab.colors;
-          for (let i = 0; i < slab.count && count < grassCap; i++) {
-            const mOff = i * 16;
-            const gx = srcM[mOff + 12] - camX;
-            const gz = srcM[mOff + 14] - camZ;
-            if (gx * fx + gz * fz < -1.8 && gx * gx + gz * gz > 4.84) continue;
-            const dstM = count * 16;
-            for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
-            const cOff = i * 3;
-            const dstC = count * 3;
-            colArr[dstC] = srcC[cOff];
-            colArr[dstC + 1] = srcC[cOff + 1];
-            colArr[dstC + 2] = srcC[cOff + 2];
-            count++;
-          }
-        } else if (ring === 1 && lowPower) {
-          // Integrated GPU midground ring (16-24m): keep 2/3 density to cut alpha-tested overdraw without bald patches
-          const srcM = slab.matrices;
-          const srcC = slab.colors;
-          for (let i = 0; i < slab.count && count < grassCap; i++) {
-            if (i % 3 === 2) continue;
-            const mOff = i * 16;
-            const dstM = count * 16;
-            for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
-            const cOff = i * 3;
-            const dstC = count * 3;
-            colArr[dstC] = srcC[cOff];
-            colArr[dstC + 1] = srcC[cOff + 1];
-            colArr[dstC + 2] = srcC[cOff + 2];
-            count++;
-          }
-        } else if (ring >= 2) {
-          // Outer ring (24-40m): LOD thinning merges seamlessly into photographic meadow ground with far less overdraw
-          const step = lowPower ? 3 : 2;
-          const srcM = slab.matrices;
-          const srcC = slab.colors;
-          for (let i = 0; i < slab.count && count < grassCap; i += step) {
-            const mOff = i * 16;
-            const dstM = count * 16;
-            for (let k = 0; k < 16; k++) matArr[dstM + k] = srcM[mOff + k];
-            const cOff = i * 3;
-            const dstC = count * 3;
-            colArr[dstC] = srcC[cOff];
-            colArr[dstC + 1] = srcC[cOff + 1];
-            colArr[dstC + 2] = srcC[cOff + 2];
-            count++;
-          }
-        } else {
-          const take = slab.count <= avail ? slab.count : avail;
-          matArr.set(
-            take === slab.count ? slab.matrices : slab.matrices.subarray(0, take * 16),
-            count * 16
-          );
-          colArr.set(
-            take === slab.count ? slab.colors : slab.colors.subarray(0, take * 3),
-            count * 3
-          );
-          count += take;
-        }
+        count = appendShuffledSlab(tile.slab, matArr, colArr, count, grassCap, ring, ringStep);
+        tallCount = appendShuffledSlab(
+          tile.tallSlab,
+          tallMatArr,
+          tallColArr,
+          tallCount,
+          tallCap,
+          ring,
+          ringStep
+        );
       }
     }
 
@@ -2618,6 +3148,8 @@ export class WorldVegetationSystem {
     this.diagGrassRebuilds++;
     this.grassBladeMesh.count = count;
     commitCompactedInstancedMesh(this.grassBladeMesh);
+    this.tallUndergrowthMesh.count = tallCount;
+    commitCompactedInstancedMesh(this.tallUndergrowthMesh);
   }
 
   /**
@@ -2653,7 +3185,7 @@ export class WorldVegetationSystem {
     primary: THREE.InstancedMesh,
     maxCap: number,
     frustumPlanes: Float32Array,
-    margin = 2.8
+    margin = 6.5
   ): number {
     const n = slab.count;
     if (n === 0) return 0;
@@ -2750,6 +3282,7 @@ export class WorldVegetationSystem {
       apply(this.pairedFollowers[i].follower);
     }
     apply(this.grassBladeMesh);
+    apply(this.tallUndergrowthMesh);
   }
 
   prewarmAround(x: number, z: number): void {
@@ -2777,24 +3310,64 @@ export class WorldVegetationSystem {
     sunColor?: THREE.Color,
     frustumPlanes?: Float32Array,
     camForward?: THREE.Vector3,
-    maxRenderDist = 225
+    maxRenderDist = 225,
+    qualityOpts?: VegetationQualityOptions
   ): void {
     this.windTimeUniform.value = elapsedTime;
     this.windStrengthUniform.value = windStrength;
     if (sunDir) this.sunDirUniform.value.copy(sunDir);
     if (sunColor) this.sunColorUniform.value.copy(sunColor);
 
-    this.updateGrassCarpet(camPos.x, camPos.z, frustumPlanes, camForward, 2, maxRenderDist);
+    void chunkLods;
+    const grassBudget = (qualityOpts?.grassMaxRing ?? 2) >= 3 ? 10 : 5;
+    this.updateGrassCarpet(camPos.x, camPos.z, frustumPlanes, camForward, grassBudget, maxRenderDist, qualityOpts);
 
-    const fogDist = Math.max(96, Math.min(225, maxRenderDist));
-    const fogChunkCutoffSq = (fogDist + 32) * (fogDist + 32);
+    const fogDist = Math.max(72, Math.min(264, maxRenderDist));
+    const fogChunkCutoffSq = (fogDist + 36) * (fogDist + 36);
 
-    // Build chunk visibility signature (rejects fog-culled and off-frustum chunks)
+    const lod0Dist = qualityOpts?.lod0Dist ?? (this.isLowPowerGpu ? 28 : 36);
+    const lod1Dist = qualityOpts?.lod1Dist ?? (this.isLowPowerGpu ? 74 : 92);
+    const bushDist = Math.min(qualityOpts?.bushDist ?? 124, fogDist);
+    const understoryDist = Math.min(qualityOpts?.understoryDist ?? 86, fogDist);
+    const boulderDist = Math.min(qualityOpts?.boulderDist ?? 146, fogDist);
+    const bogDist = Math.min(qualityOpts?.bogDist ?? 150, fogDist);
+
+    const bands = computeTreeLodFadeBands(lod0Dist, lod1Dist, fogDist);
+    this.lod0InFadeUniforms.start.value = bands.lod0InStart;
+    this.lod0InFadeUniforms.end.value = bands.lod0InEnd;
+    this.lod0OutFadeUniforms.start.value = bands.lod0OutStart;
+    this.lod0OutFadeUniforms.end.value = bands.lod0OutEnd;
+    this.lod1InFadeUniforms.start.value = bands.lod1InStart;
+    this.lod1InFadeUniforms.end.value = bands.lod1InEnd;
+    this.lod1OutFadeUniforms.start.value = bands.lod1OutStart;
+    this.lod1OutFadeUniforms.end.value = bands.lod1OutEnd;
+    this.treeFadeUniforms.start.value = bands.treeFadeStart;
+    this.treeFadeUniforms.end.value = bands.treeFadeEnd;
+
+    const treeFadeEnd = bands.treeFadeEnd;
+    const bogFadeEnd = Math.min(bogDist, treeFadeEnd);
+    this.bogFadeUniforms.end.value = bogFadeEnd;
+    this.bogFadeUniforms.start.value = Math.max(24, bogFadeEnd - 36);
+
+    const bushFadeEnd = Math.min(bushDist, treeFadeEnd);
+    this.bushFadeUniforms.end.value = bushFadeEnd;
+    this.bushFadeUniforms.start.value = Math.max(20, bushFadeEnd - 36);
+
+    const underFadeEnd = Math.min(understoryDist, treeFadeEnd);
+    this.underFadeUniforms.end.value = underFadeEnd;
+    this.underFadeUniforms.start.value = Math.max(16, underFadeEnd - 32);
+
+    const boulderFadeEnd = Math.min(boulderDist, treeFadeEnd);
+    this.boulderFadeUniforms.end.value = boulderFadeEnd;
+    this.boulderFadeUniforms.start.value = Math.max(22, boulderFadeEnd - 34);
+
+    const qualitySig = `${Math.round(lod0Dist)}_${Math.round(lod1Dist)}_${Math.round(bushDist)}_${Math.round(understoryDist)}_${Math.round(boulderDist)}_${Math.round(bogDist)}`;
+
+    // Build chunk slot signature using distance & world-bounds (independent of ground-only chunkLods culling!)
     let sig = '';
     for (let c = 0; c < CHUNK_COUNT; c++) {
-      const lod = chunkLods[c];
-      if (lod < 0 || chunkSpheres[c * 4 + 1] > 9000) continue;
       const sb = c * 4;
+      if (chunkSpheres[sb + 1] > 9000) continue;
       const dx = chunkSpheres[sb] - camPos.x;
       const dz = chunkSpheres[sb + 2] - camPos.z;
       const dSq = dx * dx + dz * dz;
@@ -2810,24 +3383,27 @@ export class WorldVegetationSystem {
       const fl = Math.hypot(camForward.x, camForward.z) || 1;
       fwdX = camForward.x / fl;
       fwdZ = camForward.z / fl;
-      // Re-cull whenever camera turns > ~4.5 degrees
-      rotDirty = fwdX * this.lastCullFwdX + fwdZ * this.lastCullFwdZ < 0.9968;
+      // Re-cull whenever camera turns > ~2.3 degrees to eliminate peripheral edge popping
+      rotDirty = fwdX * this.lastCullFwdX + fwdZ * this.lastCullFwdZ < 0.9992;
     }
     const moveSq =
       (camPos.x - this.lastCullCamX) * (camPos.x - this.lastCullCamX) +
       (camPos.z - this.lastCullCamZ) * (camPos.z - this.lastCullCamZ);
-    const fogDirty = Math.abs(fogDist - this.lastFogCullDist) > 6;
+    const fogDirty = Math.abs(fogDist - this.lastFogCullDist) > 4;
+    const qualityDirty = qualitySig !== this.lastQualitySig;
 
     if (
       !this.forceVisRebuild &&
       sig === this.lastVisibilitySig &&
-      moveSq < 1.2 &&
+      moveSq < 0.5 &&
       !rotDirty &&
-      !fogDirty
+      !fogDirty &&
+      !qualityDirty
     ) {
       if (stats) {
         stats.treesRendered = this.cachedTreesCount;
-        stats.foliageRendered = this.cachedFoliageCount + this.grassBladeMesh.count;
+        stats.foliageRendered =
+          this.cachedFoliageCount + this.grassBladeMesh.count + this.tallUndergrowthMesh.count;
         stats.culledInstances = this.cachedCulledCount;
         stats.candidateInstances = this.cachedCandidateCount;
       }
@@ -2841,43 +3417,49 @@ export class WorldVegetationSystem {
     this.lastCullFwdX = fwdX;
     this.lastCullFwdZ = fwdZ;
     this.lastFogCullDist = fogDist;
+    this.lastQualitySig = qualitySig;
     this.diagVisRebuilds++;
 
     for (let i = 0; i < this.primaryChunkMeshes.length; i++) {
       this.primaryChunkMeshes[i].count = 0;
     }
 
-    const lod0Dist = this.isLowPowerGpu ? 28 : 36;
-    const lod1Dist = this.isLowPowerGpu ? 74 : 92;
-    const lod0Sq = lod0Dist * lod0Dist;
-    const lod1Sq = lod1Dist * lod1Dist;
-    const fogCellSq = (fogDist + 16) * (fogDist + 16);
-    const bogDistSq = Math.min(108, fogDist) * Math.min(108, fogDist);
-    const bushDistSq = Math.min(80, fogDist) * Math.min(80, fogDist);
-    const underDistSq = 58 * 58;
-    const boulderDistSq = Math.min(115, fogDist) * Math.min(115, fogDist);
+    // Pad 24x24m sub-cell inclusion by +22m past LOD crossfade & fade bands so both LODs overlap smoothly without popping
+    const lod0MaxDist = bands.lod0OutEnd + 22;
+    const lod0MaxSq = lod0MaxDist * lod0MaxDist;
+    const lod1MinDist = Math.max(0, bands.lod0InStart - 22);
+    const lod1MinSq = lod1MinDist * lod1MinDist;
+    const lod1MaxDist = bands.lod1OutEnd + 22;
+    const lod1MaxSq = lod1MaxDist * lod1MaxDist;
+    const lod2MinDist = Math.max(0, bands.lod1InStart - 22);
+    const lod2MinSq = lod2MinDist * lod2MinDist;
+
+    const fogCellSq = (treeFadeEnd + 22) * (treeFadeEnd + 22);
+    const bogDistSq = (bogFadeEnd + 22) * (bogFadeEnd + 22);
+    const bushDistSq = (bushFadeEnd + 22) * (bushFadeEnd + 22);
+    const underDistSq = (underFadeEnd + 22) * (underFadeEnd + 22);
+    const boulderDistSq = (boulderFadeEnd + 22) * (boulderFadeEnd + 22);
 
     let candidateInstances = 0;
     let renderedInstances = 0;
 
     for (let c = 0; c < CHUNK_COUNT; c++) {
-      const lod = chunkLods[c];
-      if (lod < 0 || chunkSpheres[c * 4 + 1] > 9000) continue;
-
       const sb = c * 4;
+      if (chunkSpheres[sb + 1] > 9000) continue;
+
       const cdx = chunkSpheres[sb] - camPos.x;
       const cdz = chunkSpheres[sb + 2] - camPos.z;
       if (cdx * cdx + cdz * cdz > fogChunkCutoffSq) continue;
 
-      // Tier 1: Chunk-level frustum test (padded for tall crowns) so behind-camera chunks are never processed
+      // Tier 1: Chunk-level crown-padded frustum test (independent of terrain ground-only chunkLods culling!)
       if (
         frustumPlanes &&
         !sphereIntersectsFrustum(
           frustumPlanes,
           chunkSpheres[sb],
-          chunkSpheres[sb + 1] + 5.0,
+          chunkSpheres[sb + 1] + 6.5,
           chunkSpheres[sb + 2],
-          chunkSpheres[sb + 3] + 7.5
+          chunkSpheres[sb + 3] + 10.5
         )
       ) {
         continue;
@@ -2904,20 +3486,22 @@ export class WorldVegetationSystem {
             cell.cx,
             cell.cy,
             cell.cz,
-            cell.r + 3.0
+            cell.r + 6.5
           );
           if (cellStatus === FrustumCullStatus.OUTSIDE) continue;
         }
 
-        if (dSq < lod0Sq) {
+        if (dSq <= lod0MaxSq) {
           renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
-        } else if (dSq < lod1Sq) {
+        }
+        if (dSq >= lod1MinSq && dSq <= lod1MaxSq) {
           renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
-        } else {
+        }
+        if (dSq >= lod2MinSq) {
           renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
@@ -2982,7 +3566,8 @@ export class WorldVegetationSystem {
 
     if (stats) {
       stats.treesRendered = this.cachedTreesCount;
-      stats.foliageRendered = this.cachedFoliageCount + this.grassBladeMesh.count;
+      stats.foliageRendered =
+        this.cachedFoliageCount + this.grassBladeMesh.count + this.tallUndergrowthMesh.count;
       stats.culledInstances = this.cachedCulledCount;
       stats.candidateInstances = this.cachedCandidateCount;
     }
@@ -3136,7 +3721,7 @@ export class WorldVegetationSystem {
       chunkEvictions: this.diagChunkEvictions,
       visRebuilds: this.diagVisRebuilds,
       grassRebuilds: this.diagGrassRebuilds,
-      grassCount: this.grassBladeMesh.count,
+      grassCount: this.grassBladeMesh.count + this.tallUndergrowthMesh.count,
       colliderCells: this.colliderGrid.size,
     };
     this.diagChunkBakes = 0;

@@ -71,6 +71,8 @@ export class TerrainChunkManager {
 
   private readonly sunDayUniform = { value: 1.0 };
   private readonly timeUniform = { value: 0.0 };
+  private readonly terrainFadeStartUniform = { value: 196.0 };
+  private readonly terrainFadeEndUniform = { value: 236.0 };
 
   private centerVcx = 99999;
   private centerVcz = 99999;
@@ -108,12 +110,14 @@ export class TerrainChunkManager {
       metalness: 0.0,
       envMapIntensity: 0.36,
     });
-    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_v4';
+    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_v5';
     this.material.onBeforeCompile = (shader) => {
       shader.uniforms.uMeadowTex = { value: meadowTex };
       shader.uniforms.uRoadTex = { value: roadTex };
       shader.uniforms.uSunDay = this.sunDayUniform;
       shader.uniforms.uTime = this.timeUniform;
+      shader.uniforms.uTerrainFadeStart = this.terrainFadeStartUniform;
+      shader.uniforms.uTerrainFadeEnd = this.terrainFadeEndUniform;
 
       shader.vertexShader =
         `attribute vec4 aSplat;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
@@ -125,7 +129,7 @@ export class TerrainChunkManager {
         );
 
       shader.fragmentShader =
-        `uniform sampler2D uMeadowTex;\nuniform sampler2D uRoadTex;\nuniform float uSunDay;\nuniform float uTime;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
+        `uniform sampler2D uMeadowTex;\nuniform sampler2D uRoadTex;\nuniform float uSunDay;\nuniform float uTime;\nuniform float uTerrainFadeStart;\nuniform float uTerrainFadeEnd;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
         shader.fragmentShader
           .replace(
             '#include <color_fragment>',
@@ -192,6 +196,15 @@ export class TerrainChunkManager {
             `#include <roughnessmap_fragment>
             float wetGloss = 1.0 - smoothstep(${(SWAMP_WATER_Y - 0.04).toFixed(3)}, ${(SWAMP_WATER_Y + 0.34).toFixed(3)}, vTerrainWorldPos.y);
             roughnessFactor = mix(roughnessFactor, 0.54, wetGloss);`
+          )
+          .replace(
+            '#include <fog_fragment>',
+            `#include <fog_fragment>
+            #ifdef USE_FOG
+              float terrainEdgeDist = length(vTerrainWorldPos.xz - cameraPosition.xz);
+              float terrainHorizonFade = smoothstep(uTerrainFadeStart, max(uTerrainFadeStart + 1.0, uTerrainFadeEnd), terrainEdgeDist);
+              gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, terrainHorizonFade);
+            #endif`
           );
     };
 
@@ -373,7 +386,9 @@ export class TerrainChunkManager {
   update(
     camera: THREE.PerspectiveCamera,
     stats?: ChunkVisibilityStats,
-    maxRenderDist = 225
+    maxRenderDist = 225,
+    lod0Dist = 58,
+    lod1Dist = 118
   ): void {
     const { vcx, vcz } = worldToVirtualChunk(camera.position.x, camera.position.z);
     this.recenterWindow(vcx, vcz);
@@ -391,7 +406,10 @@ export class TerrainChunkManager {
       this.frustumPlanes[pb + 3] = pl.constant;
     }
 
-    const clampedMax = Math.max(96, Math.min(230, maxRenderDist));
+    const clampedMax = Math.max(72, Math.min(264, maxRenderDist));
+    const effectiveFadeMax = Math.min(clampedMax, 238);
+    this.terrainFadeEndUniform.value = effectiveFadeMax - 2;
+    this.terrainFadeStartUniform.value = Math.max(40, effectiveFadeMax - 38);
     const vis = this.compute.cullChunks(
       this.chunkSpheres,
       CHUNK_COUNT,
@@ -400,8 +418,8 @@ export class TerrainChunkManager {
       camera.position.y,
       camera.position.z,
       clampedMax * clampedMax,
-      58 * 58,
-      118 * 118,
+      lod0Dist * lod0Dist,
+      lod1Dist * lod1Dist,
       this.chunkLods
     );
 

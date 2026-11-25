@@ -169,7 +169,8 @@ export interface WorldPropsContext {
     skyState?: SkyFrameState,
     frustumPlanes?: Float32Array,
     maxRenderDist?: number,
-    weather?: string
+    weather?: string,
+    mushroomDist?: number
   ) => void;
   gatherMushroom: (entry: InteractiveEntry) => MushroomSpecies | null;
   collectPickupItem: (entry: InteractiveEntry) => ItemId | null;
@@ -3498,7 +3499,8 @@ export function buildArchitectureAndProps(
       skyState?: SkyFrameState,
       frustumPlanes?: Float32Array,
       maxRenderDist = 225,
-      weather?: string
+      weather?: string,
+      mushroomDist = 38
     ) => {
       for (let i = 0; i < campfires.length; i++) {
         const cf = campfires[i];
@@ -3595,7 +3597,10 @@ export function buildArchitectureAndProps(
         activeWinMat.emissiveIntensity = 0.02 + duskGlow * 1.65;
       }
 
-      const maxMushSq = 38 * 38;
+      const maxMushSq = mushroomDist * mushroomDist;
+      const mushFadeStart = Math.max(8, mushroomDist - 10);
+      const mushFadeStartSq = mushFadeStart * mushFadeStart;
+      const mushFadeSpan = Math.max(1, mushroomDist - mushFadeStart);
       const fogCapSq = (maxRenderDist + 16) * (maxRenderDist + 16);
       for (let i = 0; i < mushroomNodes.length; i++) {
         const m = mushroomNodes[i];
@@ -3605,16 +3610,26 @@ export function buildArchitectureAndProps(
         const dSq = dx * dx + dz * dz;
         if (dSq >= maxMushSq) {
           m.mesh.visible = false;
-        } else if (frustumPlanes && dSq > 25) {
-          m.mesh.visible = sphereIntersectsFrustum(
-            frustumPlanes,
-            m.x,
-            m.mesh.position.y + 0.25,
-            m.z,
-            1.2
-          );
         } else {
-          m.mesh.visible = true;
+          const isVis =
+            frustumPlanes && dSq > 25
+              ? sphereIntersectsFrustum(
+                  frustumPlanes,
+                  m.x,
+                  m.mesh.position.y + 0.25,
+                  m.z,
+                  1.2
+                )
+              : true;
+          m.mesh.visible = isVis;
+          if (isVis) {
+            if (dSq <= mushFadeStartSq) {
+              m.mesh.scale.setScalar(1.0);
+            } else {
+              const t = Math.min(1, Math.max(0, (mushroomDist - Math.sqrt(dSq)) / mushFadeSpan));
+              m.mesh.scale.setScalar(0.05 + 0.95 * t * t * (3 - 2 * t));
+            }
+          }
         }
       }
       for (let i = 0; i < structureNodes.length; i++) {

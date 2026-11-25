@@ -4,6 +4,8 @@ import {
   addMushroomToBasket,
   buildInteractionPrompt,
   canClearHeightCollider,
+  canRequestPointerLock,
+  clampMouseLookDelta,
   clampResolutionScale,
   computeAdaptiveDprSteps,
   computeScaledBackbuffer,
@@ -13,6 +15,8 @@ import {
   getWeatherWindProfile,
   MUSHROOM_SPECIES_INFO,
   MushroomSpecies,
+  POINTER_LOCK_REACQUIRE_COOLDOWN_MS,
+  safeRequestPointerLock,
   smoothFps,
 } from './gameLogic';
 import {
@@ -547,3 +551,54 @@ test('FpsDropLogger classifies GPU backpressure, thermal throttles, bog overlays
   assert.ok(snap.includes('"overlays":"rain"'));
 });
 
+test('safeRequestPointerLock respects exit cooldown, handles async rejections, and clampMouseLookDelta drops warp spikes', async () => {
+  assert.equal(canRequestPointerLock(1000, 0, false), true);
+  assert.equal(canRequestPointerLock(1000, 0, true), false);
+  assert.equal(canRequestPointerLock(2000, 1200, false), false);
+  assert.equal(
+    canRequestPointerLock(1200 + POINTER_LOCK_REACQUIRE_COOLDOWN_MS, 1200, false),
+    true
+  );
+
+  let calls = 0;
+  let rejectedCallbacks = 0;
+  const target = {
+    requestPointerLock: () => {
+      calls++;
+      return Promise.reject(
+        new DOMException(
+          'Pointer lock cannot be acquired immediately after the user has exited the lock.',
+          'SecurityError'
+        )
+      );
+    },
+  };
+
+  // Blocked inside cooldown before even touching browser API
+  assert.equal(safeRequestPointerLock(target, 2000, 1500, false), false);
+  assert.equal(calls, 0);
+
+  // Outside cooldown: catches async Promise rejection cleanly without unhandledRejection
+  assert.equal(
+    safeRequestPointerLock(target, 4000, 1500, false, () => {
+      rejectedCallbacks++;
+    }),
+    true
+  );
+  assert.equal(calls, 1);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(rejectedCallbacks, 1);
+
+  // Synchronous throw is also caught
+  const throwingTarget = {
+    requestPointerLock: () => {
+      throw new Error('Blocked');
+    },
+  };
+  assert.equal(safeRequestPointerLock(throwingTarget, 4000, 0, false), false);
+
+  // Mouse delta sanitization passes normal look deltas and suppresses warp spikes / NaNs
+  assert.deepEqual(clampMouseLookDelta(14, -9), { dx: 14, dy: -9 });
+  assert.deepEqual(clampMouseLookDelta(720, 450), { dx: 0, dy: 0 });
+  assert.deepEqual(clampMouseLookDelta(Number.NaN, 5), { dx: 0, dy: 0 });
+});

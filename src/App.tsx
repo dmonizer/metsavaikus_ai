@@ -13,6 +13,13 @@ import {
   RESOLUTION_SCALE_STEP,
 } from './game/gameLogic';
 import {
+  getQualityProfile,
+  parseQualityMode,
+  QualityMode,
+  QualityTier,
+  QualityTierName,
+} from './game/qualityGovernor';
+import {
   computeInventoryWeightKg,
   createDefaultPackingSelection,
   ItemId,
@@ -37,7 +44,7 @@ import { LanguageSwitcher } from './components/LanguageSwitcher';
 import { SoundscapeDiagnosticsOverlay } from './components/SoundscapeDiagnosticsOverlay';
 import { SOUNDSCAPE_SOUNDS } from './config/soundscape/sounds';
 import type { DiagnosticsSnapshot } from './soundscape/types';
-import { t as translate, useLanguage } from './i18n/i18n';
+import { t as translate, TranslationKey, useLanguage } from './i18n/i18n';
 
 function getInitialPhase(): GamePhase {
   if (typeof window !== 'undefined') {
@@ -60,6 +67,7 @@ function getInitialSeed(): number {
 }
 
 const RESOLUTION_STORAGE_KEY = 'metsavaikus_resolution_scale';
+const QUALITY_STORAGE_KEY = 'metsavaikus_quality_mode';
 
 function getInitialResolutionScale(): number | null {
   if (typeof window === 'undefined') return null;
@@ -72,6 +80,20 @@ function getInitialResolutionScale(): number | null {
     // Ignore storage access failures in restricted contexts
   }
   return null;
+}
+
+function getInitialQualityMode(): QualityMode {
+  if (typeof window === 'undefined') return 'auto';
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const paramQuality = params.get('quality');
+    if (paramQuality !== null) return parseQualityMode(paramQuality);
+    const saved = window.localStorage.getItem(QUALITY_STORAGE_KEY);
+    return parseQualityMode(saved);
+  } catch {
+    // Ignore storage access failures in restricted contexts
+  }
+  return 'auto';
 }
 
 export default function App() {
@@ -90,6 +112,23 @@ export default function App() {
   const [muted, setMuted] = useState<boolean>(false);
   const [worldKey, setWorldKey] = useState<number>(0);
   const [resolutionScale, setResolutionScale] = useState<number | null>(getInitialResolutionScale);
+  const [qualityMode, setQualityMode] = useState<QualityMode>(getInitialQualityMode);
+  const [activeQuality, setActiveQuality] = useState<{
+    mode: QualityMode;
+    tier: QualityTier;
+    tierName: QualityTierName;
+    maxRenderDist: number;
+  }>(() => {
+    const initialMode = getInitialQualityMode();
+    const initialTier: QualityTier = initialMode === 'auto' ? 2 : initialMode;
+    const profile = getQualityProfile(initialTier);
+    return {
+      mode: initialMode,
+      tier: initialTier,
+      tierName: profile.name,
+      maxRenderDist: profile.maxRenderDist,
+    };
+  });
   const [displayMetrics, setDisplayMetrics] = useState<{
     autoDpr: number;
     viewportW: number;
@@ -238,6 +277,9 @@ export default function App() {
       onDisplayMetrics: (info) => {
         setDisplayMetrics(info);
       },
+      onQualityChange: (info) => {
+        setActiveQuality(info);
+      },
       onSurvivalSnapshot: (nextSnap) => {
         setSnapshot(nextSnap);
       },
@@ -295,6 +337,21 @@ export default function App() {
     setResolutionScale(null);
     try {
       window.localStorage.removeItem(RESOLUTION_STORAGE_KEY);
+    } catch {
+      // Ignore storage write failures
+    }
+  }, []);
+
+  const handleQualityModeChange = useCallback((rawValue: string) => {
+    const nextMode = parseQualityMode(rawValue);
+    setQualityMode(nextMode);
+    actionsRef.current?.setQualityMode(nextMode);
+    try {
+      if (nextMode === 'auto') {
+        window.localStorage.setItem(QUALITY_STORAGE_KEY, 'auto');
+      } else {
+        window.localStorage.setItem(QUALITY_STORAGE_KEY, String(nextMode));
+      }
     } catch {
       // Ignore storage write failures
     }
@@ -507,6 +564,7 @@ export default function App() {
         worldSeed={worldSeed}
         phase={phase}
         resolutionScale={resolutionScale}
+        qualityMode={qualityMode}
         initialPacking={packingSelection}
         hudRefs={hudRefs}
         callbacks={callbacks}
@@ -1292,49 +1350,82 @@ export default function App() {
               {t('title.tagline')}
             </p>
 
-            {/* Render Resolution Configuration */}
-            <div className="mb-6 max-w-sm rounded-md bg-[#0c120e]/78 border border-white/12 px-4 py-3">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <label
-                  htmlFor="title-resolution-slider"
-                  className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#a5b9a4]"
-                >
-                  {t('title.renderResolution')}
-                </label>
-                <div className="flex items-center gap-2">
-                  <span
-                    data-testid="resolution-readout"
-                    className="font-mono tabular-nums text-xs text-[#e5efe3]"
+            {/* Render Resolution & Adaptive Detail Configuration */}
+            <div className="mb-6 max-w-sm space-y-3 rounded-md bg-[#0c120e]/78 border border-white/12 px-4 py-3">
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <label
+                    htmlFor="title-resolution-slider"
+                    className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#a5b9a4]"
                   >
-                    {resolutionSummary}
-                  </span>
-                  {resolutionScale !== null && (
-                    <button
-                      type="button"
-                      onClick={handleResolutionAutoReset}
-                      className="text-[11px] text-[#98c29b] hover:text-[#cce6ce] underline underline-offset-2 cursor-pointer"
+                    {t('title.renderResolution')}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span
+                      data-testid="resolution-readout"
+                      className="font-mono tabular-nums text-xs text-[#e5efe3]"
                     >
-                      {t('title.auto')}
-                    </button>
-                  )}
+                      {resolutionSummary}
+                    </span>
+                    {resolutionScale !== null && (
+                      <button
+                        type="button"
+                        onClick={handleResolutionAutoReset}
+                        className="text-[11px] text-[#98c29b] hover:text-[#cce6ce] underline underline-offset-2 cursor-pointer"
+                      >
+                        {t('title.auto')}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  id="title-resolution-slider"
+                  data-testid="resolution-slider"
+                  type="range"
+                  min={RESOLUTION_SCALE_MIN}
+                  max={RESOLUTION_SCALE_MAX}
+                  step={RESOLUTION_SCALE_STEP}
+                  value={effectiveResolutionScale}
+                  onChange={(e) => handleResolutionSliderChange(parseFloat(e.target.value))}
+                  aria-label={t('title.renderResolution')}
+                  className="w-full h-1.5 rounded-lg appearance-none bg-[#233328] accent-[#7fb382] cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b110d]"
+                />
+                <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono tabular-nums text-[#859984]">
+                  <span>{t('title.resFast')}</span>
+                  <span>{t('title.resNative')}</span>
+                  <span>{t('title.resSharp')}</span>
                 </div>
               </div>
-              <input
-                id="title-resolution-slider"
-                data-testid="resolution-slider"
-                type="range"
-                min={RESOLUTION_SCALE_MIN}
-                max={RESOLUTION_SCALE_MAX}
-                step={RESOLUTION_SCALE_STEP}
-                value={effectiveResolutionScale}
-                onChange={(e) => handleResolutionSliderChange(parseFloat(e.target.value))}
-                aria-label={t('title.renderResolution')}
-                className="w-full h-1.5 rounded-lg appearance-none bg-[#233328] accent-[#7fb382] cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b110d]"
-              />
-              <div className="mt-1.5 flex items-center justify-between text-[10px] font-mono tabular-nums text-[#859984]">
-                <span>{t('title.resFast')}</span>
-                <span>{t('title.resNative')}</span>
-                <span>{t('title.resSharp')}</span>
+
+              <div className="pt-2.5 border-t border-white/10">
+                <div className="flex items-center justify-between gap-2 mb-1.5">
+                  <label
+                    htmlFor="title-quality-select"
+                    className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#a5b9a4]"
+                  >
+                    {t('title.quality')}
+                  </label>
+                  <span
+                    data-testid="quality-readout"
+                    className="font-mono tabular-nums text-[11px] text-[#e5efe3]"
+                  >
+                    {t(`quality.${activeQuality.tierName}` as TranslationKey)}
+                  </span>
+                </div>
+                <select
+                  id="title-quality-select"
+                  data-testid="quality-select"
+                  value={qualityMode === 'auto' ? 'auto' : String(qualityMode)}
+                  onChange={(e) => handleQualityModeChange(e.target.value)}
+                  className="w-full rounded bg-[#141f18] border border-white/14 px-2.5 py-1.5 text-xs text-[#e8f0e4] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 cursor-pointer"
+                >
+                  <option value="auto">{t('quality.auto')}</option>
+                  <option value="0">{t('quality.minimal')}</option>
+                  <option value="1">{t('quality.low')}</option>
+                  <option value="2">{t('quality.balanced')}</option>
+                  <option value="3">{t('quality.high')}</option>
+                  <option value="4">{t('quality.ultra')}</option>
+                </select>
               </div>
             </div>
 
@@ -1420,6 +1511,37 @@ export default function App() {
                 aria-label={t('title.renderResolution')}
                 className="w-full h-1.5 rounded-lg appearance-none bg-[#233328] accent-[#7fb382] cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b110d]"
               />
+            </div>
+
+            <div className="mt-3 rounded-md bg-[#0b110d] border border-white/10 px-3.5 py-2.5">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label
+                  htmlFor="pause-quality-select"
+                  className="text-[11px] uppercase tracking-[0.12em] text-[#a5b9a4]"
+                >
+                  {t('pause.quality')}
+                </label>
+                <span
+                  data-testid="pause-quality-readout"
+                  className="font-mono tabular-nums text-[11px] text-[#e5efe3]"
+                >
+                  {t(`quality.${activeQuality.tierName}` as TranslationKey)}
+                </span>
+              </div>
+              <select
+                id="pause-quality-select"
+                data-testid="pause-quality-select"
+                value={qualityMode === 'auto' ? 'auto' : String(qualityMode)}
+                onChange={(e) => handleQualityModeChange(e.target.value)}
+                className="w-full rounded bg-[#141f18] border border-white/14 px-2.5 py-1.5 text-xs text-[#e8f0e4] focus:outline-none focus-visible:ring-1 focus-visible:ring-[#98c29b]/80 cursor-pointer"
+              >
+                <option value="auto">{t('quality.auto')}</option>
+                <option value="0">{t('quality.minimal')}</option>
+                <option value="1">{t('quality.low')}</option>
+                <option value="2">{t('quality.balanced')}</option>
+                <option value="3">{t('quality.high')}</option>
+                <option value="4">{t('quality.ultra')}</option>
+              </select>
             </div>
 
             <div className="mt-5 flex flex-col gap-2.5">

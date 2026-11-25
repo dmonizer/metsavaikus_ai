@@ -42,6 +42,7 @@ function createOutdoorEnvScene(): THREE.Scene {
 import {
   buildInteractionPrompt,
   canClearHeightCollider,
+  clampMouseLookDelta,
   clampResolutionScale,
   computeAdaptiveDprSteps,
   formatFpsLabel,
@@ -49,8 +50,19 @@ import {
   MUSHROOM_SPECIES_INFO,
   MushroomBasket,
   MushroomSpecies,
+  safeRequestPointerLock,
   smoothFps,
 } from '../game/gameLogic';
+import {
+  AdaptiveQualityGovernor,
+  createQualityDistanceState,
+  QualityMode,
+  QualityProfile,
+  QualityTier,
+  QualityTierName,
+  slewQualityDistanceState,
+  snapQualityDistanceState,
+} from '../game/qualityGovernor';
 import {
   addItemToInventory,
   CAMPFIRE_WOOD_COST,
@@ -107,6 +119,7 @@ import {
 } from '../world/architectureAndProps';
 import {
   DeadfallLogTarget,
+  VegetationQualityOptions,
   VegetationStats,
   WorldVegetationSystem,
 } from '../world/foliageFactory';
@@ -226,6 +239,12 @@ export interface WorldCallbacks {
   onPhaseChange: (phase: GamePhase) => void;
   onWorldReady: (info: { wasmActive: boolean; totalMushrooms: number }) => void;
   onDisplayMetrics?: (info: { autoDpr: number; viewportW: number; viewportH: number }) => void;
+  onQualityChange?: (info: {
+    mode: QualityMode;
+    tier: QualityTier;
+    tierName: QualityTierName;
+    maxRenderDist: number;
+  }) => void;
   onSurvivalSnapshot: (snap: WorldSurvivalSnapshot) => void;
   onOpenSleepModal: (spot: SleepSpotInfo) => void;
   onOpenCampfireModal: (campfire: CampfireInfo) => void;
@@ -244,6 +263,7 @@ export interface WorldActions {
   toggleFlashlight: () => void;
   toggleMute: () => boolean;
   setResolutionScale: (scale: number | null) => void;
+  setQualityMode: (mode: QualityMode) => void;
   setUiModalOpen: (open: boolean) => void;
   setDiagnosticsOpen: (open: boolean) => void;
   getSoundscapeDiagnostics: () => DiagnosticsSnapshot | null;
@@ -284,6 +304,7 @@ interface MetsavaikusWorldProps {
   worldSeed: number;
   phase: GamePhase;
   resolutionScale: number | null;
+  qualityMode: QualityMode;
   initialPacking: PackingSelection;
   hudRefs: WorldHudRefs;
   callbacks: WorldCallbacks;
@@ -331,6 +352,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
   worldSeed,
   phase,
   resolutionScale,
+  qualityMode,
   initialPacking,
   hudRefs,
   callbacks,
@@ -342,6 +364,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
   const resolutionScaleRef = useRef<number | null>(resolutionScale);
   resolutionScaleRef.current = resolutionScale;
+
+  const qualityModeRef = useRef<QualityMode>(qualityMode);
+  qualityModeRef.current = qualityMode;
 
   const initialPackingRef = useRef<PackingSelection>(initialPacking);
   initialPackingRef.current = initialPacking;
@@ -355,6 +380,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     }, 110);
     return () => window.clearTimeout(timer);
   }, [resolutionScale, actionsRef]);
+
+  useEffect(() => {
+    actionsRef.current?.setQualityMode(qualityMode);
+  }, [qualityMode, actionsRef]);
 
   useEffect(() => {
     const mountEl = mountRef.current;
@@ -446,7 +475,60 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     sound.attachSoundscapeEngine(soundscape.engine, soundscape.backend as WebAudioHybridBackend);
     loadSoundscapeSnapshotFromStorage(worldSeed, soundscape.engine);
 
+    const qualityGovernor = new AdaptiveQualityGovernor({
+      hardware: { isSoftwareGl, isLowPowerGpu, gpuRenderer },
+      initialMode: qualityModeRef.current,
+    });
+    const smoothedQuality = createQualityDistanceState(qualityGovernor.getProfile());
+    const vegQualityOpts: VegetationQualityOptions = {};
+
     const weatherSky = new WeatherAndSkySystem(scene, isSoftwareGl, currentDpr, isLowPowerGpu);
+    const computeAutoTopDpr = (profile: QualityProfile): number => {
+      if (isSoftwareGl) return 1;
+      const baseTop = dprSteps[0];
+      const nativeCap = Math.min(window.devicePixelRatio || 1, profile.dprBoostMax);
+      return Math.min(profile.dprBoostMax, Math.max(baseTop, nativeCap));
+    };
+
+    let refreshQualitySceneNow: ((profile: QualityProfile) => void) | null = null;
+    const applyQualityProfileToScene = (profile: QualityProfile, immediate = true) => {
+      if (weatherSky.setShadowExtent(profile.shadowExtent)) {
+        renderer.shadowMap.needsUpdate = true;
+      }
+      if (manualResolutionScale === null && dprStepIdx === 0 && !isSoftwareGl) {
+        const targetDpr = computeAutoTopDpr(profile);
+        if (Math.abs(targetDpr - currentDpr) > 0.02) {
+          currentDpr = targetDpr;
+          renderer.setPixelRatio(currentDpr);
+          weatherSky.setPixelRatio(currentDpr);
+          renderer.domElement.dataset.pixelRatio = currentDpr.toFixed(2);
+        }
+      }
+      renderer.domElement.dataset.qualityTier = profile.name;
+      renderer.domElement.dataset.qualityMode = String(qualityGovernor.getMode());
+      renderer.domElement.dataset.qualityGrassRing = String(profile.grassMaxRing);
+      if (immediate) {
+        snapQualityDistanceState(smoothedQuality, profile);
+        if (refreshQualitySceneNow) {
+          refreshQualitySceneNow(profile);
+        } else {
+          const estDist = computeFogCullDistance(
+            0.0052 * profile.fogDensityScale,
+            profile.minRenderDist,
+            profile.maxRenderDist
+          );
+          renderer.domElement.dataset.fogCullDist = estDist.toFixed(1);
+        }
+      }
+      callbacksRef.current.onQualityChange?.({
+        mode: qualityGovernor.getMode(),
+        tier: profile.tier,
+        tierName: profile.name,
+        maxRenderDist: profile.maxRenderDist,
+      });
+    };
+
+    applyQualityProfileToScene(qualityGovernor.getProfile(), true);
     let simClockMs = weatherSky.timeOfDay * 3_600_000;
     let simDay = 1;
     let prevSkyHour = weatherSky.timeOfDay;
@@ -1272,7 +1354,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         dprStepIdx = 0;
         drsLowFpsStreak = 0;
         drsHighFpsStreak = 0;
-        const nextDpr = manualResolutionScale !== null ? manualResolutionScale : dprSteps[0];
+        const nextDpr =
+          manualResolutionScale !== null
+            ? manualResolutionScale
+            : computeAutoTopDpr(qualityGovernor.getProfile());
         if (Math.abs(nextDpr - currentDpr) > 0.001) {
           currentDpr = nextDpr;
           const td0 = performance.now();
@@ -1284,6 +1369,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           perfLogger.recordEvent(
             `res->${currentDpr.toFixed(2)}x${manualResolutionScale === null ? '(auto)' : ''}`,
             td0
+          );
+        }
+      },
+      setQualityMode: (mode: QualityMode) => {
+        const prevMode = qualityGovernor.getMode();
+        const transition = qualityGovernor.setMode(mode);
+        const profile = qualityGovernor.getProfile();
+        if (transition || prevMode !== mode) {
+          applyQualityProfileToScene(profile, true);
+          perfLogger.recordEvent(
+            `qualityMode->${mode}(${profile.name})`,
+            performance.now()
           );
         }
       },
@@ -1940,8 +2037,19 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       },
     };
 
+    let lastPointerLockExitAt = 0;
+
     const onPointerLockChange = () => {
+      const wasLocked = pointerLocked;
       pointerLocked = document.pointerLockElement === renderer.domElement;
+      if (wasLocked && !pointerLocked) {
+        lastPointerLockExitAt = performance.now();
+      }
+    };
+
+    const onPointerLockError = () => {
+      pointerLocked = document.pointerLockElement === renderer.domElement;
+      lastPointerLockExitAt = performance.now();
     };
 
     const onMouseDown = (e: MouseEvent) => {
@@ -1949,13 +2057,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (e.target !== renderer.domElement) return;
       sound.init();
       mouseDragging = true;
-      if (!pointerLocked && renderer.domElement.requestPointerLock) {
-        try {
-          renderer.domElement.requestPointerLock();
-        } catch {
-          // Ignore pointer lock rejection in headless/sandboxed environments
+      safeRequestPointerLock(
+        renderer.domElement,
+        performance.now(),
+        lastPointerLockExitAt,
+        pointerLocked,
+        () => {
+          lastPointerLockExitAt = performance.now();
         }
-      }
+      );
     };
 
     const onMouseUp = () => {
@@ -1965,15 +2075,17 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     const onMouseMove = (e: MouseEvent) => {
       if (phaseRef.current !== 'playing' || uiModalOpen) return;
       if (!pointerLocked && !mouseDragging) return;
+      const { dx, dy } = clampMouseLookDelta(e.movementX, e.movementY);
+      if (dx === 0 && dy === 0) return;
       const sens = 0.0022;
-      player.yaw -= e.movementX * sens;
+      player.yaw -= dx * sens;
       if (seatedTent) {
         const rel = THREE.MathUtils.clamp(player.yaw - seatedBaseYaw, -1.48, 1.48);
         player.yaw = seatedBaseYaw + rel;
-        player.pitch = THREE.MathUtils.clamp(player.pitch - e.movementY * sens, -0.46, 0.52);
+        player.pitch = THREE.MathUtils.clamp(player.pitch - dy * sens, -0.46, 0.52);
       } else {
         player.pitch = THREE.MathUtils.clamp(
-          player.pitch - e.movementY * sens,
+          player.pitch - dy * sens,
           -Math.PI * 0.48,
           Math.PI * 0.48
         );
@@ -2120,6 +2232,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     };
 
     document.addEventListener('pointerlockchange', onPointerLockChange);
+    document.addEventListener('pointerlockerror', onPointerLockError);
     renderer.domElement.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('mousemove', onMouseMove);
@@ -2609,6 +2722,89 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let programsDeltaWindow = 0;
     let drsMsWindow = 0;
 
+    refreshQualitySceneNow = (profile: QualityProfile) => {
+      snapQualityDistanceState(smoothedQuality, profile);
+      camera.getWorldDirection(_camForward);
+      const skyInfo = weatherSky.update(
+        0,
+        player.pos,
+        scene,
+        sound,
+        hudRefs.flashEl.current,
+        _camForward,
+        2,
+        'outdoor',
+        profile.fogDensityScale
+      );
+      const swampHere = getSwampFactor(player.pos.x, player.pos.z);
+      let targetFog = (0.0052 + swampHere * 0.0095) * profile.fogDensityScale;
+      const w = weatherSky.currentWeather;
+      if (w === 'mist') targetFog += 0.0135 * Math.min(1.04, profile.fogDensityScale);
+      else if (w === 'rain') targetFog += 0.0085;
+      else if (w === 'storm') targetFog += 0.014;
+      if (scene.fog && 'density' in scene.fog) {
+        (scene.fog as THREE.FogExp2).density = targetFog;
+      }
+      lastFogDensity = targetFog;
+      const nextCullDist = computeFogCullDistance(
+        targetFog,
+        profile.minRenderDist,
+        profile.maxRenderDist
+      );
+      lastFogCullDist = nextCullDist;
+      renderer.domElement.dataset.fogCullDist = nextCullDist.toFixed(1);
+      renderer.domElement.dataset.qualityGrassRing = String(profile.grassMaxRing);
+
+      if (terrainMgr && vegetation) {
+        terrainMgr.update(
+          camera,
+          chunkStats,
+          nextCullDist,
+          profile.terrainLod0Dist,
+          profile.terrainLod1Dist
+        );
+        vegQualityOpts.lod0Dist = profile.treeLod0Dist;
+        vegQualityOpts.lod1Dist = profile.treeLod1Dist;
+        vegQualityOpts.bushDist = profile.bushDist;
+        vegQualityOpts.understoryDist = profile.understoryDist;
+        vegQualityOpts.boulderDist = profile.boulderDist;
+        vegQualityOpts.bogDist = profile.bogDist;
+        vegQualityOpts.grassMaxRing = profile.grassMaxRing;
+        vegQualityOpts.grassRing1Step = profile.grassRing1Step;
+        vegQualityOpts.grassRing2Step = profile.grassRing2Step;
+        vegQualityOpts.grassRing3Step = profile.grassRing3Step;
+        vegQualityOpts.grassRing4Step = profile.grassRing4Step;
+        vegetation.update(
+          terrainMgr.activeSlots,
+          terrainMgr.chunkLods,
+          terrainMgr.chunkSpheres,
+          camera.position,
+          elapsed,
+          skyInfo.windStrength,
+          vegStats,
+          skyInfo.sunDir,
+          skyInfo.sunColor,
+          terrainMgr.frustumPlanes,
+          _camForward,
+          nextCullDist,
+          vegQualityOpts
+        );
+        propsCtx?.updateDynamicProps(
+          elapsed,
+          camera.position.x,
+          camera.position.z,
+          skyInfo,
+          terrainMgr.frustumPlanes,
+          nextCullDist,
+          weatherSky.currentWeather,
+          profile.mushroomDist
+        );
+        renderer.domElement.dataset.visibleChunks = String(chunkStats.visibleChunks);
+        renderer.domElement.dataset.treesRendered = String(vegStats.treesRendered);
+        renderer.domElement.dataset.foliageRendered = String(vegStats.foliageRendered);
+      }
+    };
+
     function tick(): void {
       if (disposed) return;
       const now = performance.now();
@@ -2749,6 +2945,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               ? 'tent'
               : curEnvState?.shelter ?? 'outdoor';
 
+        const qualityProfile = qualityGovernor.getProfile();
+        slewQualityDistanceState(smoothedQuality, qualityProfile, dt);
         const tp0 = performance.now();
         const skyInfo = weatherSky.update(
           dt,
@@ -2758,7 +2956,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           hudRefs.flashEl.current,
           _camForward,
           skyTimeScale,
-          effectiveShelter
+          effectiveShelter,
+          smoothedQuality.fogDensityScale
         );
         const tp1 = performance.now();
         skyMs = tp1 - tp0;
@@ -2936,7 +3135,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           syncVitalHudDom();
         }
 
-        const maxRenderDist = computeFogCullDistance(skyInfo.fogDensity);
+        const maxRenderDist = computeFogCullDistance(
+          skyInfo.fogDensity,
+          smoothedQuality.minRenderDist,
+          smoothedQuality.maxRenderDist
+        );
         lastFogCullDist = maxRenderDist;
 
         if (weatherSky.currentWeather !== lastObservedWeather) {
@@ -2946,9 +3149,27 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
         if (terrainMgr && vegetation) {
           terrainMgr.setLightingState(skyInfo.dayFactor, elapsed);
-          terrainMgr.update(camera, chunkStats, maxRenderDist);
+          terrainMgr.update(
+            camera,
+            chunkStats,
+            maxRenderDist,
+            smoothedQuality.terrainLod0Dist,
+            smoothedQuality.terrainLod1Dist
+          );
           const tp2 = performance.now();
           terrainMs = tp2 - tp1;
+
+          vegQualityOpts.lod0Dist = smoothedQuality.treeLod0Dist;
+          vegQualityOpts.lod1Dist = smoothedQuality.treeLod1Dist;
+          vegQualityOpts.bushDist = smoothedQuality.bushDist;
+          vegQualityOpts.understoryDist = smoothedQuality.understoryDist;
+          vegQualityOpts.boulderDist = smoothedQuality.boulderDist;
+          vegQualityOpts.bogDist = smoothedQuality.bogDist;
+          vegQualityOpts.grassMaxRing = qualityProfile.grassMaxRing;
+          vegQualityOpts.grassRing1Step = qualityProfile.grassRing1Step;
+          vegQualityOpts.grassRing2Step = qualityProfile.grassRing2Step;
+          vegQualityOpts.grassRing3Step = qualityProfile.grassRing3Step;
+          vegQualityOpts.grassRing4Step = qualityProfile.grassRing4Step;
 
           vegetation.update(
             terrainMgr.activeSlots,
@@ -2962,7 +3183,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             skyInfo.sunColor,
             terrainMgr.frustumPlanes,
             _camForward,
-            maxRenderDist
+            maxRenderDist,
+            vegQualityOpts
           );
           const tp3 = performance.now();
           vegMs = tp3 - tp2;
@@ -2974,7 +3196,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             skyInfo,
             terrainMgr.frustumPlanes,
             maxRenderDist,
-            weatherSky.currentWeather
+            weatherSky.currentWeather,
+            smoothedQuality.mushroomDist
           );
           const tp4 = performance.now();
           propsMs += tp4 - tp3;
@@ -2985,8 +3208,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             camera.position.z,
             skyInfo,
             undefined,
-            225,
-            weatherSky.currentWeather
+            maxRenderDist,
+            weatherSky.currentWeather,
+            smoothedQuality.mushroomDist
           );
           propsMs += performance.now() - tp1;
         }
@@ -2999,8 +3223,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             (player.pos.x - lastShadowX) * (player.pos.x - lastShadowX) +
             (player.pos.z - lastShadowZ) * (player.pos.z - lastShadowZ);
           const sunMoved = Math.abs(skyInfo.sunDir.y - lastShadowSunY) > 0.008;
-          const moveThreshSq = isLowPowerGpu ? 4.0 : 2.25;
-          const minSkip = isLowPowerGpu ? 6 : 4;
+          const moveThreshSq = qualityProfile.shadowMoveThreshSq;
+          const minSkip = qualityProfile.shadowMinSkip;
           if ((movedSq > moveThreshSq || sunMoved) && shadowFrameSkip >= minSkip) {
             renderer.shadowMap.needsUpdate = true;
             shadowUpdatesWindow++;
@@ -3016,10 +3240,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           const drsInterval = isLowPowerGpu ? 2.0 : fpsEma < 22 ? 1.2 : 2.5;
           if (drsCheckTimer >= drsInterval) {
             drsCheckTimer = 0;
-            const stepDownFps = isLowPowerGpu ? 26 : 44;
+            const stepDownFps = isLowPowerGpu ? 34 : 38;
             const requiredLowChecks = isLowPowerGpu ? 2 : 1;
             const requiredHighChecks = isLowPowerGpu ? 3 : 2;
-            const stepUpCooldownMs = isLowPowerGpu ? 45_000 : 6_000;
+            const stepUpCooldownMs = isLowPowerGpu ? 45_000 : 8_000;
 
             if (fpsEma < stepDownFps && dprStepIdx < dprSteps.length - 1) {
               drsLowFpsStreak++;
@@ -3045,7 +3269,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               drsHighFpsStreak++;
               if (drsHighFpsStreak >= requiredHighChecks) {
                 dprStepIdx--;
-                currentDpr = dprSteps[dprStepIdx];
+                currentDpr =
+                  dprStepIdx === 0
+                    ? computeAutoTopDpr(qualityGovernor.getProfile())
+                    : dprSteps[dprStepIdx];
                 drsHighFpsStreak = 0;
                 const td0 = performance.now();
                 renderer.setPixelRatio(currentDpr);
@@ -3080,6 +3307,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           renderer.domElement.dataset.candidateInstances = String(vegStats.candidateInstances ?? 0);
           renderer.domElement.dataset.fogCullDist = maxRenderDist.toFixed(1);
           renderer.domElement.dataset.pixelRatio = currentDpr.toFixed(2);
+          renderer.domElement.dataset.qualityTier = qualityProfile.name;
+          renderer.domElement.dataset.qualityMode = String(qualityGovernor.getMode());
           renderer.domElement.dataset.drawCalls = String(renderer.info.render.calls);
           renderer.domElement.dataset.triangles = String(renderer.info.render.triangles);
           renderer.domElement.dataset.weather = weatherSky.currentWeather;
@@ -3172,6 +3401,24 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const tickCpuMs = tr1 - now;
       const externalWaitMs = Math.max(0, rawDtMs - prevTickCpuMs);
       prevTickCpuMs = tickCpuMs;
+
+      const qualityTransition = qualityGovernor.observe({
+        nowMs: tr1,
+        rawDtMs,
+        fpsEma,
+        fpsInstant: 1000 / Math.max(1, rawDtMs),
+        frameCpuMs: tickCpuMs,
+        isPlaying: curPhase === 'playing' && !uiModalOpen,
+        isHidden: document.hidden,
+      });
+      if (qualityTransition) {
+        const nextProfile = qualityGovernor.getProfile();
+        applyQualityProfileToScene(nextProfile, false);
+        perfLogger.recordEvent(
+          `quality->${nextProfile.name}(${qualityTransition.reason})`,
+          tr1
+        );
+      }
 
       if (curPhase === 'playing') {
         const fpsInstant = 1000 / rawDtMs;
@@ -3528,6 +3775,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       else cancelAnimationFrame(frameId);
 
       document.removeEventListener('pointerlockchange', onPointerLockChange);
+      document.removeEventListener('pointerlockerror', onPointerLockError);
       renderer.domElement.removeEventListener('webglcontextlost', onWebGlContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', onWebGlContextRestored);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
