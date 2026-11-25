@@ -226,6 +226,12 @@ export default function App() {
   }, [phase]);
 
   useEffect(() => {
+    if (snapshot?.isSwimming && backpackOpen) {
+      setBackpackOpen(false);
+    }
+  }, [snapshot?.isSwimming, backpackOpen]);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Escape') {
         if (anyGameplayModalOpen) {
@@ -448,16 +454,23 @@ export default function App() {
     }
   }, []);
 
-  const handleToggleBackpackBtn = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
-    e.currentTarget.blur();
-    if (document.pointerLockElement) {
-      document.exitPointerLock?.();
-    }
-    setFullMapOpen(false);
-    setActiveSleepSpot(null);
-    setActiveCampfire(null);
-    setBackpackOpen((prev) => !prev);
-  }, []);
+  const handleToggleBackpackBtn = useCallback(
+    (e: React.MouseEvent<HTMLButtonElement>) => {
+      e.currentTarget.blur();
+      if (snapshot?.isSwimming) {
+        showToast(translate('toast.cannotUsePackSwimming'));
+        return;
+      }
+      if (document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
+      setFullMapOpen(false);
+      setActiveSleepSpot(null);
+      setActiveCampfire(null);
+      setBackpackOpen((prev) => !prev);
+    },
+    [snapshot?.isSwimming, showToast]
+  );
 
   const handleToggleFullMapBtn = useCallback((e?: React.MouseEvent<HTMLElement>) => {
     if (e && e.currentTarget instanceof HTMLElement) {
@@ -732,13 +745,20 @@ export default function App() {
                 type="button"
                 tabIndex={-1}
                 data-testid="open-backpack-btn"
+                aria-disabled={snapshot?.isSwimming ? 'true' : undefined}
                 onClick={handleToggleBackpackBtn}
                 aria-label={t('hud.openBackpackAria')}
-                title={t('hud.backpackTooltip', { kg: packWeightKg.toFixed(1) })}
-                className={`h-9 px-2.5 flex items-center gap-1.5 rounded-md border text-xs font-medium transition-colors cursor-pointer ${
-                  backpackOpen
-                    ? 'bg-[#2e4835] border-[#78a180] text-[#f3f8f1]'
-                    : 'bg-[#0c120e]/82 border-white/10 text-[#cdd9cc] hover:bg-[#1a261e] hover:text-white'
+                title={
+                  snapshot?.isSwimming
+                    ? t('hud.backpackDisabledSwimming')
+                    : t('hud.backpackTooltip', { kg: packWeightKg.toFixed(1) })
+                }
+                className={`h-9 px-2.5 flex items-center gap-1.5 rounded-md border text-xs font-medium transition-colors ${
+                  snapshot?.isSwimming
+                    ? 'bg-[#0c120e]/55 border-white/10 text-[#809182] opacity-65 cursor-not-allowed'
+                    : backpackOpen
+                      ? 'bg-[#2e4835] border-[#78a180] text-[#f3f8f1] cursor-pointer'
+                      : 'bg-[#0c120e]/82 border-white/10 text-[#cdd9cc] hover:bg-[#1a261e] hover:text-white cursor-pointer'
                 }`}
               >
                 <Backpack className="w-4 h-4" />

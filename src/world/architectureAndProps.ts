@@ -15,7 +15,8 @@ import {
 import { HutDecayState } from './worldBlueprint';
 import { WorldTextures } from './proceduralTextures';
 import { SoundEngine } from './soundEngine';
-import { SkyFrameState } from './weatherAndSky';
+import { SkyFrameState, WeatherId } from './weatherAndSky';
+import { createReflectiveBogWater } from './waterSurface';
 import { sphereIntersectsFrustum } from './forestFrustumCuller';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
 import { ItemId } from '../game/itemCatalog';
@@ -38,6 +39,32 @@ export interface BoardwalkZone {
   minZ: number;
   maxZ: number;
   y: number;
+  /** Optional oriented plank segment center & local frame for gap-free diagonal coverage. */
+  cx?: number;
+  cz?: number;
+  cosYaw?: number;
+  sinYaw?: number;
+  halfW?: number;
+  halfL?: number;
+}
+
+export function isPointOnBoardwalkZone(zone: BoardwalkZone, x: number, z: number): boolean {
+  if (x < zone.minX || x > zone.maxX || z < zone.minZ || z > zone.maxZ) return false;
+  if (
+    zone.cx !== undefined &&
+    zone.cz !== undefined &&
+    zone.cosYaw !== undefined &&
+    zone.sinYaw !== undefined &&
+    zone.halfW !== undefined &&
+    zone.halfL !== undefined
+  ) {
+    const dx = x - zone.cx;
+    const dz = z - zone.cz;
+    const localX = dx * zone.cosYaw - dz * zone.sinYaw;
+    const localZ = dx * zone.sinYaw + dz * zone.cosYaw;
+    return Math.abs(localX) <= zone.halfW && Math.abs(localZ) <= zone.halfL;
+  }
+  return true;
 }
 
 export interface InteractiveEntry {
@@ -192,6 +219,17 @@ export interface WorldPropsContext {
   getCampfires: () => CampfireInfo[];
   isWaterVisible: () => boolean;
   isMistVisible: () => boolean;
+  getBogShoreDepthInfo: () => {
+    texture: THREE.DataTexture;
+    centerX: number;
+    centerZ: number;
+    radius: number;
+  };
+  renderWaterReflection: (
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.PerspectiveCamera
+  ) => void;
   dispose: () => void;
 }
 
@@ -293,7 +331,8 @@ export function buildArchitectureAndProps(
   sound: SoundEngine,
   showToast: (msg: string) => void,
   isSoftwareGl: boolean,
-  handlers?: WorldInteractionHandlers
+  handlers?: WorldInteractionHandlers,
+  isLowPowerGpu = false
 ): WorldPropsContext {
   const bp = getActiveBlueprint();
   const rand = seededRand(bp.seed + 1337);
@@ -419,109 +458,19 @@ export function buildArchitectureAndProps(
   }
 
   // ============================================================================
-  // Animated Fresnel Reflective Peat-Bog Water & Morning Mist Layers
+  // Wind-Responsive Planar-Reflective Peat-Bog Water & Morning Mist Layers
   // ============================================================================
   const waterRadius = bp.bogRadius + 28;
-  const waterGeo = new THREE.CircleGeometry(waterRadius, 56);
-  waterGeo.rotateX(-Math.PI / 2);
-  const waterMat = new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uSunDir: { value: new THREE.Vector3(0.5, 0.55, 0.35).normalize() },
-      uSunColor: { value: new THREE.Color(0xfff1d6) },
-      uSkyTop: { value: new THREE.Color(0x285d96) },
-      uSkyHorizon: { value: new THREE.Color(0xb9d1df) },
-      uFogColor: { value: new THREE.Color(0xb9d1df) },
-      uFogDensity: { value: 0.0065 },
-      uRadius: { value: waterRadius },
-      uCenter: { value: new THREE.Vector2(bp.bogCenterX, bp.bogCenterZ) },
-    },
-    vertexShader: `
-      varying vec3 vWorldPos;
-      void main() {
-        vec4 wp = modelMatrix * vec4(position, 1.0);
-        vWorldPos = wp.xyz;
-        gl_Position = projectionMatrix * viewMatrix * wp;
-      }
-    `,
-    fragmentShader: `
-      uniform float uTime;
-      uniform vec3 uSunDir;
-      uniform vec3 uSunColor;
-      uniform vec3 uSkyTop;
-      uniform vec3 uSkyHorizon;
-      uniform vec3 uFogColor;
-      uniform float uFogDensity;
-      uniform float uRadius;
-      uniform vec2 uCenter;
-
-      varying vec3 vWorldPos;
-
-      void main() {
-        vec2 p = vWorldPos.xz;
-        float t = uTime * 0.9;
-
-        // Multi-directional capillary bog ripples (zero texture fetches, fast & crisp)
-        float w1 = sin(p.x * 1.45 + p.y * 0.85 + t * 1.35);
-        float w2 = cos(p.x * 0.92 - p.y * 1.65 - t * 1.12);
-        float w3 = sin((p.x - p.y) * 2.75 + t * 1.95) * 0.45;
-        vec3 nrm = normalize(vec3(
-          (w1 * 0.032 + w3 * 0.022),
-          1.0,
-          (w2 * 0.032 - w3 * 0.022)
-        ));
-
-        vec3 toCam = cameraPosition - vWorldPos;
-        float dist = length(toCam);
-        vec3 viewDir = toCam / max(dist, 0.001);
-
-        float ndv = clamp(dot(nrm, viewDir), 0.0, 1.0);
-        // Fast polynomial Schlick Fresnel (zero per-pixel pow() transcendentals!)
-        float f1 = 1.0 - ndv;
-        float f2 = f1 * f1;
-        float fresnel = 0.06 + 0.78 * (f2 * f2);
-
-        vec3 reflDir = reflect(-viewDir, nrm);
-        float reflElev = clamp(reflDir.y, 0.0, 1.0);
-        vec3 skyRefl = mix(uSkyHorizon * 0.94, uSkyTop, smoothstep(0.0, 0.58, reflElev));
-        // Subtle pine-silhouette reflection darkening right along the horizon mirror
-        float treeMirror = smoothstep(0.03, 0.24, reflElev);
-        skyRefl *= mix(vec3(0.36, 0.46, 0.40), vec3(1.0), treeMirror);
-
-        // Dark humic Estonian bog water absorption
-        vec3 peatDeep = vec3(0.022, 0.036, 0.034);
-        vec3 col = mix(peatDeep, skyRefl, fresnel);
-
-        // Fast polynomial solar specular glints across ripples
-        float sunVis = smoothstep(0.02, 0.22, uSunDir.y);
-        if (sunVis > 0.005) {
-          vec3 halfVec = normalize(uSunDir + viewDir);
-          float ndh = max(dot(nrm, halfVec), 0.0);
-          float s2 = ndh * ndh;
-          float s4 = s2 * s2;
-          float s16 = s4 * s4 * s4 * s4;
-          float broadSpec = (s16 * s4 * s4) * 0.16 * sunVis;
-          float s64 = s16 * s16 * s16 * s16;
-          float spec = (s64 * s64) * sunVis;
-          col += uSunColor * (spec * 1.6 + broadSpec);
-        }
-
-        // Exponential fog matching Three.js FogExp2
-        float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
-        col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
-
-        gl_FragColor = vec4(col, 1.0);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-      }
-    `,
-    transparent: false,
-    depthWrite: true,
-  });
-  const swampWater = new THREE.Mesh(waterGeo, waterMat);
-  swampWater.position.set(bp.bogCenterX, SWAMP_WATER_Y, bp.bogCenterZ);
+  const bogWater = createReflectiveBogWater(
+    bp.bogCenterX,
+    bp.bogCenterZ,
+    waterRadius,
+    isSoftwareGl,
+    isLowPowerGpu
+  );
+  const swampWater = bogWater.mesh;
   scene.add(swampWater);
-  disposables.push(waterGeo, waterMat);
+  disposables.push(bogWater);
 
   const mistGeo = new THREE.PlaneGeometry(12, 12);
   mistGeo.rotateX(-Math.PI / 2);
@@ -1563,6 +1512,21 @@ export function buildArchitectureAndProps(
     pit.add(log1, log2, log3);
     disposables.push(logGeo1);
 
+    const ashBedGeo = new THREE.CircleGeometry(0.95, 16);
+    ashBedGeo.rotateX(-Math.PI / 2);
+    const ashBedMat = new THREE.MeshStandardMaterial({
+      color: 0x26211c,
+      roughness: 0.98,
+      metalness: 0.0,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    });
+    const ashBed = new THREE.Mesh(ashBedGeo, ashBedMat);
+    ashBed.position.y = 0.03;
+    ashBed.receiveShadow = true;
+    pit.add(ashBed);
+    disposables.push(ashBedGeo, ashBedMat);
+
     const flameGeo = new THREE.ConeGeometry(0.32, 0.82, 7);
     const flames = new THREE.Mesh(flameGeo, flameMat);
     flames.position.y = 0.45;
@@ -1570,6 +1534,21 @@ export function buildArchitectureAndProps(
     pit.add(flames);
     disposables.push(flameGeo);
     scene.add(pit);
+
+    // Register a circular foliage-clearing zone so grass, moss, ferns, and bushes never grow through the fire
+    shelters.add({
+      id: `clearing_${id}`,
+      x: fx,
+      z: fz,
+      yaw: 0,
+      halfW: 1.75,
+      halfD: 1.75,
+      floorY: fy,
+      temporary: !id.startsWith('fire_v'),
+      clearingOnly: true,
+      shape: 'circle',
+      vegetationMargin: 0.0,
+    });
 
     const entry: CampfireEntry = { id, label, x: fx, y: fy, z: fz, lit: initiallyLit, flames };
     campfires.push(entry);
@@ -1737,12 +1716,24 @@ export function buildArchitectureAndProps(
         const deckY = Math.max(SWAMP_WATER_Y + 0.32, groundY + 0.16);
         allSegs.push({ px, pz, angle, deckY, segLen });
 
+        const halfW = 0.88;
+        const halfL = segLen * 0.5 + 0.36;
+        const cosYaw = Math.cos(angle);
+        const sinYaw = Math.sin(angle);
+        const extX = Math.abs(cosYaw) * halfW + Math.abs(sinYaw) * halfL;
+        const extZ = Math.abs(sinYaw) * halfW + Math.abs(cosYaw) * halfL;
         boardwalkZones.push({
-          minX: px - 0.95,
-          maxX: px + 0.95,
-          minZ: pz - 0.95,
-          maxZ: pz + 0.95,
+          minX: px - extX,
+          maxX: px + extX,
+          minZ: pz - extZ,
+          maxZ: pz + extZ,
           y: deckY + 0.04,
+          cx: px,
+          cz: pz,
+          cosYaw,
+          sinYaw,
+          halfW,
+          halfL,
         });
       }
     }
@@ -3579,17 +3570,9 @@ export function buildArchitectureAndProps(
       mistInst.visible =
         !isPrecip && nearBog && bogDistSq <= (bp.bogRadius + 75) * (bp.bogRadius + 75);
 
-      // Sync Fresnel reflective bog water & day/night cottage window glow with live sky state
+      // Sync wind-responsive reflective bog water & day/night cottage window glow with live sky state
       if (nearBog) {
-        waterMat.uniforms.uTime.value = elapsed;
-        if (skyState) {
-          waterMat.uniforms.uSunDir.value.copy(skyState.sunDir);
-          waterMat.uniforms.uSunColor.value.copy(skyState.sunColor);
-          waterMat.uniforms.uSkyTop.value.copy(skyState.skyTopColor);
-          waterMat.uniforms.uSkyHorizon.value.copy(skyState.skyHorizonColor);
-          waterMat.uniforms.uFogColor.value.copy(skyState.skyHorizonColor);
-          waterMat.uniforms.uFogDensity.value = skyState.fogDensity;
-        }
+        bogWater.updateUniforms(elapsed, skyState, weather as WeatherId | undefined);
       }
       if (skyState) {
         // Dark reflective glass during bright daytime; warm amber hearth light at golden hour, dusk & night!
@@ -3674,8 +3657,10 @@ export function buildArchitectureAndProps(
         x = nearbyTent.x + Math.sin(nearbyTent.yaw) * 3.8;
         z = nearbyTent.z + Math.cos(nearbyTent.yaw) * 3.8;
       }
-      if (shelters.footprints.some(area => containsFootprint(area, x, z, 0.9)) ||
-          circleColliders.some(c => Math.hypot(c.x - x, c.z - z) < c.r + 0.9)) {
+      if (
+        shelters.footprints.some((area) => !area.clearingOnly && containsFootprint(area, x, z, 0.9)) ||
+        circleColliders.some((c) => Math.hypot(c.x - x, c.z - z) < c.r + 0.9)
+      ) {
         return { ok: false, message: t('prop.campfireBlocked') };
       }
       const groundY = getTerrainHeight(x, z);
@@ -3741,6 +3726,15 @@ export function buildArchitectureAndProps(
       })),
     isWaterVisible: () => swampWater.visible,
     isMistVisible: () => mistInst.visible,
+    getBogShoreDepthInfo: () => ({
+      texture: bogWater.smoothDepthTex,
+      centerX: bogWater.centerX,
+      centerZ: bogWater.centerZ,
+      radius: bogWater.radius,
+    }),
+    renderWaterReflection: (renderer, renderScene, cam) => {
+      bogWater.renderReflection(renderer, renderScene, cam);
+    },
     dispose: () => {
       shelters.dispose();
       for (const light of pooledPointLights) { light.dispose(); scene.remove(light); }

@@ -872,3 +872,297 @@ for (const pitch of [0.5, 1, 2]) {
     engine.dispose();
   });
 }
+
+test('plank trail, swamp mud, shallow water, and swimming use distinct sounds and swimming stops in shallow water', () => {
+  const { engine, realClock, backend } = createTestEngine();
+
+  let dist = 0;
+
+  // 1. Walking on plank trail (wooden_boardwalk) -> wooden_floor_walk
+  dist += 2.0;
+  realClock.advanceMs(100);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs: 1000,
+      activity: 'walking',
+      gait: 'walk',
+      surface: 'wooden_boardwalk',
+      distMoved: dist,
+    })
+  );
+  assert.ok(backend.records.some((r) => r.soundId === 'wooden_floor_walk'));
+
+  // 2. Wading in swamp mud -> swamp_mud_wade (distinct from plank trail and water!)
+  dist += 2.0;
+  realClock.advanceMs(100);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs: 1200,
+      activity: 'wading',
+      gait: 'wade',
+      surface: 'mud',
+      distMoved: dist,
+    })
+  );
+  assert.ok(backend.records.some((r) => r.soundId === 'swamp_mud_wade'));
+  assert.equal(
+    backend.records.some((r) => r.soundId === 'water_wade_loop'),
+    false,
+    'Swamp mud wading must NOT reuse the open-water wading sound'
+  );
+
+  // 3. Swimming in deep water -> water_swim_loop
+  dist += 1.0;
+  realClock.advanceMs(100);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs: 1400,
+      activity: 'swimming',
+      gait: 'swim',
+      surface: 'water',
+      distMoved: dist,
+    })
+  );
+  const swimLoop = backend.records.find((r) => r.soundId === 'water_swim_loop');
+  assert.ok(swimLoop, 'Expected dedicated water_swim_loop when swimming');
+  assert.equal(swimLoop.stopped, false);
+
+  // 4. Moving into shallow water (still in water, not swimming) -> stops water_swim_loop immediately and switches to water_wade_loop
+  dist += 1.0;
+  realClock.advanceMs(100);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs: 1600,
+      activity: 'wading',
+      gait: 'wade',
+      surface: 'water',
+      distMoved: dist,
+    })
+  );
+  assert.equal(
+    swimLoop.stopped,
+    true,
+    'Swimming sound must stop immediately when entering shallow water'
+  );
+  const shallowWadeLoop = backend.records.find((r) => r.soundId === 'water_wade_loop');
+  assert.ok(shallowWadeLoop, 'Expected water_wade_loop when wading in shallow water');
+  assert.equal(shallowWadeLoop.stopped, false);
+
+  // 5. Stopping movement in shallow water -> stops water_wade_loop
+  realClock.advanceMs(100);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs: 1800,
+      activity: 'idle',
+      gait: null,
+      surface: 'water',
+      distMoved: dist,
+    })
+  );
+  assert.equal(shallowWadeLoop.stopped, true);
+  engine.dispose();
+});
+
+test('walking and water wading loops resume cleanly after pausing instead of staying stuck on paused', () => {
+  const { engine, realClock, backend } = createTestEngine();
+
+  let dist = 0;
+  let simMs = 1000;
+  const stepWalk = (
+    activity: WorldContext['player']['activity'],
+    gait: WorldContext['player']['gait'],
+    surface: WorldContext['player']['surfaceMaterial'],
+    deltaDist: number
+  ) => {
+    dist += deltaDist;
+    simMs += 100;
+    realClock.advanceMs(100);
+    engine.step(
+      0.1,
+      makeWorld({
+        simMs,
+        activity,
+        gait,
+        surface,
+        distMoved: dist,
+        biome: surface === 'water' || surface === 'mud' ? 'swamp' : 'forest',
+      })
+    );
+  };
+
+  // 1. Walk on forest floor -> plays forest_floor_walk
+  stepWalk('walking', 'walk', 'forest_floor', 0.5);
+  stepWalk('walking', 'walk', 'forest_floor', 0.5);
+  let walkVoice = engine.getDiagnosticsSnapshot().voices.find((v) => v.soundId === 'forest_floor_walk');
+  assert.ok(walkVoice && (walkVoice.state === 'starting' || walkVoice.state === 'playing'));
+
+  // 2. Stop -> pauses forest_floor_walk
+  stepWalk('idle', null, 'forest_floor', 0);
+  walkVoice = engine.getDiagnosticsSnapshot().voices.find((v) => v.soundId === 'forest_floor_walk');
+  assert.equal(walkVoice?.state, 'paused');
+
+  // 3. Walk again -> MUST resume out of 'paused' and start a fresh backend voice
+  const beforeForestRecords = backend.records.filter((r) => r.soundId === 'forest_floor_walk').length;
+  stepWalk('walking', 'walk', 'forest_floor', 0.5);
+  stepWalk('walking', 'walk', 'forest_floor', 0.5);
+  walkVoice = engine.getDiagnosticsSnapshot().voices.find((v) => v.soundId === 'forest_floor_walk');
+  assert.ok(
+    walkVoice && (walkVoice.state === 'starting' || walkVoice.state === 'playing'),
+    `forest_floor_walk remained stuck in state=${walkVoice?.state}`
+  );
+  const forestRecordsAfter = backend.records.filter((r) => r.soundId === 'forest_floor_walk');
+  assert.ok(forestRecordsAfter.length > beforeForestRecords);
+  assert.equal(forestRecordsAfter.at(-1)?.stopped, false);
+
+  // 4. Repeatedly enter water -> exit to bog mud (triggers swamp_mud_wade) -> re-enter water -> swim -> exit
+  for (let cycle = 0; cycle < 4; cycle++) {
+    // Enter shallow water
+    stepWalk('wading', 'wade', 'water', 0.5);
+    stepWalk('wading', 'wade', 'water', 0.5);
+    const wadeVoice = engine.getDiagnosticsSnapshot().voices.find((v) => v.soundId === 'water_wade_loop');
+    assert.ok(
+      wadeVoice && (wadeVoice.state === 'starting' || wadeVoice.state === 'playing'),
+      `Cycle ${cycle}: water_wade_loop stuck in state=${wadeVoice?.state}`
+    );
+    const activeWadeRec = backend.records.filter((r) => r.soundId === 'water_wade_loop').at(-1);
+    assert.equal(activeWadeRec?.stopped, false, `Cycle ${cycle}: water_wade_loop backend voice must be playing`);
+
+    // Swim deeper then return to shallow
+    stepWalk('swimming', 'swim', 'water', 0.5);
+    const swimVoice = engine.getDiagnosticsSnapshot().voices.find((v) => v.soundId === 'water_swim_loop');
+    assert.ok(
+      swimVoice && (swimVoice.state === 'starting' || swimVoice.state === 'playing'),
+      `Cycle ${cycle}: water_swim_loop stuck in state=${swimVoice?.state}`
+    );
+
+    // Exit onto bog mud -> pauses water loops and fires swamp_mud_wade without freezing
+    const mudCountBefore = backend.records.filter((r) => r.soundId === 'swamp_mud_wade').length;
+    stepWalk('wading', 'wade', 'mud', 1.6);
+    stepWalk('wading', 'wade', 'mud', 1.6);
+    const mudCountAfter = backend.records.filter((r) => r.soundId === 'swamp_mud_wade').length;
+    assert.ok(
+      mudCountAfter > mudCountBefore,
+      `Cycle ${cycle}: expected swamp_mud_wade to play on bog mud exit`
+    );
+
+    // Pause briefly on shore
+    stepWalk('idle', null, 'mud', 0);
+  }
+
+  engine.dispose();
+});
+
+test('queued concurrencyPolicy on a saturated bus never freezes step() and recovers when slots free', () => {
+  const config = structuredClone(DEFAULT_SOUNDSCAPE_CONFIG);
+  const movementBus = config.buses.find((b) => b.id === 'player.movement');
+  assert.ok(movementBus);
+  movementBus.maxConcurrency = 1;
+
+  const { engine, realClock, backend } = createTestEngine({ config });
+
+  // Occupy the single player.movement slot with forest_floor_walk
+  let simMs = 1000;
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs,
+      activity: 'walking',
+      gait: 'walk',
+      surface: 'forest_floor',
+      distMoved: 1.0,
+    })
+  );
+
+  // Trigger swamp_mud_wade (which has concurrencyPolicy: 'queue') while the bus is full
+  engine.emitEvent({
+    type: 'player.step',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: 1.7, z: 0 },
+    payload: { material: 'mud', gait: 'wade' },
+  });
+
+  // Stepping repeatedly while bus remains full (< 160ms maxQueueAgeMs) must NEVER infinite-loop
+  for (let i = 0; i < 2; i++) {
+    realClock.advanceMs(40);
+    simMs += 40;
+    engine.step(
+      0.04,
+      makeWorld({
+        simMs,
+        activity: 'walking',
+        gait: 'walk',
+        surface: 'forest_floor',
+        distMoved: 1.0 + i * 0.2,
+      })
+    );
+  }
+  assert.equal(engine.instances.getQueuedCount(), 1, 'swamp_mud_wade should remain queued while bus is busy');
+
+  // Free the bus slot by going idle within 160ms -> queued swamp_mud_wade dequeues and plays cleanly
+  realClock.advanceMs(40);
+  simMs += 40;
+  engine.step(
+    0.04,
+    makeWorld({
+      simMs,
+      activity: 'idle',
+      gait: null,
+      surface: 'mud',
+      distMoved: 2.0,
+    })
+  );
+
+  assert.ok(
+    backend.records.some((r) => r.soundId === 'swamp_mud_wade'),
+    'Queued swamp_mud_wade should play once the movement bus slot frees up within maxQueueAgeMs'
+  );
+
+  // Now saturate the bus again and hold past maxQueueAgeMs (160ms) -> must expire cleanly without freezing
+  const mudCountBeforeExpiry = backend.records.filter((r) => r.soundId === 'swamp_mud_wade').length;
+  realClock.advanceMs(500);
+  simMs += 500;
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs,
+      activity: 'walking',
+      gait: 'walk',
+      surface: 'forest_floor',
+      distMoved: 2.5,
+    })
+  );
+  engine.emitEvent({
+    type: 'player.step',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: 1.7, z: 0 },
+    payload: { material: 'mud', gait: 'wade' },
+  });
+  for (let i = 0; i < 6; i++) {
+    realClock.advanceMs(50);
+    simMs += 50;
+    engine.step(
+      0.05,
+      makeWorld({
+        simMs,
+        activity: 'walking',
+        gait: 'walk',
+        surface: 'forest_floor',
+        distMoved: 2.5 + i * 0.2,
+      })
+    );
+  }
+  assert.equal(engine.instances.getQueuedCount(), 0, 'Expired queued item must be dropped after maxQueueAgeMs');
+  assert.equal(
+    backend.records.filter((r) => r.soundId === 'swamp_mud_wade').length,
+    mudCountBeforeExpiry,
+    'Expired swamp_mud_wade must not play stale after maxQueueAgeMs'
+  );
+  engine.dispose();
+});

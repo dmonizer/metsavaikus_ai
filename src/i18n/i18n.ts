@@ -166,6 +166,7 @@ const EN_DICT = {
   'hud.basketPoisonous': 'Poisonous {count}',
   'hud.openBackpackAria': 'Open backpack and status',
   'hud.backpackTooltip': 'Backpack ({kg} kg) [Tab]',
+  'hud.backpackDisabledSwimming': 'Backpack unavailable while swimming — reach shallower water first',
   'hud.openMapAria': 'Open full map',
   'hud.mapTooltip': 'Full Map [M]',
   'hud.minimapClickHint': 'Click or press [M] to open full map',
@@ -229,6 +230,7 @@ const EN_DICT = {
   'cond.exhausted': 'Exhausted',
   'cond.warm': 'Warm',
   'cond.rainJacket': 'Rain Jacket',
+  'cond.swimming': 'Swimming',
 
   // Load tiers, hypothermia stages, navigation modes, staying power
   'loadTier.light': 'light',
@@ -557,6 +559,7 @@ const EN_DICT = {
   'toast.noRainJacket': "You didn't pack a Rain Jacket.",
   'toast.satInTent': 'Stepped inside your Field Tent to shelter from the weather.',
   'toast.stoodUpTent': 'Stepped back outside your Field Tent.',
+  'toast.cannotUsePackSwimming': 'You cannot open your backpack, eat, or drink while swimming — reach shallower water first.',
   'toast.vomited': 'Violent vomiting ({source}) — stomach & hydration drained!',
 
   // Survival Engine messages & death causes
@@ -692,6 +695,7 @@ const ET_DICT: TranslationDict = {
   'hud.basketPoisonous': 'Mürgised {count}',
   'hud.openBackpackAria': 'Ava seljakott ja seisund',
   'hud.backpackTooltip': 'Seljakott ({kg} kg) [Tab]',
+  'hud.backpackDisabledSwimming': 'Ujumise ajal ei saa seljakotti kasutada — liigu madalamasse vette',
   'hud.openMapAria': 'Ava suur kaart',
   'hud.mapTooltip': 'Suur kaart [M]',
   'hud.minimapClickHint': 'Klõpsa või vajuta [M] suure kaardi avamiseks',
@@ -755,6 +759,7 @@ const ET_DICT: TranslationDict = {
   'cond.exhausted': 'Kurnatud',
   'cond.warm': 'Soe',
   'cond.rainJacket': 'Vihmajope',
+  'cond.swimming': 'Ujud',
 
   // Load tiers, hypothermia stages, navigation modes, staying power
   'loadTier.light': 'kerge',
@@ -1080,6 +1085,7 @@ const ET_DICT: TranslationDict = {
   'toast.noRainJacket': 'Sul pole vihmajopet seljakotis.',
   'toast.satInTent': 'Pugesid matkatelki ilma eest varju.',
   'toast.stoodUpTent': 'Astusid matkatelgist välja.',
+  'toast.cannotUsePackSwimming': 'Ujumise ajal ei saa seljakotti avada, süüa ega juua — liigu madalamasse vette.',
   'toast.vomited': 'Tugev oksendamine ({source}) — kõht ja vedelik vähenesid!',
 
   // Survival Engine messages & death causes

@@ -213,6 +213,7 @@ export class InstanceManager {
     exemptFromDisturbance?: boolean;
     volumeScale?: number;
     pitchScale?: number;
+    allowRequeue?: boolean;
   }): { started: boolean; virtualised: boolean; rejectedReason?: string; instance?: ActiveSoundInstance } {
     const {
       sound,
@@ -232,6 +233,7 @@ export class InstanceManager {
       exemptFromDisturbance = false,
       volumeScale = 1,
       pitchScale = 1,
+      allowRequeue = true,
     } = params;
 
     // Fade-reversal support: if an instance of this sound+emitter is currently stopping (fading out), reverse fade instead of restarting!
@@ -246,16 +248,16 @@ export class InstanceManager {
       return { started: true, virtualised: false, instance: existingStopping };
     }
 
-    // Check definition/emitter/bus concurrency limits
-    const sameDef = this.instances.filter((i) => i.sound.id === sound.id && i.state !== 'completed');
+    // Check definition/emitter/bus concurrency limits (paused/virtualised voices do not hold active backend voices)
+    const isAudibleActive = (i: ActiveSoundInstance) =>
+      i.state === 'starting' || i.state === 'playing' || i.state === 'stopping';
+    const sameDef = this.instances.filter((i) => i.sound.id === sound.id && isAudibleActive(i));
     const maxDef = sound.playback.maxInstances;
     const sameBus = this.instances.filter(
-      (i) => i.sound.bus === sound.bus && i.state !== 'completed' && i.state !== 'virtualised'
+      (i) => i.sound.bus === sound.bus && isAudibleActive(i)
     );
     const maxBus = mixer.getMaxConcurrency(sound.bus);
-    const activeNonVirtual = this.instances.filter(
-      (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
-    );
+    const activeNonVirtual = this.instances.filter(isAudibleActive);
 
     const defHit = maxDef !== undefined && sameDef.length >= maxDef;
     const busHit = maxBus !== undefined && sameBus.length >= maxBus;
@@ -271,6 +273,9 @@ export class InstanceManager {
         return { started: false, virtualised: false, rejectedReason: 'concurrency reject_new' };
       }
       if (policy === 'queue') {
+        if (!allowRequeue) {
+          return { started: false, virtualised: false, rejectedReason: 'concurrency_busy' };
+        }
         const maxQueueAgeMs = parseDurationMs(sound.playback.maxQueueAgeMs, 350);
         const posRes = this.resolveSpawnPosition(sound, world, rng, spatialQuery, explicitPosition);
         if (!posRes.ok) return { started: false, virtualised: false, rejectedReason: 'source placement unavailable' };
@@ -326,6 +331,9 @@ export class InstanceManager {
           this.disposeInstance(lowestGlobal, backend);
         }
       } else if (policy === 'queue') {
+        if (!allowRequeue) {
+          return { started: false, virtualised: false, rejectedReason: 'concurrency_busy' };
+        }
         const maxQueueAgeMs = parseDurationMs(sound.playback.maxQueueAgeMs, 350);
         const posRes = this.resolveSpawnPosition(sound, world, rng, spatialQuery, explicitPosition);
         if (!posRes.ok) return { started: false, virtualised: false, rejectedReason: 'source placement unavailable' };
@@ -467,7 +475,9 @@ export class InstanceManager {
     mixer: AudioMixer
   ): void {
     if (inst.state !== 'paused') return;
-    inst.state = 'playing';
+    inst.state = inst.fadeInSec > 0.01 ? 'starting' : 'playing';
+    inst.stoppingStartedAtRealMs = null;
+    inst.currentEnvelopeGain = inst.fadeInSec > 0.01 ? Math.max(0.05, Math.min(inst.currentEnvelopeGain, 0.25)) : 1;
     inst.targetEnvelopeGain = 1;
     const offset = inst.sound.playback.loop?.preserveOffsetOnResume !== false ? inst.resumeOffsetSec : 0;
     const maxDistM = parseDistanceM(inst.sound.spatial.maximumDistanceM, 200);
@@ -526,10 +536,12 @@ export class InstanceManager {
       spatialQuery,
     } = params;
 
-    // 1. Drain or expire queued requests (prevent stale transients playing long after originating action!)
+    // 1. Drain or expire queued requests safely using a snapshot (prevents infinite synchronous re-enqueue loops!)
     if (this.queued.length > 0) {
+      const pending = this.queued;
+      this.queued = [];
       const nextQueued: QueuedSoundRequest[] = [];
-      for (const q of this.queued) {
+      for (const q of pending) {
         if (nowRealMs - q.enqueuedAtRealMs > q.maxQueueAgeMs) {
           continue; // Drop expired transient!
         }
@@ -537,7 +549,7 @@ export class InstanceManager {
           (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
         ).length;
         if (activeCount < maxGlobalActiveVoices) {
-          this.spawnOrResume({
+          const res = this.spawnOrResume({
             sound: q.sound,
             assetsMap,
             world,
@@ -553,12 +565,18 @@ export class InstanceManager {
             sourceInsideSameStructure: q.sourceInsideSameStructure,
             reason: `${q.reason} (dequeued)`,
             exemptFromDisturbance: q.exemptFromDisturbance,
+            allowRequeue: false,
           });
+          if (!res.started && !res.virtualised && res.rejectedReason === 'concurrency_busy') {
+            nextQueued.push(q);
+          }
         } else {
           nextQueued.push(q);
         }
       }
-      this.queued = nextQueued;
+      if (nextQueued.length > 0) {
+        this.queued.push(...nextQueued);
+      }
     }
 
     const activeByBus = new Map<string, number>();

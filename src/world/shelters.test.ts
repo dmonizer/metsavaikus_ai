@@ -202,3 +202,21 @@ test('intact roof coverage reaches the underside of its ridge', () => {
     props.dispose();
   }
 });
+
+test('campfires exclude woodland foliage in a clean circle without acting as a floor or shelter', () => {
+  const { props } = makeWorld();
+  try {
+    const placed = props.placePlayerCampfire(-115, -115);
+    assert.ok(placed.ok && placed.campfire);
+    const fire = placed.campfire;
+    assert.equal(props.shelters.excludesVegetation(fire.x, fire.z), true);
+    assert.equal(props.shelters.excludesVegetation(fire.x + 1.2, fire.z + 0.4), true);
+    assert.equal(props.shelters.excludesVegetation(fire.x + 3.0, fire.z), false);
+    assert.equal(props.shelters.floorHeight(fire.x, fire.z, -50), -50);
+    assert.equal(props.shelters.blocksRain(fire.x, fire.y + 0.5, fire.z), false);
+    assert.equal(props.getEnvironmentStateAt(fire.x, fire.z).shelter, 'outdoor');
+  } finally {
+    props.dispose();
+  }
+});
+

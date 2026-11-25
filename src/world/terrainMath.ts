@@ -169,9 +169,14 @@ export function evaluateTerrainFromNoise(
     }
   }
 
-  // Peat bog depression with organic sphagnum hummocks
+  // Peat bog depression with organic sphagnum hummocks above water and deeper laugas pools below water
   const bogPools = nBog;
-  const swampH = -1.68 + bogPools * 0.92;
+  const rawSwampH = -1.68 + bogPools * 0.92;
+  const belowWater = Math.max(0, SWAMP_WATER_Y - rawSwampH);
+  const swampH =
+    belowWater > 0
+      ? SWAMP_WATER_Y - belowWater * (1.35 + belowWater * 7.8)
+      : rawSwampH;
   h = lerp(h, swampH, swamp);
 
   // Elevated Swamp Islands (rabasaared) rising out of the bog

@@ -107,11 +107,13 @@ import {
   tryIgniteCampfire,
 } from '../game/survivalEngine';
 import { FpsDropLogger, FramePerfSample } from '../game/perfLogger';
+import { evaluatePlayerWaterState, SWIM_EYE_ABOVE_WATER } from '../game/waterPhysics';
 import {
   buildArchitectureAndProps,
   CampfireInfo,
   CircleCollider,
   InteractiveEntry,
+  isPointOnBoardwalkZone,
   SleepSpotInfo,
   StructureAcousticsInfo,
   TentInfo,
@@ -227,6 +229,8 @@ export interface WorldSurvivalSnapshot {
   nearLitCampfireFactor: number;
   seatedInTent: boolean;
   wearingRainJacket: boolean;
+  isSwimming: boolean;
+  waterDepthM: number;
   sleepProgress: { elapsedHours: number; totalHours: number; spotLabel: string } | null;
   collapseProgress: number;
 }
@@ -800,6 +804,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (survival.hydration < 20) conds.push(t('cond.thirsty'));
         if (survival.energy < 20) conds.push(t('cond.exhausted'));
         if (lastNearFire > 0.25) conds.push(t('cond.warm'));
+        if (lastIsSwimming) conds.push(t('cond.swimming'));
         if (isWearingRainJacket(inventory)) conds.push(t('cond.rainJacket'));
         const nextCond = conds.slice(0, 4).join(' · ');
         if (nextCond !== lastCondText) {
@@ -843,6 +848,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         nearLitCampfireFactor: lastNearFire,
         seatedInTent: seatedTent !== null,
         wearingRainJacket: isWearingRainJacket(inventory),
+        isSwimming: lastIsSwimming,
+        waterDepthM: lastWaterDepthM,
         sleepProgress: sleepSession
           ? {
               elapsedHours: sleepSession.elapsedHours,
@@ -853,6 +860,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         collapseProgress: Math.min(1, collapseTimer / COLLAPSE_DURATION_SEC),
       };
       callbacksRef.current.onSurvivalSnapshot(snap);
+    }
+
+    function rejectIfSwimming(): boolean {
+      if (!lastIsSwimming) return false;
+      callbacksRef.current.onToast(t('toast.cannotUsePackSwimming'));
+      return true;
     }
 
     function beginCollapse(): void {
@@ -882,7 +895,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       h = propsCtx.shelters.floorHeight(x, z, h);
       for (let i = 0; i < propsCtx.boardwalkZones.length; i++) {
         const b = propsCtx.boardwalkZones[i];
-        if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) {
+        if (isPointOnBoardwalkZone(b, x, z)) {
           if (b.y > h) h = b.y;
         }
       }
@@ -892,8 +905,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     function isOnBoardwalk(x: number, z: number): boolean {
       if (!propsCtx) return false;
       for (let i = 0; i < propsCtx.boardwalkZones.length; i++) {
-        const b = propsCtx.boardwalkZones[i];
-        if (x >= b.minX && x <= b.maxX && z >= b.minZ && z <= b.maxZ) return true;
+        if (isPointOnBoardwalkZone(propsCtx.boardwalkZones[i], x, z)) return true;
       }
       return false;
     }
@@ -1331,6 +1343,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         pushSurvivalSnapshot();
       },
       toggleFlashlight: () => {
+        if (!flashlightOn && rejectIfSwimming()) return;
         if (!hasFlashlight(inventory)) {
           callbacksRef.current.onToast(t('toast.noFlashlight'));
           return;
@@ -1438,6 +1451,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return JSON.stringify(soundscape.engine.getRawConfig(), null, 2);
       },
       eatItem: (itemId: ItemId) => {
+        if (rejectIfSwimming()) return;
         const res = eatFoodItem(survival, inventory, itemId);
         if (res.ok) {
           sound.playEatCrunch();
@@ -1448,6 +1462,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         pushSurvivalSnapshot();
       },
       drinkBottle: (uid: string) => {
+        if (rejectIfSwimming()) return;
         const res = drinkFromBottle(survival, inventory, uid);
         if (res.ok) {
           sound.playDrinkSip();
@@ -1458,12 +1473,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         pushSurvivalSnapshot();
       },
       loadBattery: () => {
+        if (rejectIfSwimming()) return;
         const res = loadFlashlightBattery(inventory);
         if (res.ok) sound.playImpact(0.35);
         callbacksRef.current.onToast(res.message);
         pushSurvivalSnapshot();
       },
       dropItem: (itemId: ItemId) => {
+        if (rejectIfSwimming()) return;
         if (removeStackItem(inventory, itemId, 1)) {
           if (itemId === 'flashlight' && !hasFlashlight(inventory) && flashlightOn) {
             flashlightOn = false;
@@ -1477,6 +1494,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
       },
       dropBottleByUid: (uid: string) => {
+        if (rejectIfSwimming()) return;
         if (dropBottle(inventory, uid)) {
           survival.backpackWeightKg = computeInventoryWeightKg(inventory);
           callbacksRef.current.onToast(t('toast.droppedBottle'));
@@ -1504,7 +1522,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return propsCtx ? propsCtx.getCampfireInfo(campfireId) : null;
       },
       placeCampfireFromWood: () => {
-        if (!propsCtx) return null;
+        if (!propsCtx || rejectIfSwimming()) return null;
         const woodHave = inventory.stacks.firewood ?? 0;
         if (woodHave < CAMPFIRE_WOOD_COST) {
           callbacksRef.current.onToast(
@@ -1527,7 +1545,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return placed.campfire;
       },
       pitchTent: () => {
-        if (!propsCtx) return null;
+        if (!propsCtx || rejectIfSwimming()) return null;
         if (!hasTent(inventory)) {
           callbacksRef.current.onToast(t('toast.noTent'));
           return null;
@@ -1576,6 +1594,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         });
       },
       toggleWearItem: (itemId: ItemId) => {
+        if (rejectIfSwimming()) return;
         if (itemId === 'rain_jacket' && !hasRainJacket(inventory)) {
           callbacksRef.current.onToast(t('toast.noRainJacket'));
           return;
@@ -1592,6 +1611,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         pushSurvivalSnapshot();
       },
       sleepInSleepingBag: () => {
+        if (rejectIfSwimming()) return;
         if (!hasSleepingBag(inventory)) {
           callbacksRef.current.onToast(t('toast.noSleepingBag'));
           return;
@@ -1726,6 +1746,20 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           triggerSpatialSoundForTest: (kind: SpatialClipKind) => SpatialAudioEvent | null;
           getSpatialAudioStats: () => SpatialAmbienceStats;
           setWeatherForTest: (w: WeatherId) => void;
+          setWindForTest: (wind: number | null) => void;
+          getWaterStateForTest: () => {
+            x: number;
+            y: number;
+            z: number;
+            cameraY: number;
+            waterY: number;
+            eyeAboveWater: number;
+            waterDepth: number;
+            isSwimming: boolean;
+            isSwampWading: boolean;
+            onBoardwalk: boolean;
+            windStrength: number;
+          };
           setHourForTest: (hour: number) => void;
           triggerLethalCollapse: (cause?: string) => void;
           setVitalsForTest: (patch: Partial<PlayerSurvivalState>) => void;
@@ -1997,6 +2031,22 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         lastObservedWeather = w;
         pushSurvivalSnapshot();
       },
+      setWindForTest: (wind: number | null) => {
+        weatherSky.windOverride = wind;
+      },
+      getWaterStateForTest: () => ({
+        x: player.pos.x,
+        y: player.pos.y,
+        z: player.pos.z,
+        cameraY: camera.position.y,
+        waterY: SWAMP_WATER_Y,
+        eyeAboveWater: camera.position.y - SWAMP_WATER_Y,
+        waterDepth: lastWaterDepthM,
+        isSwimming: lastIsSwimming,
+        isSwampWading: lastIsSwampWading,
+        onBoardwalk: lastOnBoardwalk,
+        windStrength: lastWindStrength,
+      }),
       setHourForTest: (hour: number) => {
         weatherSky.timeOfDay = ((hour % 24) + 24) % 24;
         pushSurvivalSnapshot();
@@ -2129,6 +2179,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (code === 'Tab' || code === 'KeyB') {
         if (phaseRef.current === 'playing') {
           e.preventDefault();
+          if (rejectIfSwimming()) return;
           callbacksRef.current.onToggleBackpack();
         }
         return;
@@ -2303,14 +2354,28 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       const onBoardwalk = isOnBoardwalk(player.pos.x, player.pos.z);
       const rawGroundY = getTerrainHeight(player.pos.x, player.pos.z);
-      const waterDepth = onBoardwalk ? 0 : Math.max(0, SWAMP_WATER_Y - rawGroundY);
-      const isSwimming = waterDepth >= 0.28;
-      const isSwampWading =
-        !isSwimming &&
-        !onBoardwalk &&
-        (waterDepth > 0.02 || getSwampFactor(player.pos.x, player.pos.z) > 0.35);
+      const curSurfaceY = getSurfaceHeightAt(player.pos.x, player.pos.z);
+      const activeBpNow = getActiveBlueprint();
+      const inWaterBasin =
+        Math.hypot(player.pos.x - activeBpNow.bogCenterX, player.pos.z - activeBpNow.bogCenterZ) <=
+        activeBpNow.bogRadius + 28;
+      const waterState = evaluatePlayerWaterState({
+        rawGroundY,
+        surfaceY: curSurfaceY,
+        onBoardwalk,
+        swampFactor: getSwampFactor(player.pos.x, player.pos.z),
+        crouching,
+        wasSwimming: lastIsSwimming,
+        eyeHeight: player.eyeHeight,
+        crouchEyeHeight: player.crouchEyeHeight,
+        inWaterBasin,
+      });
+      const wasSwimming = lastIsSwimming;
+      const waterDepth = waterState.waterDepth;
+      const isSwimming = waterState.isSwimming;
+      const isSwampWading = waterState.isSwampWading;
 
-      canRefillBogWater = !onBoardwalk && (waterDepth > 0.03 || isSwimming);
+      canRefillBogWater = waterState.canRefillBogWater;
 
       const burden = computeWeightBurden(survival.backpackWeightKg, survival.waterStomachLoadL);
       const tirednessSpeedMult =
@@ -2319,14 +2384,17 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           : 1.0;
 
       let speed = crouching ? 2.5 : wantRun && moving && !isSwimming ? 8.0 : 4.6;
-      if (isSwimming) speed = 2.45;
-      else if (isSwampWading) speed *= 0.64;
+      if (isSwimming) {
+        speed = 4.6 * waterState.speedMultiplier;
+      } else {
+        speed *= waterState.speedMultiplier;
+      }
       speed *= burden.moveSpeedMultiplier * tirednessSpeedMult;
 
       let locomotion: LocomotionState = 'idle';
       if (isSwimming) locomotion = 'swim';
       else if (moving) {
-        if (isSwampWading) locomotion = 'swamp';
+        if (waterState.isWadingWater || isSwampWading) locomotion = 'swamp';
         else if (wantRun) locomotion = 'run';
         else locomotion = 'walk';
       }
@@ -2347,8 +2415,21 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       lastOnBoardwalk = onBoardwalk;
       lastWaterDepthM = waterDepth;
 
+      if (isSwimming && !wasSwimming) {
+        if (uiModalOpen) {
+          callbacksRef.current.onCloseModals();
+        }
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+      } else if (!isSwimming && wasSwimming) {
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+      }
+
       const targetExertion = isSwimming
-        ? 0.75
+        ? moving
+          ? 0.78
+          : 0.48
         : moving && wantRun
           ? survival.physicalTiredness > 60
             ? 0.94
@@ -2379,12 +2460,32 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       player.vel.y -= 16.5 * dt;
       player.pos.y += player.vel.y * dt;
 
-      const newGroundY = getSurfaceHeightAt(player.pos.x, player.pos.z);
-      const minFloorY = isSwimming
-        ? Math.max(newGroundY, SWAMP_WATER_Y - 0.56)
-        : Math.max(newGroundY, SWAMP_WATER_Y - 0.36);
+      const newOnBoardwalk = isOnBoardwalk(player.pos.x, player.pos.z);
+      const newRawGroundY = getTerrainHeight(player.pos.x, player.pos.z);
+      const newSurfaceY = getSurfaceHeightAt(player.pos.x, player.pos.z);
+      const newInBasin =
+        Math.hypot(player.pos.x - activeBpNow.bogCenterX, player.pos.z - activeBpNow.bogCenterZ) <=
+        activeBpNow.bogRadius + 28;
+      const postWaterState = evaluatePlayerWaterState({
+        rawGroundY: newRawGroundY,
+        surfaceY: newSurfaceY,
+        onBoardwalk: newOnBoardwalk,
+        swampFactor: getSwampFactor(player.pos.x, player.pos.z),
+        crouching,
+        wasSwimming: isSwimming,
+        eyeHeight: player.eyeHeight,
+        crouchEyeHeight: player.crouchEyeHeight,
+        inWaterBasin: newInBasin,
+      });
+
+      const minFloorY = postWaterState.minFloorY;
       if (player.pos.y <= minFloorY) {
-        player.pos.y = minFloorY;
+        if (postWaterState.isSwimming && player.pos.y < minFloorY - 0.01) {
+          // Smooth buoyant rise when entering swimming water
+          player.pos.y = THREE.MathUtils.lerp(player.pos.y, minFloorY, Math.min(1, dt * 8));
+        } else {
+          player.pos.y = minFloorY;
+        }
         player.vel.y = 0;
         player.onGround = true;
         if (!prevOnGround && preLandVelY < -2.4) {
@@ -2396,7 +2497,13 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             intensity: Math.min(1.2, Math.abs(preLandVelY) / 8),
             payload: {
               impactSpeed: Math.abs(preLandVelY),
-              surface: onBoardwalk ? 'wooden_boardwalk' : waterDepth > 0.02 ? 'water' : 'forest_floor',
+              surface: newOnBoardwalk
+                ? 'wooden_boardwalk'
+                : postWaterState.isInWater
+                  ? 'water'
+                  : postWaterState.isSwampWading
+                    ? 'mud'
+                    : 'forest_floor',
             },
           });
         }
@@ -2405,22 +2512,21 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
       prevOnGround = player.onGround;
 
-      const targetEye = isSwimming
-        ? 1.12
-        : crouching
-          ? player.crouchEyeHeight
-          : player.eyeHeight;
-      player.currentEye = THREE.MathUtils.lerp(player.currentEye, targetEye, Math.min(1, dt * 10));
+      player.currentEye = THREE.MathUtils.lerp(
+        player.currentEye,
+        postWaterState.targetEyeHeight,
+        Math.min(1, dt * 8.5)
+      );
 
       let bobY = 0;
       if (isSwimming) {
-        player.bobPhase += dt * (moving ? 5.6 : 2.6);
-        bobY = Math.sin(player.bobPhase) * 0.055;
+        player.bobPhase += dt * (moving ? 5.2 : 2.3);
+        bobY = Math.sin(player.bobPhase) * (moving ? 0.032 : 0.018);
         if (moving) {
-          player.stepTimer += dt * 1.4;
+          player.stepTimer += dt * 1.15;
           if (player.stepTimer >= 1) {
             player.stepTimer = 0;
-            if (!sound.getSoundscapeEngine()) sound.playFootstep('water');
+            if (!sound.getSoundscapeEngine()) sound.playFootstep('swim');
           }
         }
       } else if (moving && player.onGround) {
@@ -2432,7 +2538,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           player.stepTimer = 0;
           let surf: FootstepSurface = 'grass';
           if (onBoardwalk) surf = 'wood';
-          else if (waterDepth > 0.02) surf = 'water';
+          else if (waterState.isWadingWater) surf = 'water';
+          else if (isSwampWading) surf = 'swamp';
           else if (distToRoadDetail(player.pos.x, player.pos.z).dist < 3.3) surf = 'road';
           if (!sound.getSoundscapeEngine()) sound.playFootstep(surf);
         }
@@ -2452,9 +2559,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         vomitPitchOffset = -Math.sin(vomitLurchTimer * Math.PI) * 0.24;
       }
 
+      const rawCamY = player.pos.y + player.currentEye + bobY + shiverY;
+      const safeCamY = postWaterState.isInWater
+        ? Math.max(SWAMP_WATER_Y + SWIM_EYE_ABOVE_WATER - 0.05, rawCamY)
+        : rawCamY;
+
       camera.position.set(
         player.pos.x + shiverX,
-        player.pos.y + player.currentEye + bobY + shiverY,
+        safeCamY,
         player.pos.z
       );
       camera.rotation.set(
@@ -3148,7 +3260,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
 
         if (terrainMgr && vegetation) {
-          terrainMgr.setLightingState(skyInfo.dayFactor, elapsed);
+          terrainMgr.setLightingState(
+            skyInfo.dayFactor,
+            elapsed,
+            skyInfo.windStrength,
+            skyInfo.skyHorizonColor
+          );
           terrainMgr.update(
             camera,
             chunkStats,
@@ -3392,6 +3509,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
 
       const tr0 = performance.now();
+      propsCtx?.renderWaterReflection(renderer, scene, camera);
       renderer.render(scene, camera);
       const tr1 = performance.now();
       renderer.domElement.dataset.ready = 'true';
@@ -3669,7 +3787,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               payload: { material: info.material, breakable: true, broken: info.broken },
             });
           },
-        }
+        },
+        isLowPowerGpu
       );
       soundscape.spatialQuery.setBoxColliders(propsCtx.boxColliders);
       weatherSky.setShelterGeometry(propsCtx.shelters);
@@ -3680,6 +3799,13 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const searchParams = new URLSearchParams(window.location.search);
       const viewParam = searchParams.get('view');
       const weatherParam = searchParams.get('weather') as WeatherId | null;
+      const windParam = searchParams.get('wind');
+      if (windParam !== null) {
+        const parsedWind = Number(windParam);
+        if (Number.isFinite(parsedWind)) {
+          weatherSky.windOverride = Math.max(0, Math.min(2, parsedWind));
+        }
+      }
       if (
         weatherParam === 'clear' ||
         weatherParam === 'mist' ||
@@ -3705,6 +3831,20 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         player.pos.set(bx, bw.y, bz);
         player.yaw = Math.atan2(-(activeBp.bogCenterX - bx), -(activeBp.bogCenterZ - bz));
         player.pitch = -0.14;
+      } else {
+        const camXRaw = searchParams.get('camX');
+        const camZRaw = searchParams.get('camZ');
+        if (camXRaw !== null && camZRaw !== null) {
+          const cx = Number(camXRaw);
+          const cz = Number(camZRaw);
+          if (Number.isFinite(cx) && Number.isFinite(cz)) {
+            player.pos.set(cx, getTerrainHeight(cx, cz), cz);
+            const cyaw = Number(searchParams.get('camYaw'));
+            const cpitch = Number(searchParams.get('camPitch'));
+            if (Number.isFinite(cyaw)) player.yaw = cyaw;
+            if (Number.isFinite(cpitch)) player.pitch = cpitch;
+          }
+        }
       }
 
       vegetation = new WorldVegetationSystem(loadedTextures, isSoftwareGl, isLowPowerGpu, propsCtx.shelters);
@@ -3721,6 +3861,13 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           roadTex: loadedTextures.terrainRoadTex,
           mossTex: loadedTextures.mossCarpetTex,
         }
+      );
+      const bogShoreDepth = propsCtx.getBogShoreDepthInfo();
+      terrainMgr.setBogShoreDepthMap(
+        bogShoreDepth.texture,
+        bogShoreDepth.centerX,
+        bogShoreDepth.centerZ,
+        bogShoreDepth.radius
       );
       terrainMgr.prewarmAround(player.pos.x, player.pos.z);
       scene.add(terrainMgr.group);

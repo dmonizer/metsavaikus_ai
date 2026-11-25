@@ -215,10 +215,13 @@ function makeSobelNormalTex(
 
 export interface WorldTextures {
   birchBark: THREE.CanvasTexture;
+  birchBarkBase: THREE.CanvasTexture;
   birchNormal: THREE.CanvasTexture;
   pineBark: THREE.CanvasTexture;
+  pineBarkUpper: THREE.CanvasTexture;
   pineNormal: THREE.CanvasTexture;
   spruceBark: THREE.CanvasTexture;
+  spruceNormal: THREE.CanvasTexture;
   logWallWeathered: THREE.CanvasTexture;
   logWallWarm: THREE.CanvasTexture;
   logWallNormal: THREE.CanvasTexture;
@@ -237,6 +240,10 @@ export interface WorldTextures {
   terrainMeadowTex: THREE.CanvasTexture;
   terrainRoadTex: THREE.CanvasTexture;
   boulderGranite: THREE.CanvasTexture;
+  boulderNormal: THREE.CanvasTexture;
+  boulderMossCoat: THREE.CanvasTexture;
+  boulderMossNormal: THREE.CanvasTexture;
+  boulderLichenCoat: THREE.CanvasTexture;
   boleteCap: THREE.CanvasTexture;
   boleteNormal: THREE.CanvasTexture;
   boleteStem: THREE.CanvasTexture;
@@ -299,80 +306,372 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     loadImage(spruceFoliageUrl),
   ]);
 
-  // 1. Silver Birch Bark (organic creamy papery white bark with dark fissures, peeling strips & lenticels)
+  // 1. High-Res Silver Birch Bark (1024x1024 — creamy papery white bark with horizontal peeling curls,
+  // dense dark lenticels, and iconic Estonian dark triangular ^ branch-scar chevrons)
   const birchBark = makeCanvasTex(
-    512,
-    512,
+    1024,
+    1024,
     (ctx, w, h) => {
       const rand = seededRand(101);
       const baseGrad = ctx.createLinearGradient(0, 0, w, 0);
       baseGrad.addColorStop(0, '#dad4c8');
-      baseGrad.addColorStop(0.45, '#e8e3d8');
-      baseGrad.addColorStop(0.85, '#d5cec0');
+      baseGrad.addColorStop(0.26, '#ebe7de');
+      baseGrad.addColorStop(0.54, '#e3ded3');
+      baseGrad.addColorStop(0.82, '#ebe6dc');
       baseGrad.addColorStop(1, '#dad4c8');
       ctx.fillStyle = baseGrad;
       ctx.fillRect(0, 0, w, h);
 
-      // Horizontal papery peel bands
-      for (let i = 0; i < 240; i++) {
-        const y = rand() * h;
+      // Subtle vertical warm-grey weathering streaks & pale papery tone modulation
+      for (let i = 0; i < 65; i++) {
         const x = rand() * w;
-        const bw = 28 + rand() * 110;
-        const bh = 2 + rand() * 9;
+        const sw = 18 + rand() * 58;
         ctx.fillStyle =
-          rand() > 0.55
-            ? 'rgba(255,252,244,0.36)'
-            : rand() > 0.5
-              ? 'rgba(148,136,120,0.24)'
-              : 'rgba(180,152,126,0.22)';
+          rand() > 0.5 ? 'rgba(255,253,247,0.16)' : 'rgba(138,130,116,0.11)';
+        ctx.fillRect(x, 0, sw, h);
+      }
+
+      // Horizontal papery peel bands (wrapped across X seam so tiling is invisible)
+      for (let i = 0; i < 480; i++) {
+        const y = rand() * h;
+        const x = rand() * w;
+        const bw = 34 + rand() * 165;
+        const bh = 2 + rand() * 11;
+        const tone = rand();
+        ctx.fillStyle =
+          tone > 0.62
+            ? 'rgba(255,252,245,0.42)'
+            : tone > 0.34
+              ? 'rgba(164,152,134,0.22)'
+              : 'rgba(196,162,128,0.20)'; // warm cinnamon inner-bark glimpse under peeling curls
         ctx.fillRect(x, y, bw, bh);
+        if (x + bw > w) ctx.fillRect(x - w, y, bw, bh);
       }
-      // Characteristic dark horizontal lenticels & diamond bark knots
-      for (let i = 0; i < 290; i++) {
+
+      // Crisp dark horizontal lenticels (fine rhythmic dashes across the papery bark)
+      for (let i = 0; i < 780; i++) {
         const y = rand() * h;
         const x = rand() * w;
-        const lw = 10 + rand() * 58;
-        const lh = 1.5 + rand() * 5.2;
-        ctx.fillStyle = rand() > 0.25 ? '#26231f' : '#5f5950';
-        ctx.beginPath();
-        ctx.ellipse(x, y, lw * 0.5, lh * 0.5, (rand() - 0.5) * 0.08, 0, Math.PI * 2);
-        ctx.fill();
+        const lw = 12 + rand() * 78;
+        const lh = 1.4 + rand() * 4.4;
+        const dark = rand() > 0.24;
+        ctx.fillStyle = dark ? 'rgba(34,31,27,0.84)' : 'rgba(92,84,74,0.58)';
+        const rot = (rand() - 0.5) * 0.06;
+        for (const ox of [0, -w, w]) {
+          if (x + ox + lw < 0 || x + ox - lw > w) continue;
+          ctx.beginPath();
+          ctx.ellipse(x + ox, y, lw * 0.5, lh * 0.5, rot, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
-      // Deep dark lichen/cracked knots
-      for (let i = 0; i < 26; i++) {
-        const x = rand() * w;
-        const y = rand() * h;
-        ctx.fillStyle = 'rgba(34,31,26,0.88)';
+
+      // Signature Silver Birch dark triangular `^` branch-scar chevrons & rough diamond knots (kaasik2.webp)
+      for (let i = 0; i < 24; i++) {
+        const cx = rand() * w;
+        const cy = rand() * h;
+        const span = 22 + rand() * 44;
+        const rise = 14 + rand() * 26;
+        const thick = 5 + rand() * 11;
+
+        for (const ox of [0, -w, w]) {
+          if (cx + ox + span < 0 || cx + ox - span > w) continue;
+          const px = cx + ox;
+          // Outer weathered charcoal diamond-chevron crust
+          ctx.fillStyle = 'rgba(28,25,22,0.92)';
+          ctx.beginPath();
+          ctx.moveTo(px - span, cy + rise * 0.55);
+          ctx.quadraticCurveTo(px - span * 0.32, cy - rise * 0.45, px, cy - rise * 0.82);
+          ctx.quadraticCurveTo(px + span * 0.32, cy - rise * 0.45, px + span, cy + rise * 0.55);
+          ctx.quadraticCurveTo(px + span * 0.25, cy + thick * 0.35, px, cy + thick * 0.72);
+          ctx.quadraticCurveTo(px - span * 0.25, cy + thick * 0.35, px - span, cy + rise * 0.55);
+          ctx.fill();
+
+          // Rough dark inner knot eye & horizontal crack striations
+          ctx.fillStyle = 'rgba(62,54,46,0.72)';
+          ctx.beginPath();
+          ctx.ellipse(px, cy - rise * 0.1, span * 0.24, thick * 0.42, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(18,16,14,0.85)';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.moveTo(px - span * 0.72, cy + rise * 0.25);
+          ctx.lineTo(px + span * 0.72, cy + rise * 0.25);
+          ctx.stroke();
+        }
+      }
+
+      // Subtle pale grey-green crustose lichen flecks on weathered birch trunks
+      for (let i = 0; i < 45; i++) {
+        const lx = rand() * w;
+        const ly = rand() * h;
+        const lr = 8 + rand() * 20;
+        ctx.fillStyle = 'rgba(148,162,134,0.18)';
         ctx.beginPath();
-        ctx.ellipse(x, y, 8 + rand() * 18, 4 + rand() * 8, 0, 0, Math.PI * 2);
+        ctx.ellipse(lx, ly, lr * 1.2, lr * 0.75, rand() * Math.PI, 0, Math.PI * 2);
         ctx.fill();
       }
     },
-    { repeatX: 1, repeatY: 2, anisotropy: aniso }
+    { repeatX: 1, repeatY: 3, anisotropy: aniso }
   );
-  const birchNormal = makeSobelNormalTex(birchBark.image as HTMLCanvasElement, 256, 256, 2.2, {
+  const birchNormal = makeSobelNormalTex(birchBark.image as HTMLCanvasElement, 512, 512, 2.4, {
     repeatX: 1,
-    repeatY: 2,
+    repeatY: 3,
   });
 
-  // 2. Real Photo-Derived Scots Pine & Norway Spruce Bark + Sobel Normal Maps
-  const pineBark = makePhotoTex(imgPineBark, 256, 512, {
+  // 1b. Silver Birch Fissured Basal Bark (512x512 — deep charcoal diamond-cracked corky lower trunk/roots)
+  const birchBarkBase = makeCanvasTex(
+    512,
+    512,
+    (ctx, w, h) => {
+      const rand = seededRand(109);
+      ctx.fillStyle = '#2d2a26';
+      ctx.fillRect(0, 0, w, h);
+
+      // Deep vertical interlocking charcoal fissures & pale chalky ridge crests
+      for (let i = 0; i < 240; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const rw = 6 + rand() * 18;
+        const rh = 24 + rand() * 78;
+        const isPaleCrest = rand() > 0.62;
+        ctx.fillStyle = isPaleCrest
+          ? 'rgba(138,132,122,0.52)'
+          : rand() > 0.45
+            ? 'rgba(66,62,56,0.75)'
+            : 'rgba(20,18,16,0.88)';
+        for (const ox of [0, -w, w]) {
+          if (x + ox + rw < 0 || x + ox - rw > w) continue;
+          ctx.beginPath();
+          ctx.moveTo(x + ox, y - rh * 0.5);
+          ctx.lineTo(x + ox + rw * 0.5, y);
+          ctx.lineTo(x + ox, y + rh * 0.5);
+          ctx.lineTo(x + ox - rw * 0.5, y);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+      // Subtle mossy green flecks near the damp root collar
+      for (let i = 0; i < 65; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        ctx.fillStyle = 'rgba(72,96,46,0.26)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, 5 + rand() * 14, 7 + rand() * 18, rand() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
+    { repeatX: 2, repeatY: 2, anisotropy: aniso }
+  );
+
+  // 2. High-Res Scots Pine Lower Plated Bark (1024x1024 — rugged grey-brown crocodile plates + reddish crevices)
+  const pineBark = makeCanvasTex(
+    1024,
+    1024,
+    (ctx, w, h) => {
+      const rand = seededRand(202);
+      // Tile photographic pine bark as micro-grain base
+      ctx.drawImage(imgPineBark, 0, 0, w * 0.5, h * 0.5);
+      ctx.drawImage(imgPineBark, w * 0.5, 0, w * 0.5, h * 0.5);
+      ctx.drawImage(imgPineBark, 0, h * 0.5, w * 0.5, h * 0.5);
+      ctx.drawImage(imgPineBark, w * 0.5, h * 0.5, w * 0.5, h * 0.5);
+
+      // Desaturate slightly toward weathered Baltic grey-brown outer plates
+      ctx.fillStyle = 'rgba(62,52,44,0.34)';
+      ctx.fillRect(0, 0, w, h);
+
+      // Deep interlocking vertical/diagonal dark crevices separating chunky scaly bark plates
+      const cols = 14;
+      for (let c = 0; c < cols; c++) {
+        const baseX = (c / cols) * w;
+        // Dark crevice furrow
+        ctx.strokeStyle = 'rgba(22,16,13,0.88)';
+        ctx.lineWidth = 7 + rand() * 9;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        let px = baseX;
+        ctx.moveTo(px, 0);
+        for (let seg = 1; seg <= 10; seg++) {
+          const py = (seg / 10) * h;
+          px = baseX + (seg === 10 ? 0 : (rand() - 0.5) * 32);
+          ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+
+        // Warm cinnamon inner-fissure glow along crevice walls (visible on mature Estonian Scots pine)
+        ctx.strokeStyle = 'rgba(136,72,42,0.34)';
+        ctx.lineWidth = 3.5;
+        ctx.stroke();
+      }
+
+      // Layered flat scaly bark plates between furrows
+      for (let i = 0; i < 420; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const pw = 20 + rand() * 44;
+        const ph = 38 + rand() * 115;
+        const tone = rand();
+        ctx.fillStyle =
+          tone > 0.62
+            ? 'rgba(132,114,98,0.44)'
+            : tone > 0.3
+              ? 'rgba(94,76,62,0.46)'
+              : 'rgba(154,102,72,0.28)';
+        for (const ox of [0, -w, w]) {
+          if (x + ox + pw < 0 || x + ox - pw > w) continue;
+          ctx.beginPath();
+          ctx.roundRect(x + ox - pw * 0.5, y - ph * 0.5, pw, ph, 6);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(26,18,14,0.52)';
+          ctx.lineWidth = 2.0;
+          ctx.stroke();
+        }
+      }
+      // Subtle pale grey-green lichen & weathered highlights on outer plate ridges
+      for (let i = 0; i < 75; i++) {
+        ctx.fillStyle = rand() > 0.4 ? 'rgba(168,162,148,0.16)' : 'rgba(128,146,112,0.16)';
+        ctx.beginPath();
+        ctx.ellipse(rand() * w, rand() * h, 8 + rand() * 20, 12 + rand() * 32, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
+    { repeatX: 1, repeatY: 3, anisotropy: aniso }
+  );
+  const pineNormal = makeSobelNormalTex(pineBark.image as HTMLCanvasElement, 512, 512, 3.6, {
     repeatX: 1,
     repeatY: 3,
-    anisotropy: aniso,
-    brightnessBoost: 1.48,
-    saturation: 1.12,
   });
-  const pineNormal = makeSobelNormalTex(imgPineBark, 256, 256, 3.2, {
+
+  // 2b. Scots Pine Upper Foxy-Orange Flaking Bark (512x512 — pine-forest-with-track.jpg iconic warm terracotta upper trunk)
+  const pineBarkUpper = makeCanvasTex(
+    512,
+    512,
+    (ctx, w, h) => {
+      const rand = seededRand(209);
+      const grad = ctx.createLinearGradient(0, 0, w, 0);
+      grad.addColorStop(0, '#c86a38');
+      grad.addColorStop(0.5, '#d97c44');
+      grad.addColorStop(1, '#c86a38');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.globalAlpha = 0.22;
+      ctx.drawImage(imgPineBark, 0, 0, w, h);
+      ctx.globalAlpha = 1.0;
+
+      // Thin papery peeling amber/terracotta bark flakes
+      for (let i = 0; i < 360; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const fw = 12 + rand() * 34;
+        const fh = 18 + rand() * 68;
+        const t = rand();
+        ctx.fillStyle =
+          t > 0.65
+            ? 'rgba(232,148,86,0.52)'
+            : t > 0.3
+              ? 'rgba(176,84,42,0.48)'
+              : 'rgba(124,58,32,0.44)';
+        for (const ox of [0, -w, w]) {
+          if (x + ox + fw < 0 || x + ox - fw > w) continue;
+          ctx.beginPath();
+          ctx.roundRect(x + ox - fw * 0.5, y - fh * 0.5, fw, fh, 4);
+          ctx.fill();
+          // Crisp dark peeled flake shadow edge
+          ctx.strokeStyle = 'rgba(72,32,16,0.42)';
+          ctx.lineWidth = 1.4;
+          ctx.stroke();
+        }
+      }
+      // Fine papery horizontal curl marks
+      for (let i = 0; i < 120; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        ctx.strokeStyle = 'rgba(246,184,126,0.34)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 10 + rand() * 24, y + (rand() - 0.5) * 6);
+        ctx.stroke();
+      }
+    },
+    { repeatX: 1, repeatY: 3, anisotropy: aniso }
+  );
+
+  // 2c. Dedicated Norway Spruce Bark (1024x1024 — warm reddish-brown/mahogany-grey round flaking scales matching kuusiku-alune.jpg!)
+  const spruceBark = makeCanvasTex(
+    1024,
+    1024,
+    (ctx, w, h) => {
+      const rand = seededRand(233);
+      // Warm reddish-mahogany grey base (distinct from grey pine plates!)
+      ctx.fillStyle = '#5c4136';
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.globalAlpha = 0.25;
+      ctx.drawImage(imgPineBark, 0, 0, w * 0.5, h * 0.5);
+      ctx.drawImage(imgPineBark, w * 0.5, 0, w * 0.5, h * 0.5);
+      ctx.drawImage(imgPineBark, 0, h * 0.5, w * 0.5, h * 0.5);
+      ctx.drawImage(imgPineBark, w * 0.5, h * 0.5, w * 0.5, h * 0.5);
+      ctx.globalAlpha = 1.0;
+
+      // Warm reddish-brown tint glaze
+      ctx.fillStyle = 'rgba(104,64,48,0.38)';
+      ctx.fillRect(0, 0, w, h);
+
+      // Characteristic rounded flaking spruce scales (shingled overlapping chips, not long pine furrows)
+      for (let i = 0; i < 1150; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const rx = 10 + rand() * 22;
+        const ry = 14 + rand() * 34;
+        const t = rand();
+        ctx.fillStyle =
+          t > 0.68
+            ? 'rgba(136,92,74,0.58)' // reddish-brown flake
+            : t > 0.36
+              ? 'rgba(104,78,68,0.62)' // purplish-brown grey scale
+              : t > 0.14
+                ? 'rgba(72,52,44,0.68)' // dark shadowed scale
+                : 'rgba(148,118,98,0.44)'; // weathered dusty outer scale
+        const rot = (rand() - 0.5) * 0.32;
+        for (const ox of [0, -w, w]) {
+          if (x + ox + rx < 0 || x + ox - rx > w) continue;
+          ctx.beginPath();
+          ctx.ellipse(x + ox, y, rx, ry, rot, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(32,20,16,0.58)';
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+        }
+      }
+
+      // Pale amber-white spruce resin drips & silvery crustose lichen patches
+      for (let i = 0; i < 28; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const len = 34 + rand() * 88;
+        ctx.strokeStyle = 'rgba(218,210,192,0.34)';
+        ctx.lineWidth = 2.4 + rand() * 2.5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + (rand() - 0.5) * 8, y + len);
+        ctx.stroke();
+      }
+      for (let i = 0; i < 85; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        ctx.fillStyle = rand() > 0.45 ? 'rgba(148,164,132,0.22)' : 'rgba(92,118,62,0.18)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, 7 + rand() * 18, 9 + rand() * 22, rand() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
+    { repeatX: 1, repeatY: 3, anisotropy: aniso }
+  );
+  const spruceNormal = makeSobelNormalTex(spruceBark.image as HTMLCanvasElement, 512, 512, 3.1, {
     repeatX: 1,
     repeatY: 3,
-  });
-  const spruceBark = makePhotoTex(imgPineBark, 256, 256, {
-    repeatX: 1,
-    repeatY: 3,
-    anisotropy: aniso,
-    brightnessBoost: 0.78,
-    saturation: 0.72,
   });
 
   // 3. Heritage Estonian Architecture Textures (Matched to large_house & sauna_house photos + Sobel Normals)
@@ -543,15 +842,237 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     { repeatX: 1, repeatY: 1, anisotropy: aniso }
   );
 
+  // 4b. High-Res Cleaved Baltic Glacial Granite Boulder + Moss Coat + Reindeer Lichen Coat (1024x1024)
   const boulderGranite = makeCanvasTex(
-    256,
-    256,
+    1024,
+    1024,
     (ctx, w, h) => {
-      ctx.drawImage(imgFieldstone, 0, 0, w, h);
-      ctx.fillStyle = 'rgba(72,78,66,0.32)';
+      const rand = seededRand(488);
+      // Base photo fieldstone tiled at 2x2 for crisp mineral grain
+      ctx.drawImage(imgFieldstone, 0, 0, w * 0.5, h * 0.5);
+      ctx.drawImage(imgFieldstone, w * 0.5, 0, w * 0.5, h * 0.5);
+      ctx.drawImage(imgFieldstone, 0, h * 0.5, w * 0.5, h * 0.5);
+      ctx.drawImage(imgFieldstone, w * 0.5, h * 0.5, w * 0.5, h * 0.5);
+
+      // Cool Nordic granite tone balance
+      ctx.fillStyle = 'rgba(116,120,124,0.34)';
       ctx.fillRect(0, 0, w, h);
+
+      // Large weathered mineral mottling patches (quartz pale patches & dark basaltic veins)
+      for (let i = 0; i < 160; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const rx = 24 + rand() * 78;
+        const ry = 18 + rand() * 62;
+        const t = rand();
+        ctx.fillStyle =
+          t > 0.55
+            ? 'rgba(176,178,176,0.22)'
+            : t > 0.25
+              ? 'rgba(72,76,82,0.26)'
+              : 'rgba(154,132,122,0.16)'; // Nordic rapakivi pinkish feldspar tint
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, rand() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Fine crystalline granite speckle (quartz white, mica charcoal, warm feldspar)
+      for (let i = 0; i < 6400; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const r = 1.0 + rand() * 3.1;
+        const t = rand();
+        ctx.fillStyle =
+          t > 0.65
+            ? 'rgba(214,216,214,0.42)'
+            : t > 0.32
+              ? 'rgba(42,44,48,0.52)'
+              : 'rgba(166,144,132,0.36)';
+        ctx.fillRect(x, y, r, r * (0.7 + rand() * 0.6));
+      }
+
+      // Sharp cleaved rock fracture cracks & stepped mineral seams (moss-covered-stone.jpg)
+      for (let i = 0; i < 42; i++) {
+        let x = rand() * w;
+        let y = rand() * h;
+        let ang = rand() * Math.PI * 2;
+        ctx.strokeStyle = 'rgba(28,30,32,0.68)';
+        ctx.lineWidth = 1.6 + rand() * 2.6;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        const steps = 4 + Math.floor(rand() * 5);
+        for (let s = 0; s < steps; s++) {
+          ang += (rand() - 0.5) * 0.85;
+          x += Math.cos(ang) * (24 + rand() * 48);
+          y += Math.sin(ang) * (24 + rand() * 48);
+          ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        // Highlighted cleaved rock lip next to crack
+        ctx.strokeStyle = 'rgba(202,206,204,0.24)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      }
+
+      // Subtle pale crustose rock lichen dots on dry granite faces
+      for (let i = 0; i < 85; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const r = 6 + rand() * 18;
+        ctx.fillStyle = rand() > 0.45 ? 'rgba(182,190,174,0.28)' : 'rgba(116,134,88,0.22)';
+        ctx.beginPath();
+        ctx.ellipse(x, y, r * 1.15, r * 0.82, rand() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
     },
-    { repeatX: 2, repeatY: 2, anisotropy: aniso }
+    { repeatX: 1, repeatY: 1, anisotropy: aniso }
+  );
+  const boulderNormal = makeSobelNormalTex(boulderGranite.image as HTMLCanvasElement, 512, 512, 3.8, {
+    repeatX: 1,
+    repeatY: 1,
+  });
+
+  // Shaggy Emerald Forest Rock Moss Coat with scattered fallen golden birch leaves & spruce needles (moss-covered-stone.jpg)
+  const boulderMossCoat = makeCanvasTex(
+    1024,
+    1024,
+    (ctx, w, h) => {
+      const rand = seededRand(489);
+      ctx.fillStyle = '#36581e';
+      ctx.fillRect(0, 0, w, h);
+
+      // Soft mossy pillows & shadowed crevices
+      for (let i = 0; i < 480; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const r = 16 + rand() * 46;
+        const g = ctx.createRadialGradient(x, y, 2, x, y, r);
+        const bright = rand() > 0.42;
+        g.addColorStop(0, bright ? 'rgba(116,162,48,0.58)' : 'rgba(42,76,22,0.62)');
+        g.addColorStop(1, 'rgba(38,68,20,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Thousands of tiny shaggy feather-moss shoots (Hylocomium / Pleurozium micro-texture)
+      for (let i = 0; i < 5200; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const a = rand() * Math.PI * 2;
+        const len = 5 + rand() * 14;
+        const t = rand();
+        ctx.strokeStyle =
+          t > 0.62
+            ? 'rgba(148,192,62,0.72)'
+            : t > 0.25
+              ? 'rgba(84,132,36,0.76)'
+              : 'rgba(32,58,18,0.72)';
+        ctx.lineWidth = 1.6 + rand() * 1.8;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        ctx.stroke();
+      }
+
+      // Scattered fallen brown pine/spruce needles & small golden-amber autumn birch leaves resting on the moss
+      for (let i = 0; i < 240; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const a = rand() * Math.PI * 2;
+        const len = 10 + rand() * 18;
+        ctx.strokeStyle = rand() > 0.4 ? 'rgba(138,88,44,0.72)' : 'rgba(98,62,32,0.65)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        ctx.stroke();
+      }
+      for (let i = 0; i < 38; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const lr = 7 + rand() * 11;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(rand() * Math.PI * 2);
+        ctx.fillStyle = rand() > 0.45 ? 'rgba(186,128,46,0.82)' : 'rgba(148,92,38,0.78)';
+        ctx.beginPath();
+        ctx.moveTo(0, -lr);
+        ctx.quadraticCurveTo(lr * 0.72, 0, 0, lr);
+        ctx.quadraticCurveTo(-lr * 0.72, 0, 0, -lr);
+        ctx.fill();
+        ctx.restore();
+      }
+    },
+    { repeatX: 1, repeatY: 1, anisotropy: aniso }
+  );
+  const boulderMossNormal = makeSobelNormalTex(boulderMossCoat.image as HTMLCanvasElement, 512, 512, 2.8, {
+    repeatX: 1,
+    repeatY: 1,
+  });
+
+  // Silvery-Pale Nordic Reindeer Lichen & Olive Moss Crust (different-moss-covered-stone.webp)
+  const boulderLichenCoat = makeCanvasTex(
+    1024,
+    1024,
+    (ctx, w, h) => {
+      const rand = seededRand(491);
+      ctx.fillStyle = '#7c8668';
+      ctx.fillRect(0, 0, w, h);
+
+      // Olive moss base tufts
+      for (let i = 0; i < 380; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const r = 18 + rand() * 52;
+        ctx.fillStyle = rand() > 0.45 ? 'rgba(92,114,52,0.48)' : 'rgba(64,84,38,0.45)';
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Dense pale silvery-sage Cladonia reindeer lichen cushions
+      for (let i = 0; i < 560; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const r = 10 + rand() * 32;
+        const g = ctx.createRadialGradient(x, y, 1, x, y, r);
+        g.addColorStop(0, 'rgba(218,224,204,0.84)');
+        g.addColorStop(0.65, 'rgba(178,188,162,0.58)');
+        g.addColorStop(1, 'rgba(128,140,112,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Fine coral-like branching lichen micro-tufts & occasional pine needles
+      for (let i = 0; i < 3200; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const a = rand() * Math.PI * 2;
+        const len = 3 + rand() * 9;
+        ctx.strokeStyle = rand() > 0.35 ? 'rgba(232,236,218,0.68)' : 'rgba(116,136,78,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        ctx.stroke();
+      }
+      for (let i = 0; i < 160; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const a = rand() * Math.PI * 2;
+        ctx.strokeStyle = 'rgba(128,82,42,0.64)';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * (10 + rand() * 14), y + Math.sin(a) * (10 + rand() * 14));
+        ctx.stroke();
+      }
+    },
+    { repeatX: 1, repeatY: 1, anisotropy: aniso }
   );
 
   // 5. Photorealistic Mushroom Textures (All 7 Estonian Species!)
@@ -791,76 +1312,170 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
   grassPatternCanvas.height = 256;
   grassPatternCanvas.getContext('2d')!.drawImage(imgMeadowGrass, 0, 0, 256, 256);
 
-  // Silver Birch Twig & Serrated Leaf Spray (512x512)
+  // Silver Birch 2x2 Multi-Variant Botanical Atlas (1024x1024 — 4 distinct 512x512 sprig types matching kaasik.jpg & kaasik2.webp!)
+  // Q0 (0,0): Weeping trailing shoots | Q1 (512,0): Airy sunlit outer spray | Q2 (0,512): Mid-crown dense branchlet | Q3 (512,512): Crown-tip fine forked twigs
   const birchLeafCard = makeCanvasTex(
-    512,
-    512,
+    1024,
+    1024,
     (ctx, w, h) => {
-      const rand = seededRand(301);
       ctx.clearRect(0, 0, w, h);
       const leafPat = ctx.createPattern(leafPatternCanvas, 'repeat')!;
 
-      // Fine drooping birch catkins/twigs
-      ctx.strokeStyle = '#3a2d20';
-      ctx.lineCap = 'round';
-      const twigs = [
-        [256, 502, 256, 48, 6.2],
-        [256, 424, 92, 146, 4.2],
-        [256, 396, 422, 152, 4.2],
-        [256, 290, 114, 72, 3.4],
-        [256, 260, 396, 80, 3.4],
-        [168, 286, 44, 244, 2.8],
-        [346, 276, 468, 248, 2.8],
-        [176, 178, 86, 102, 2.2],
-        [334, 174, 426, 98, 2.2],
-      ];
-      for (const [x0, y0, x1, y1, lw] of twigs) {
-        ctx.lineWidth = lw;
-        ctx.beginPath();
-        ctx.moveTo(x0, y0);
-        ctx.quadraticCurveTo((x0 + x1) * 0.5 + (rand() - 0.5) * 32, (y0 + y1) * 0.5, x1, y1);
-        ctx.stroke();
-      }
-
-      // 255 crisp airy serrated birch leaves with sunlit chartreuse tips & sky-filtering micro-gaps
-      for (let i = 0; i < 255; i++) {
-        const angle = rand() * Math.PI * 2;
-        const dist = Math.pow(rand(), 0.58) * 224;
-        const cx = 256 + Math.cos(angle) * dist * 1.02;
-        const cy = 246 + Math.sin(angle) * dist * 0.94;
-        if (cx < 20 || cx > w - 20 || cy < 20 || cy > h - 22) continue;
-        const leafLen = 19 + rand() * 21;
-        const leafWid = leafLen * (0.64 + rand() * 0.22);
-        const rot = angle + (rand() - 0.5) * 0.95;
-        const outer = dist > 112;
-
+      const drawBirchLeaf = (
+        cx: number,
+        cy: number,
+        leafLen: number,
+        leafWid: number,
+        rot: number,
+        shadeMode: 'inner' | 'mid' | 'sun'
+      ) => {
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate(rot);
         ctx.fillStyle = leafPat;
         ctx.beginPath();
-        ctx.moveTo(0, -leafLen * 0.56);
-        ctx.quadraticCurveTo(leafWid * 0.84, -leafLen * 0.04, 0, leafLen * 0.56);
-        ctx.quadraticCurveTo(-leafWid * 0.84, -leafLen * 0.04, 0, -leafLen * 0.56);
+        // Authentic pointed serrated Silver Birch diamond-deltoid leaf shape
+        ctx.moveTo(0, -leafLen * 0.62);
+        ctx.quadraticCurveTo(leafWid * 0.52, -leafLen * 0.14, leafWid * 0.46, leafLen * 0.18);
+        ctx.quadraticCurveTo(leafWid * 0.24, leafLen * 0.5, 0, leafLen * 0.54);
+        ctx.quadraticCurveTo(-leafWid * 0.24, leafLen * 0.5, -leafWid * 0.46, leafLen * 0.18);
+        ctx.quadraticCurveTo(-leafWid * 0.52, -leafLen * 0.14, 0, -leafLen * 0.62);
         ctx.fill();
 
-        // Depth AO: rich mid-emerald inner leaves, bright sunlit golden-lime outer birch leaves
-        ctx.fillStyle = outer
-          ? rand() > 0.35
-            ? 'rgba(176,214,82,0.34)'
-            : 'rgba(104,148,48,0.2)'
-          : 'rgba(28,58,22,0.32)';
+        ctx.fillStyle =
+          shadeMode === 'sun'
+            ? 'rgba(182,218,86,0.36)'
+            : shadeMode === 'mid'
+              ? 'rgba(98,144,44,0.22)'
+              : 'rgba(26,56,20,0.36)';
         ctx.fill();
 
-        // Delicate central midrib highlight
-        ctx.strokeStyle = 'rgba(202,232,118,0.32)';
-        ctx.lineWidth = 1.0;
+        // Crisp midrib highlight
+        ctx.strokeStyle = shadeMode === 'sun' ? 'rgba(214,240,126,0.38)' : 'rgba(162,196,86,0.22)';
+        ctx.lineWidth = 0.9;
         ctx.beginPath();
-        ctx.moveTo(0, -leafLen * 0.42);
-        ctx.lineTo(0, leafLen * 0.42);
+        ctx.moveTo(0, -leafLen * 0.46);
+        ctx.lineTo(0, leafLen * 0.44);
         ctx.stroke();
         ctx.restore();
-      }
+      };
+
+      const drawBirchQuad = (q: number, ox: number, oy: number) => {
+        const rand = seededRand(301 + q * 37);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(ox + 6, oy + 6, 500, 500);
+        ctx.clip();
+        ctx.translate(ox, oy);
+
+        // Fine dark reddish-brown birch twigs
+        ctx.strokeStyle = '#382a1e';
+        ctx.lineCap = 'round';
+        const twigs: Array<[number, number, number, number, number, number]> =
+          q === 0
+            ? [
+                // Q0: Delicate weeping trailing shoots
+                [256, 496, 256, 62, 5.2, -16],
+                [256, 420, 108, 178, 3.6, -42],
+                [256, 398, 404, 184, 3.6, 42],
+                [162, 272, 62, 344, 2.2, -32],
+                [350, 266, 452, 336, 2.2, 32],
+                [256, 260, 128, 92, 2.6, -24],
+                [256, 240, 386, 98, 2.6, 24],
+                [190, 168, 98, 210, 1.8, -18],
+                [322, 162, 418, 206, 1.8, 18],
+              ]
+            : q === 1
+              ? [
+                  // Q1: Wide airy outer spray with fine forked twigs
+                  [256, 498, 248, 56, 5.6, 20],
+                  [256, 426, 76, 160, 3.8, -28],
+                  [256, 404, 434, 150, 3.8, 28],
+                  [252, 284, 96, 74, 3.0, -18],
+                  [252, 262, 412, 78, 3.0, 18],
+                  [164, 290, 54, 248, 2.3, -15],
+                  [348, 278, 460, 246, 2.3, 15],
+                ]
+              : q === 2
+                ? [
+                    // Q2: Fuller mid-crown branching spray
+                    [256, 498, 264, 46, 6.2, -14],
+                    [256, 430, 82, 194, 4.2, -26],
+                    [256, 412, 426, 198, 4.2, 24],
+                    [258, 316, 86, 102, 3.4, -22],
+                    [258, 292, 422, 106, 3.4, 22],
+                    [260, 194, 146, 58, 2.5, -14],
+                    [260, 186, 372, 62, 2.5, 14],
+                    [156, 274, 60, 304, 2.2, -16],
+                    [352, 270, 452, 298, 2.2, 16],
+                  ]
+                : [
+                    // Q3: Ascending narrow crown-tip forked twigs
+                    [256, 498, 256, 34, 4.8, 10],
+                    [256, 416, 134, 138, 3.2, -18],
+                    [256, 394, 378, 134, 3.2, 18],
+                    [256, 272, 148, 62, 2.6, -12],
+                    [256, 256, 366, 66, 2.6, 12],
+                    [194, 242, 92, 182, 2.0, -14],
+                    [318, 236, 420, 178, 2.0, 14],
+                  ];
+
+        const twigPoints: Array<{ x: number; y: number; dx: number; dy: number }> = [];
+        for (const [x0, y0, x1, y1, lw, bend] of twigs) {
+          const cpx = (x0 + x1) * 0.5 + bend;
+          const cpy = (y0 + y1) * 0.5;
+          ctx.lineWidth = lw;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.quadraticCurveTo(cpx, cpy, x1, y1);
+          ctx.stroke();
+
+          // Collect points along each twig so leaves cluster organically on shoots (leaving authentic sky gaps!)
+          const steps = 11;
+          for (let s = 1; s <= steps; s++) {
+            const t = s / steps;
+            const omt = 1 - t;
+            const px = omt * omt * x0 + 2 * omt * t * cpx + t * t * x1;
+            const py = omt * omt * y0 + 2 * omt * t * cpy + t * t * y1;
+            const dx = 2 * omt * (cpx - x0) + 2 * t * (x1 - cpx);
+            const dy = 2 * omt * (cpy - y0) + 2 * t * (y1 - cpy);
+            twigPoints.push({ x: px, y: py, dx, dy });
+          }
+        }
+
+        const leafCount = q === 2 ? 290 : q === 3 ? 210 : 245;
+        for (let i = 0; i < leafCount; i++) {
+          const anchor = twigPoints[Math.floor(rand() * twigPoints.length)];
+          const spread = (q === 2 ? 44 : 36) * (0.25 + rand() * 0.85);
+          const ang = rand() * Math.PI * 2;
+          const cx = anchor.x + Math.cos(ang) * spread;
+          const cy = anchor.y + Math.sin(ang) * spread;
+          if (cx < 22 || cx > 490 || cy < 20 || cy > 488) continue;
+
+          const distFromCenter = Math.hypot(cx - 256, cy - 248);
+          const leafLen = (q === 0 ? 15 : 17) + rand() * 17;
+          const leafWid = leafLen * (0.68 + rand() * 0.22);
+          const twigAng = Math.atan2(anchor.dy, anchor.dx) + Math.PI * 0.5;
+          const rot = twigAng + (rand() - 0.5) * 1.45;
+          const shadeMode: 'inner' | 'mid' | 'sun' =
+            distFromCenter < 98 && rand() > 0.3
+              ? 'inner'
+              : distFromCenter > 138 || cy < 150
+                ? rand() > 0.3
+                  ? 'sun'
+                  : 'mid'
+                : 'mid';
+
+          drawBirchLeaf(cx, cy, leafLen, leafWid, rot, shadeMode);
+        }
+
+        ctx.restore();
+      };
+
+      drawBirchQuad(0, 0, 0);
+      drawBirchQuad(1, 512, 0);
+      drawBirchQuad(2, 0, 512);
+      drawBirchQuad(3, 512, 512);
     },
     { clamp: true, anisotropy: aniso, bleedRgb: [86, 126, 48] }
   );
@@ -913,118 +1528,310 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     { clamp: true, anisotropy: aniso, bleedRgb: [62, 98, 34] }
   );
 
-  // Scots Pine Needle Bough Cluster (512x512 — radiating tufts of fine needles on copper-brown branches)
+  // Scots Pine 2x2 Multi-Variant Botanical Atlas (1024x1024 — matching pine-forest.webp & pine-forest-with-track.jpg!)
+  // Q0: Wide gnarled bough fork | Q1: Airy sunlit outer umbrella spray | Q2: Asymmetric crooked branch tuft | Q3: Dense crown-top rosette puff
   const pineNeedleCard = makeCanvasTex(
-    512,
-    512,
+    1024,
+    1024,
     (ctx, w, h) => {
-      const rand = seededRand(302);
       ctx.clearRect(0, 0, w, h);
       const spPat = ctx.createPattern(sprucePatternCanvas, 'repeat')!;
-      ctx.strokeStyle = '#683f26';
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 8;
-      ctx.beginPath();
-      ctx.moveTo(256, 492);
-      ctx.lineTo(256, 174);
-      ctx.moveTo(256, 360);
-      ctx.lineTo(86, 176);
-      ctx.moveTo(256, 338);
-      ctx.lineTo(426, 168);
-      ctx.moveTo(166, 266);
-      ctx.lineTo(96, 262);
-      ctx.moveTo(344, 256);
-      ctx.lineTo(422, 260);
-      ctx.stroke();
 
-      // Airy sunlit Scots pine needle rosettes (78 clusters instead of solid dark pancake!)
-      for (let c = 0; c < 78; c++) {
-        const ang = rand() * Math.PI * 2;
-        const rad = Math.pow(rand(), 0.56) * 204;
-        const cx = 256 + Math.cos(ang) * rad;
-        const cy = 224 + Math.sin(ang) * rad * 0.86;
-        if (cx < 32 || cx > w - 32 || cy < 32 || cy > h - 36) continue;
-        const inner = rad < 84;
-        for (let n = 0; n < 20; n++) {
-          const na = (n / 20) * Math.PI * 2 + rand() * 0.28;
-          const nLen = 24 + rand() * 22;
-          ctx.strokeStyle = spPat;
-          ctx.lineWidth = 2.8;
+      const drawPineQuad = (q: number, ox: number, oy: number) => {
+        const rand = seededRand(302 + q * 43);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(ox + 6, oy + 6, 500, 500);
+        ctx.clip();
+        ctx.translate(ox, oy);
+
+        // Crooked reddish-brown & copper woody pine branchlets
+        const branches: Array<[number, number, number, number, number, number]> =
+          q === 0
+            ? [
+                [256, 492, 246, 174, 11, 22],
+                [252, 368, 78, 176, 7.5, -24],
+                [250, 336, 434, 168, 7.5, 24],
+                [158, 272, 74, 270, 5.2, -12],
+                [354, 254, 444, 266, 5.2, 12],
+                [248, 228, 166, 98, 5.0, -14],
+                [248, 220, 352, 102, 5.0, 14],
+              ]
+            : q === 1
+              ? [
+                  [256, 492, 270, 152, 9.5, -26],
+                  [260, 352, 96, 144, 6.5, -22],
+                  [262, 310, 424, 142, 6.5, 20],
+                  [178, 242, 124, 90, 4.5, -14],
+                  [348, 224, 396, 92, 4.5, 14],
+                ]
+              : q === 2
+                ? [
+                    [256, 490, 212, 166, 10.5, 34],
+                    [236, 362, 76, 210, 7.2, -18],
+                    [232, 304, 412, 192, 6.8, 28],
+                    [154, 282, 102, 134, 4.8, -16],
+                    [324, 242, 404, 112, 4.6, 14],
+                  ]
+                : [
+                    [256, 488, 256, 142, 9.0, 12],
+                    [256, 356, 118, 178, 6.4, -18],
+                    [256, 346, 396, 172, 6.4, 18],
+                    [256, 256, 162, 96, 5.2, -12],
+                    [256, 252, 354, 98, 5.2, 12],
+                  ];
+
+        const tipCenters: Array<{ x: number; y: number; outer: boolean }> = [];
+        ctx.lineCap = 'round';
+        for (const [x0, y0, x1, y1, lw, bend] of branches) {
+          const cpx = (x0 + x1) * 0.5 + bend;
+          const cpy = (y0 + y1) * 0.5;
+          ctx.strokeStyle = '#5c3822';
+          ctx.lineWidth = lw;
           ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          ctx.lineTo(cx + Math.cos(na) * nLen, cy + Math.sin(na) * nLen);
+          ctx.moveTo(x0, y0);
+          ctx.quadraticCurveTo(cpx, cpy, x1, y1);
           ctx.stroke();
 
-          ctx.strokeStyle = inner
-            ? 'rgba(24,48,22,0.34)'
-            : rand() > 0.42
-              ? 'rgba(128,168,78,0.34)'
-              : 'rgba(56,94,42,0.22)';
-          ctx.lineWidth = 1.8;
+          // Warm copper Scots pine bark highlight on upper twig side
+          ctx.strokeStyle = 'rgba(182,102,56,0.52)';
+          ctx.lineWidth = lw * 0.42;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0 - lw * 0.16);
+          ctx.quadraticCurveTo(cpx, cpy - lw * 0.16, x1, y1 - lw * 0.16);
           ctx.stroke();
+
+          // Needle tufts sit primarily toward the outer 65% of twigs (exposing woody limbs underneath like pine-forest.webp!)
+          for (let s = 0; s < 7; s++) {
+            const t = 0.35 + (s / 6) * 0.65;
+            const omt = 1 - t;
+            const px = omt * omt * x0 + 2 * omt * t * cpx + t * t * x1;
+            const py = omt * omt * y0 + 2 * omt * t * cpy + t * t * y1;
+            tipCenters.push({ x: px, y: py, outer: t > 0.68 || py < 190 });
+          }
         }
-      }
+
+        // Radiating clusters of fine bluish-olive Scots pine needle pairs clustered into rich pillows
+        const clusterCount = q === 3 ? 114 : q === 1 ? 86 : 98;
+        for (let c = 0; c < clusterCount; c++) {
+          const anchor = tipCenters[Math.floor(rand() * tipCenters.length)];
+          const spread = 14 + rand() * 48;
+          const ang = rand() * Math.PI * 2;
+          const cx = anchor.x + Math.cos(ang) * spread;
+          const cy = anchor.y + Math.sin(ang) * spread * 0.86;
+          if (cx < 26 || cx > 486 || cy < 24 || cy > 468) continue;
+
+          const needles = 22 + Math.floor(rand() * 8);
+          for (let n = 0; n < needles; n++) {
+            const na = (n / needles) * Math.PI * 2 + rand() * 0.25;
+            const nLen = 22 + rand() * 24;
+            ctx.strokeStyle = spPat;
+            ctx.lineWidth = 2.6;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + Math.cos(na) * nLen, cy + Math.sin(na) * nLen);
+            ctx.stroke();
+
+            ctx.strokeStyle = !anchor.outer
+              ? 'rgba(26,54,30,0.34)'
+              : rand() > 0.36
+                ? 'rgba(136,174,88,0.40)'
+                : 'rgba(66,112,68,0.34)'; // glaucous blue-green Scots pine hue
+            ctx.lineWidth = 1.7;
+            ctx.stroke();
+          }
+        }
+        ctx.restore();
+      };
+
+      drawPineQuad(0, 0, 0);
+      drawPineQuad(1, 512, 0);
+      drawPineQuad(2, 0, 512);
+      drawPineQuad(3, 512, 512);
     },
-    { clamp: true, anisotropy: aniso, bleedRgb: [58, 92, 44] }
+    { clamp: true, anisotropy: aniso, bleedRgb: [64, 102, 52] }
   );
 
-  // Norway Spruce Feathered Bough (512x512 — dense drooping spruce branches matching kukeseened_metsas.jpg)
+  // Norway Spruce 2x2 Multi-Variant Botanical Atlas (1024x1024 — matching lone-spruce.jpg & young-spruce.jpg!)
+  // Deeply feathered, irregular spaced lateral branchlets with daylight gaps & crisp prickly comb needles
+  // Q0: Broad lower drooping bough with hanging fringed sub-shoots | Q1: Asymmetric feathery mid-crown bough
+  // Q2: Crisp radiating sapling / upper-crown shoot with bright spring tips | Q3: Spiky vertical leader spire
   const spruceBoughCard = makeCanvasTex(
-    512,
-    512,
+    1024,
+    1024,
     (ctx, w, h) => {
-      const rand = seededRand(303);
       ctx.clearRect(0, 0, w, h);
       const spPat = ctx.createPattern(sprucePatternCanvas, 'repeat')!;
-      ctx.strokeStyle = '#3a291e';
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 7.5;
-      ctx.beginPath();
-      ctx.moveTo(256, 496);
-      ctx.lineTo(256, 36);
-      ctx.stroke();
 
-      for (let y = 466; y >= 42; y -= 14) {
-        const span = Math.sin(((470 - y) / 430) * Math.PI * 0.86) * 214 + 42;
-        for (const side of [-1, 1]) {
-          const ex = 256 + side * span;
-          const ey = y - 26 - rand() * 18;
-          ctx.strokeStyle = '#33241a';
-          ctx.lineWidth = 3.8;
-          ctx.beginPath();
-          ctx.moveTo(256, y);
-          ctx.lineTo(ex, ey);
-          ctx.stroke();
+      const drawNeedleShoot = (
+        rand: () => number,
+        x0: number,
+        y0: number,
+        x1: number,
+        y1: number,
+        needleLen: number,
+        twigW: number,
+        tipBright: boolean,
+        hangFringe: boolean
+      ) => {
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const dist = Math.hypot(dx, dy) || 1;
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const px = -uy;
+        const py = ux;
 
-          const steps = 22;
-          for (let s = 1; s <= steps; s++) {
-            const t = s / steps;
-            const bx = 256 + (ex - 256) * t;
-            const by = y + (ey - y) * t;
-            for (let k = -1; k <= 1; k += 2) {
-              const nx = bx + k * (14 + rand() * 16);
-              const ny = by - (16 + rand() * 18);
-              ctx.strokeStyle = spPat;
-              ctx.lineWidth = 5.2;
-              ctx.beginPath();
-              ctx.moveTo(bx, by);
-              ctx.lineTo(nx, ny);
-              ctx.stroke();
+        // Woody mahogany sub-twig spine
+        ctx.strokeStyle = '#473021';
+        ctx.lineWidth = twigW;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
 
-              ctx.strokeStyle =
-                t > 0.72
-                  ? 'rgba(84,126,52,0.28)'
-                  : t < 0.3
-                    ? 'rgba(12,26,12,0.45)'
-                    : 'rgba(24,52,22,0.18)';
-              ctx.lineWidth = 2.6;
-              ctx.stroke();
+        // Crisp prickly needles swept forward at ~48° along both sides of the sub-twig
+        const stepPx = 5.4;
+        const steps = Math.max(4, Math.floor(dist / stepPx));
+        for (let s = 1; s <= steps; s++) {
+          const t = s / steps;
+          const bx = x0 + dx * t;
+          const by = y0 + dy * t;
+          const taper = 0.65 + 0.5 * Math.sin(t * Math.PI * 0.85);
+          const nL = needleLen * taper * (0.78 + rand() * 0.44);
+          for (const side of [-1, 1]) {
+            const forward = 0.64 + rand() * 0.24;
+            const spread = 0.72 + rand() * 0.26;
+            let nx = bx + (ux * forward + px * side * spread) * nL;
+            let ny = by + (uy * forward + py * side * spread) * nL;
+            if (hangFringe && side === 1 && rand() < 0.48) {
+              // Characteristic hanging Norway spruce comb fringe
+              ny += nL * (0.45 + rand() * 0.45);
+            }
+            ctx.strokeStyle = spPat;
+            ctx.lineWidth = 2.6 + (1 - t) * 0.9;
+            ctx.beginPath();
+            ctx.moveTo(bx, by);
+            ctx.lineTo(nx, ny);
+            ctx.stroke();
+
+            ctx.strokeStyle =
+              tipBright && t > 0.66
+                ? 'rgba(136,184,74,0.52)'
+                : t > 0.58
+                  ? 'rgba(98,148,54,0.42)'
+                  : t < 0.24
+                    ? 'rgba(18,38,18,0.44)'
+                    : 'rgba(42,78,34,0.30)';
+            ctx.lineWidth = 1.65;
+            ctx.stroke();
+          }
+        }
+      };
+
+      const drawSpruceQuad = (q: number, ox: number, oy: number) => {
+        const rand = seededRand(303 + q * 53);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(ox + 6, oy + 6, 500, 500);
+        ctx.clip();
+        ctx.translate(ox, oy);
+        ctx.lineCap = 'round';
+
+        if (q === 3) {
+          // Q3: Spiky upright leader shoot & radiating ascending shoots (young-spruce.jpg spire!)
+          drawNeedleShoot(rand, 256, 496, 256, 20, 20, 6.4, true, false);
+
+          const whorls = [
+            { y: 432, len: 192, rise: 118 },
+            { y: 344, len: 162, rise: 112 },
+            { y: 256, len: 126, rise: 96 },
+            { y: 172, len: 88, rise: 78 },
+            { y: 98, len: 48, rise: 54 },
+          ];
+          for (const wh of whorls) {
+            for (const side of [-1, 1]) {
+              const jitterLen = wh.len * (0.86 + rand() * 0.24);
+              const ex = 256 + side * jitterLen;
+              const ey = wh.y - wh.rise * (0.88 + rand() * 0.22);
+              drawNeedleShoot(rand, 256, wh.y, ex, ey, 16.5, 3.6, true, false);
+              // Fine sub-fork off larger lower shoots
+              if (wh.len > 110) {
+                const mx = 256 + side * jitterLen * 0.48;
+                const my = wh.y - wh.rise * 0.46;
+                drawNeedleShoot(
+                  rand,
+                  mx,
+                  my,
+                  mx + side * jitterLen * 0.42,
+                  my - wh.rise * 0.22 + 18,
+                  13.5,
+                  2.4,
+                  true,
+                  false
+                );
+              }
+            }
+          }
+          ctx.restore();
+          return;
+        }
+
+        // Q0, Q1, Q2: Spaced, jagged, deeply-feathered Norway spruce boughs with clear sky-gaps between sub-shoots!
+        const widthScale = q === 0 ? 1.06 : q === 1 ? 0.94 : 0.82;
+        const hangFringe = q === 0;
+        const brightTips = q === 2 || q === 1;
+
+        // Central woody rachis with prickly tip needles
+        drawNeedleShoot(rand, 256, 496, 256, 28, 17, q === 0 ? 7.6 : 6.2, brightTips, false);
+
+        // 7 clearly spaced irregular lateral branch plumes (NOT dense 14px fused rows!)
+        const plumeYs =
+          q === 0
+            ? [448, 384, 322, 260, 200, 144, 92]
+            : q === 1
+              ? [442, 376, 308, 244, 184, 128, 82]
+              : [436, 368, 302, 236, 174, 118, 74];
+
+        for (let p = 0; p < plumeYs.length; p++) {
+          const y = plumeYs[p] + (rand() - 0.5) * 14;
+          const prog = (460 - y) / 400;
+          // Irregular jagged outer silhouette (some shoots longer, some shorter like real spruce boughs!)
+          const profile = Math.pow(Math.sin(Math.min(1, prog * 0.92 + 0.08) * Math.PI), 0.72);
+
+          for (const side of [-1, 1]) {
+            const asym = 0.76 + rand() * 0.44;
+            const span = (48 + profile * 172) * widthScale * asym;
+            const rise = (q === 2 ? 78 : q === 1 ? 64 : 46) * (0.65 + prog * 0.45) + rand() * 22;
+            const ex = Math.max(20, Math.min(492, 256 + side * span));
+            const ey = Math.max(22, y - rise);
+
+            drawNeedleShoot(rand, 256, y, ex, ey, q === 2 ? 15.5 : 17.5, 3.8, brightTips, hangFringe);
+
+            // 2 secondary lateral feathery sub-twigs branching off each main plume -> authentic lacy conifer silhouette!
+            if (span > 82) {
+              for (let sub = 0; sub < 2; sub++) {
+                const st = 0.36 + sub * 0.32;
+                const sx = 256 + (ex - 256) * st;
+                const sy = y + (ey - y) * st;
+                const subLen = span * (0.44 - sub * 0.1) * (0.82 + rand() * 0.34);
+                const subDir = sub === 0 ? 1 : -1;
+                const sEx = Math.max(18, Math.min(494, sx + side * subLen * 0.72));
+                const sEy = Math.max(20, Math.min(486, sy + (subDir > 0 ? (hangFringe ? 28 : 12) : -subLen * 0.68)));
+                drawNeedleShoot(rand, sx, sy, sEx, sEy, 13.5, 2.3, brightTips, hangFringe && sub === 0);
+              }
             }
           }
         }
-      }
+        ctx.restore();
+      };
+
+      drawSpruceQuad(0, 0, 0);
+      drawSpruceQuad(1, 512, 0);
+      drawSpruceQuad(2, 0, 512);
+      drawSpruceQuad(3, 512, 512);
     },
-    { clamp: true, anisotropy: aniso, bleedRgb: [32, 62, 28] }
+    { clamp: true, anisotropy: aniso, bleedRgb: [46, 82, 36] }
   );
 
   // Woodland Fern Frond Card (256x512 — delicate pinnate forest fern matching kukeseened_metsas.jpg)
@@ -1537,10 +2344,13 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
 
   const all = [
     birchBark,
+    birchBarkBase,
     birchNormal,
     pineBark,
+    pineBarkUpper,
     pineNormal,
     spruceBark,
+    spruceNormal,
     logWallWeathered,
     logWallWarm,
     logWallNormal,
@@ -1559,6 +2369,10 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     terrainMeadowTex,
     terrainRoadTex,
     boulderGranite,
+    boulderNormal,
+    boulderMossCoat,
+    boulderMossNormal,
+    boulderLichenCoat,
     boleteCap,
     boleteNormal,
     boleteStem,
@@ -1585,10 +2399,13 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
 
   return {
     birchBark,
+    birchBarkBase,
     birchNormal,
     pineBark,
+    pineBarkUpper,
     pineNormal,
     spruceBark,
+    spruceNormal,
     logWallWeathered,
     logWallWarm,
     logWallNormal,
@@ -1607,6 +2424,10 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     terrainMeadowTex,
     terrainRoadTex,
     boulderGranite,
+    boulderNormal,
+    boulderMossCoat,
+    boulderMossNormal,
+    boulderLichenCoat,
     boleteCap,
     boleteNormal,
     boleteStem,

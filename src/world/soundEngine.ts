@@ -1,7 +1,7 @@
 import type { SoundscapeEngine } from '../soundscape/soundscapeEngine';
 import type { WebAudioHybridBackend } from '../soundscape/audioBackend';
 
-export type FootstepSurface = 'grass' | 'road' | 'wood' | 'water';
+export type FootstepSurface = 'grass' | 'road' | 'wood' | 'water' | 'swamp' | 'swim';
 
 export type AmbientBiomeId =
   | 'village'
@@ -930,20 +930,37 @@ export class SoundEngine {
       return;
     }
 
-    const buf = surface === 'water' ? this.waterNoiseBuffer : this.stepNoiseBuffer;
+    const buf =
+      surface === 'water' || surface === 'swim' ? this.waterNoiseBuffer : this.stepNoiseBuffer;
     if (!buf) return;
-    const dur = surface === 'water' ? 0.16 : 0.08;
+    const dur = surface === 'swim' ? 0.16 : surface === 'water' ? 0.16 : 0.08;
 
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const filter = this.ctx.createBiquadFilter();
     const gain = this.ctx.createGain();
 
-    if (surface === 'water') {
+    if (surface === 'swim') {
       filter.type = 'bandpass';
-      filter.frequency.value = 920 + Math.random() * 340;
+      filter.frequency.setValueAtTime(340 + Math.random() * 90, now);
+      filter.frequency.exponentialRampToValueAtTime(620, now + dur * 0.65);
+      filter.Q.value = 1.6;
+      gain.gain.setValueAtTime(0.16, now);
+      gain.gain.exponentialRampToValueAtTime(0.008, now + dur);
+    } else if (surface === 'water') {
+      filter.type = 'bandpass';
+      filter.frequency.value = 980 + Math.random() * 340;
+      filter.Q.value = 1.1;
       gain.gain.setValueAtTime(0.15, now);
       gain.gain.exponentialRampToValueAtTime(0.008, now + dur);
+    } else if (surface === 'swamp') {
+      // Viscous bog mud squelch: low resonant upward suction chirp
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(240 + Math.random() * 60, now);
+      filter.frequency.exponentialRampToValueAtTime(590 + Math.random() * 120, now + dur * 0.85);
+      filter.Q.value = 3.8;
+      gain.gain.setValueAtTime(0.13, now);
+      gain.gain.exponentialRampToValueAtTime(0.005, now + dur);
     } else {
       filter.type = 'lowpass';
       filter.frequency.value = surface === 'road' ? 1650 : 640;

@@ -186,6 +186,7 @@ interface WebVoiceRuntime {
   gainNode: GainNode;
   filterNode: BiquadFilterNode;
   pannerNode: PannerNode | null;
+  bufferSource: AudioBufferSourceNode | null;
   cleanup: () => void;
   stopped: boolean;
 }
@@ -381,18 +382,33 @@ export class WebAudioHybridBackend implements AudioBackend {
 
     let cleanupFn = () => {};
     let stopped = false;
+    let activeBufferSource: AudioBufferSourceNode | null = null;
+    const safePitch = Number.isFinite(params.pitch) ? Math.max(0.25, Math.min(2.5, params.pitch)) : 1.0;
 
     const cachedBuf = !params.asset.procedural ? this.decodedBuffers.get(params.asset.file) : null;
     const getDurationSec = () => this.decodedBuffers.get(params.asset.file)?.duration ?? params.asset.durationSec ?? 2.0;
+
+    const rt: WebVoiceRuntime = {
+      instanceId: params.instanceId,
+      gainNode,
+      filterNode,
+      pannerNode,
+      bufferSource: null,
+      cleanup: () => {},
+      stopped: false,
+    };
 
     if (cachedBuf) {
       const src = ctx.createBufferSource();
       src.buffer = cachedBuf;
       src.loop = params.loop;
-      src.playbackRate.setValueAtTime(params.pitch, now);
+      src.playbackRate.setValueAtTime(safePitch, now);
       src.connect(filterNode);
-      const offset = params.offsetSec % Math.max(0.1, cachedBuf.duration);
+      const offset = Number.isFinite(params.offsetSec)
+        ? Math.max(0, params.offsetSec) % Math.max(0.1, cachedBuf.duration)
+        : 0;
       src.start(now, offset);
+      activeBufferSource = src;
       cleanupFn = () => {
         try {
           src.stop();
@@ -407,20 +423,23 @@ export class WebAudioHybridBackend implements AudioBackend {
     } else if (!params.asset.procedural && !params.asset.placeholder) {
       // Trigger lazy decode for next use and start subtle fallback if needed
       void this.ensureBufferLoaded(params.asset).then((buf) => {
-        if (buf && !stopped && this.voices.has(params.instanceId) && params.loop) {
+        if (buf && !stopped && this.voices.get(params.instanceId) === rt && params.loop) {
           // Swap in decoded MP3 seamlessly for long loops once decoded
-          const v = this.voices.get(params.instanceId);
-          if (!v || v.stopped) return;
-          v.cleanup();
+          if (rt.stopped) return;
+          rt.cleanup();
           const s = ctx.createBufferSource();
           s.buffer = buf;
           s.loop = params.loop;
-          s.playbackRate.setValueAtTime(params.pitch, ctx.currentTime);
+          s.playbackRate.setValueAtTime(safePitch, ctx.currentTime);
           s.connect(filterNode);
           if (pannerNode) filterNode.connect(gainNode).connect(pannerNode).connect(this.masterGain!);
           else filterNode.connect(gainNode).connect(this.masterGain!);
-          s.start(ctx.currentTime, 0);
-          v.cleanup = () => {
+          const swapOffset = Number.isFinite(params.offsetSec)
+            ? Math.max(0, params.offsetSec) % Math.max(0.1, buf.duration)
+            : 0;
+          s.start(ctx.currentTime, swapOffset);
+          rt.bufferSource = s;
+          rt.cleanup = () => {
             try { s.stop(); } catch {}
             s.disconnect();
             filterNode.disconnect();
@@ -435,14 +454,8 @@ export class WebAudioHybridBackend implements AudioBackend {
       cleanupFn = this.startProceduralSynth(ctx, params, filterNode);
     }
 
-    const rt: WebVoiceRuntime = {
-      instanceId: params.instanceId,
-      gainNode,
-      filterNode,
-      pannerNode,
-      cleanup: cleanupFn,
-      stopped: false,
-    };
+    rt.bufferSource = activeBufferSource;
+    rt.cleanup = cleanupFn;
     this.voices.set(params.instanceId, rt);
 
     return {
@@ -457,7 +470,10 @@ export class WebAudioHybridBackend implements AudioBackend {
         scheduleAudioParam(rt.gainNode.gain, 0.0001, t, f * 0.35);
         const removeVoice = () => {
           rt.cleanup();
-          this.voices.delete(params.instanceId);
+          // Guard against deleting a newly resumed voice sharing the same instanceId!
+          if (this.voices.get(params.instanceId) === rt) {
+            this.voices.delete(params.instanceId);
+          }
         };
         if (typeof window !== 'undefined') {
           window.setTimeout(removeVoice, Math.ceil(f * 1000) + 40);
@@ -506,6 +522,81 @@ export class WebAudioHybridBackend implements AudioBackend {
       connectNoise(false, 780, 1.1, 0.19, true);
     } else if (kind.includes('rain')) {
       connectNoise(false, 1750, 0.55, 0.2, true);
+    } else if (kind.includes('swamp_mud_wade')) {
+      // Viscous peat-bog mud squelch: soft damp thud + resonant rising-falling suction sweep
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.5, Math.min(2.0, params.pitch)) : 1.0;
+      const pinkBuf = this.pinkNoiseBuf;
+      if (pinkBuf) {
+        const src = ctx.createBufferSource();
+        src.buffer = pinkBuf;
+        src.loop = false;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(220 * safePitch, now);
+        bp.frequency.exponentialRampToValueAtTime(690 * safePitch, now + 0.12);
+        bp.frequency.exponentialRampToValueAtTime(270 * safePitch, now + 0.34);
+        bp.Q.setValueAtTime(4.2, now);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.001, now);
+        g.gain.linearRampToValueAtTime(0.28, now + 0.045);
+        g.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+        src.connect(bp).connect(g).connect(outFilter);
+        src.start(now);
+        src.stop(now + 0.38);
+        nodes.push(src, bp, g);
+      }
+      const thud = ctx.createOscillator();
+      thud.type = 'sine';
+      thud.frequency.setValueAtTime(145 * safePitch, now);
+      thud.frequency.exponentialRampToValueAtTime(58, now + 0.16);
+      const tg = ctx.createGain();
+      tg.gain.setValueAtTime(0.14, now);
+      tg.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+      thud.connect(tg).connect(outFilter);
+      thud.start(now);
+      thud.stop(now + 0.2);
+      nodes.push(thud, tg);
+    } else if (kind.includes('water_swim_loop')) {
+      // Deep rhythmic breaststroke water push & glide (distinct from sharp shallow foot splashes)
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(2.0, params.pitch)) : 1.0;
+      const pinkBuf = this.pinkNoiseBuf;
+      if (pinkBuf) {
+        const strokeSrc = ctx.createBufferSource();
+        strokeSrc.buffer = pinkBuf;
+        strokeSrc.loop = true;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(460, now);
+        bp.Q.setValueAtTime(1.4, now);
+        const lfo = ctx.createOscillator();
+        lfo.type = 'sine';
+        lfo.frequency.setValueAtTime(0.82 * Math.max(0.75, safePitch), now);
+        const lfoFreqGain = ctx.createGain();
+        lfoFreqGain.gain.setValueAtTime(240, now);
+        lfo.connect(lfoFreqGain).connect(bp.frequency);
+        const strokeGain = ctx.createGain();
+        strokeGain.gain.setValueAtTime(0.2, now);
+        const lfoAmpGain = ctx.createGain();
+        lfoAmpGain.gain.setValueAtTime(0.12, now);
+        lfo.connect(lfoAmpGain).connect(strokeGain.gain);
+        strokeSrc.connect(bp).connect(strokeGain).connect(outFilter);
+        strokeSrc.start(now);
+        lfo.start(now);
+        nodes.push(strokeSrc, bp, lfo, lfoFreqGain, lfoAmpGain, strokeGain);
+
+        // Low-frequency submerged water body rush
+        const subSrc = ctx.createBufferSource();
+        subSrc.buffer = pinkBuf;
+        subSrc.loop = true;
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.setValueAtTime(170, now);
+        const subGain = ctx.createGain();
+        subGain.gain.setValueAtTime(0.18, now);
+        subSrc.connect(lp).connect(subGain).connect(outFilter);
+        subSrc.start(now);
+        nodes.push(subSrc, lp, subGain);
+      }
     } else if (kind.includes('water_trickling') || kind.includes('river') || kind.includes('campfire')) {
       connectNoise(false, kind.includes('campfire') ? 1400 : 2400, 1.8, 0.1, params.loop, params.loop ? undefined : 0.8);
     } else if (kind.includes('breathing')) {
@@ -590,8 +681,14 @@ export class WebAudioHybridBackend implements AudioBackend {
     const rt = this.voices.get(handle.instanceId);
     if (!rt || rt.stopped) return;
     const now = this.ctx.currentTime;
-    scheduleAudioParam(rt.gainNode.gain, Math.max(0.0001, params.gain), now, 0.05);
-    scheduleAudioParam(rt.filterNode.frequency, Math.max(200, Math.min(20000, params.lowpassHz)), now, 0.08);
+    const safeGain = Number.isFinite(params.gain) ? Math.max(0.0001, Math.min(4.0, params.gain)) : 0.0001;
+    const safeLowpass = Number.isFinite(params.lowpassHz) ? Math.max(200, Math.min(20000, params.lowpassHz)) : 18000;
+    scheduleAudioParam(rt.gainNode.gain, safeGain, now, 0.05);
+    scheduleAudioParam(rt.filterNode.frequency, safeLowpass, now, 0.08);
+    if (rt.bufferSource && Number.isFinite(params.pitch)) {
+      const safePitch = Math.max(0.25, Math.min(2.5, params.pitch));
+      scheduleAudioParam(rt.bufferSource.playbackRate, safePitch, now, 0.06);
+    }
     if (rt.pannerNode && params.position) {
       if (rt.pannerNode.positionX && typeof rt.pannerNode.positionX.setValueAtTime === 'function') {
         rt.pannerNode.positionX.setValueAtTime(params.position.x, now);

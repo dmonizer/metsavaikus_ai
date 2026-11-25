@@ -76,8 +76,10 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     id: 'mud',
     extends: 'forest_floor',
     footsteps: {
-      walk: { sound: 'water_wade_loop', volumeScale: 0.55, pitchScale: 0.82 },
-      wade: { sound: 'water_wade_loop', volumeScale: 0.72, pitchScale: 0.85 },
+      walk: { sound: 'swamp_mud_wade', volumeScale: 0.92, pitchScale: 0.96 },
+      wade: { sound: 'swamp_mud_wade', volumeScale: 1.05, pitchScale: 0.92 },
+      run: { sound: 'swamp_mud_wade', volumeScale: 1.18, pitchScale: 1.08 },
+      crouch: { sound: 'swamp_mud_wade', volumeScale: 0.56, pitchScale: 0.88 },
     },
   },
   {
@@ -85,7 +87,7 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     footsteps: {
       walk: 'water_wade_loop',
       wade: 'water_wade_loop',
-      swim: { sound: 'water_wade_loop', volumeScale: 0.9, pitchScale: 0.92 },
+      swim: { sound: 'water_swim_loop', volumeScale: 1.0, pitchScale: 1.0 },
       run: { sound: 'water_wade_loop', volumeScale: 1.15, pitchScale: 1.08 },
     },
     splash: { sound: 'distant_water_splash' },

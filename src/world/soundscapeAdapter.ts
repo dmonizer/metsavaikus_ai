@@ -283,9 +283,9 @@ export function buildWorldContextFromSimulator(input: SimulatorSoundscapeInput):
 
   let activity: PlayerActivity = 'idle';
   if (input.seatedInTent) activity = 'stationary';
-  else if (input.isSwimming) activity = 'swimming';
+  else if (input.isSwimming) activity = input.isMoving ? 'swimming' : 'idle';
   else if (input.isMoving) {
-    if (input.isSwampWading) activity = 'wading';
+    if (input.waterDepthM > 0.02 || input.isSwampWading) activity = 'wading';
     else if (input.crouching) activity = 'crouching';
     else if (input.wantRun) activity = input.exertion > 0.85 ? 'sprinting' : 'running';
     else activity = 'walking';
@@ -375,7 +375,7 @@ export function buildWorldContextFromSimulator(input: SimulatorSoundscapeInput):
       velocity: { ...input.listenerVelocity },
       biome: biomeId,
       regionId: `estonia_baltic_${biomeId}`,
-      underwater: input.waterDepthM > 1.35,
+      underwater: input.listenerPos.y < SWAMP_WATER_Y - 0.05,
       waterDepthM: input.waterDepthM,
     },
     player: {

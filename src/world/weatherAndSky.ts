@@ -574,6 +574,7 @@ export class WeatherAndSkySystem {
 
   timeOfDay = 9.25; // 09:15 crisp Baltic morning sun
   weatherIdx = 0;
+  windOverride: number | null = null;
   private weatherTimer = 95;
   private lightningFlash = 0;
   private elapsed = 0;
@@ -977,7 +978,15 @@ export class WeatherAndSkySystem {
       0.5 *
         (Math.sin(this.elapsed * windProfile.gustSpeed) * 0.65 +
           Math.sin(this.elapsed * windProfile.gustSpeed * 2.13 + 1.4) * 0.35);
-    const windStrength = windProfile.baseStrength + windProfile.gustAmplitude * gustMod;
+    const calmWave = 0.5 + 0.5 * Math.sin(this.elapsed * 0.07 - 1.25);
+    const calmEnv =
+      weather === 'mist'
+        ? 0.14 + 0.58 * calmWave
+        : weather === 'clear'
+          ? 0.12 + 0.88 * Math.pow(calmWave, 1.55)
+          : 1.0;
+    const computedWind = (windProfile.baseStrength + windProfile.gustAmplitude * gustMod) * calmEnv;
+    const windStrength = this.windOverride !== null ? Math.max(0, this.windOverride) : computedWind;
 
     // Forward-frustum GPU-animated rain streaks (dense in view, zero behind-camera waste!)
     const targetRainAlpha = weather === 'storm' ? 0.84 : weather === 'rain' ? 0.66 : 0.0;

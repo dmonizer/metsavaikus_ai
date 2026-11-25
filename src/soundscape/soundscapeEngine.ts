@@ -767,8 +767,9 @@ export class SoundscapeEngine {
 
     if (wantsLongGaitLoop && targetDef && targetSoundId) {
       const existing = this.instances.findActiveForSound(targetSoundId);
+      const speedNorm = Math.max(0.75, Math.min(1.25, world.player.speedMps / 4.6));
       if (!existing || existing.state === 'stopping') {
-        this.playSoundDefinition(targetDef, {
+        const spawned = this.playSoundDefinition(targetDef, {
           world,
           explicitPosition: world.listener.position,
           sourceStructureId: world.structure.id,
@@ -776,9 +777,15 @@ export class SoundscapeEngine {
           reason: `gait_loop:${surface}:${gait}`,
           skipQuotaRecord: true,
         });
+        if (spawned) spawned.pitch = speedNorm;
+      } else if (existing.state === 'paused') {
+        existing.pitch = speedNorm;
+        existing.position = { ...world.listener.position };
+        existing.sourceStructureId = world.structure.id;
+        existing.sourceInsideSameStructure = world.structure.quality !== 'outdoor';
+        this.instances.resumePaused(existing, this.backend, this.mixer);
       } else {
         // Scale pitch/volume subtly with speed
-        const speedNorm = Math.max(0.75, Math.min(1.25, world.player.speedMps / 4.6));
         existing.pitch = speedNorm;
       }
       this.activeGaitSoundId = targetSoundId;
@@ -844,6 +851,9 @@ export class SoundscapeEngine {
             reason: `physiology:${desiredBreathId}`,
             skipQuotaRecord: true,
           });
+        } else if (curBreath.state === 'paused') {
+          curBreath.position = { ...world.listener.position };
+          this.instances.resumePaused(curBreath, this.backend, this.mixer);
         }
         this.activeBreathingSoundId = desiredBreathId;
       } else if (curBreath) {

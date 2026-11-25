@@ -181,4 +181,6 @@ export const SOUNDSCAPE_ASSETS: AssetDefinition[] = [
   { id: 'proc_grass_step_02', file: 'player/footsteps/grass-step-02.mp3', preload: true, durationSec: 0.522449 },
   { id: 'crate_breaking_01_mp3', file: 'objects/crates/crate-breaking-01.mp3', preload: true, durationSec: 1.752000 },
   { id: 'red_fox_screech_02_mp3', file: 'wildlife/mammals/red-fox-screech-02.mp3', preload: true, durationSec: 5.352000, tags: ['wildlife', 'mammals'] },
+  { id: 'proc_swamp_mud_wade', file: 'procedural:swamp_mud_wade', procedural: true, proceduralKind: 'swamp_mud_wade', durationSec: 0.45, tags: ['footsteps', 'mud', 'swamp'] },
+  { id: 'proc_water_swim_loop', file: 'procedural:water_swim_loop', procedural: true, proceduralKind: 'water_swim_loop', loopable: true, durationSec: 2.5, tags: ['footsteps', 'water', 'swim'] },
 ];
