@@ -1,3 +1,6 @@
+import type { SoundscapeEngine } from '../soundscape/soundscapeEngine';
+import type { WebAudioHybridBackend } from '../soundscape/audioBackend';
+
 export type FootstepSurface = 'grass' | 'road' | 'wood' | 'water';
 
 export type AmbientBiomeId =
@@ -261,6 +264,25 @@ export class SoundEngine {
   private lastListenerX = 0;
   private lastListenerY = 1.65;
   private lastListenerZ = 0;
+  private soundscapeEngine: SoundscapeEngine | null = null;
+  private soundscapeBackend: WebAudioHybridBackend | null = null;
+
+  attachSoundscapeEngine(engine: SoundscapeEngine, backend: WebAudioHybridBackend): void {
+    this.soundscapeEngine = engine;
+    this.soundscapeBackend = backend;
+    if (this.ctx) {
+      backend.attachAudioContext(this.ctx);
+    }
+    engine.mixer.setMasterMuted(this.muted);
+  }
+
+  getSoundscapeEngine(): SoundscapeEngine | null {
+    return this.soundscapeEngine;
+  }
+
+  getAudioContext(): AudioContext | null {
+    return this.ctx;
+  }
 
   private createDecayingNoiseBuffer(
     ctx: AudioContext,
@@ -295,6 +317,9 @@ export class SoundEngine {
 
     this.ctx = ctx;
     this.initialized = true;
+    if (this.soundscapeBackend) {
+      this.soundscapeBackend.attachAudioContext(ctx);
+    }
 
     const bufSize = ctx.sampleRate * 2;
     this.noiseBuffer = ctx.createBuffer(1, bufSize, ctx.sampleRate);
@@ -308,30 +333,31 @@ export class SoundEngine {
     this.waterNoiseBuffer = this.createDecayingNoiseBuffer(ctx, 0.16, 1.0);
     this.thunderNoiseBuffer = this.createDecayingNoiseBuffer(ctx, 2.5, 1.45);
 
-    // Wind loop
-    const windSrc = ctx.createBufferSource();
-    windSrc.buffer = this.noiseBuffer;
-    windSrc.loop = true;
-    this.windFilter = ctx.createBiquadFilter();
-    this.windFilter.type = 'lowpass';
-    this.windFilter.frequency.value = 320;
-    this.windGain = ctx.createGain();
-    this.windGain.gain.value = 0.03;
-    windSrc.connect(this.windFilter).connect(this.windGain).connect(ctx.destination);
-    windSrc.start();
+    // Wind & Rain legacy oscillators only activate when standalone (when SoundscapeEngine is not attached)
+    if (!this.soundscapeEngine) {
+      const windSrc = ctx.createBufferSource();
+      windSrc.buffer = this.noiseBuffer;
+      windSrc.loop = true;
+      this.windFilter = ctx.createBiquadFilter();
+      this.windFilter.type = 'lowpass';
+      this.windFilter.frequency.value = 320;
+      this.windGain = ctx.createGain();
+      this.windGain.gain.value = 0.03;
+      windSrc.connect(this.windFilter).connect(this.windGain).connect(ctx.destination);
+      windSrc.start();
 
-    // Rain loop (dynamically reshapes into muffled tent-canvas patter when sheltered)
-    const rainSrc = ctx.createBufferSource();
-    rainSrc.buffer = this.noiseBuffer;
-    rainSrc.loop = true;
-    this.rainFilter = ctx.createBiquadFilter();
-    this.rainFilter.type = 'bandpass';
-    this.rainFilter.frequency.value = 1850;
-    this.rainFilter.Q.value = 0.55;
-    this.rainGain = ctx.createGain();
-    this.rainGain.gain.value = 0;
-    rainSrc.connect(this.rainFilter).connect(this.rainGain).connect(ctx.destination);
-    rainSrc.start();
+      const rainSrc = ctx.createBufferSource();
+      rainSrc.buffer = this.noiseBuffer;
+      rainSrc.loop = true;
+      this.rainFilter = ctx.createBiquadFilter();
+      this.rainFilter.type = 'bandpass';
+      this.rainFilter.frequency.value = 1850;
+      this.rainFilter.Q.value = 0.55;
+      this.rainGain = ctx.createGain();
+      this.rainGain.gain.value = 0;
+      rainSrc.connect(this.rainFilter).connect(this.rainGain).connect(ctx.destination);
+      rainSrc.start();
+    }
   }
 
   getAmbienceUpdateCount(): number {
@@ -351,6 +377,7 @@ export class SoundEngine {
 
   setMuted(muted: boolean): void {
     this.muted = muted;
+    this.soundscapeEngine?.mixer.setMasterMuted(muted);
     if (!this.initialized || !this.ctx || !this.windGain || !this.rainGain) return;
     const now = this.ctx.currentTime;
     if (muted) {
@@ -419,6 +446,10 @@ export class SoundEngine {
     windStrength: number,
     shelter: AmbientShelter = 'outdoor'
   ): void {
+    if (this.soundscapeEngine) {
+      this.ambienceUpdateCount++;
+      return;
+    }
     if (!this.initialized || !this.ctx || !this.windGain || !this.rainGain) return;
     const now = this.ctx.currentTime;
 
@@ -508,6 +539,11 @@ export class SoundEngine {
       input.shelter
     );
     this.lastProfile = profile;
+
+    if (this.soundscapeEngine) {
+      // SoundscapeEngine schedules all continuous & localized 3D wildlife sounds cleanly
+      return;
+    }
 
     if (this.muted || clampedDt <= 0) return;
 
@@ -1109,6 +1145,9 @@ export class SoundEngine {
   }
 
   dispose(): void {
+    this.soundscapeEngine?.dispose();
+    this.soundscapeEngine = null;
+    this.soundscapeBackend = null;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;

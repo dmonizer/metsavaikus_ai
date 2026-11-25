@@ -731,6 +731,15 @@ export class WeatherAndSkySystem {
   }
 
   private snapFogNextFrame = false;
+  private onThunderCallback:
+    | ((x: number, y: number, z: number, intensity: number) => void)
+    | null = null;
+
+  setOnThunderCallback(
+    cb: ((x: number, y: number, z: number, intensity: number) => void) | null
+  ): void {
+    this.onThunderCallback = cb;
+  }
 
   setWeather(weather: WeatherId, instant = false): WeatherId {
     const idx = WEATHER_ORDER.indexOf(weather);
@@ -986,7 +995,18 @@ export class WeatherAndSkySystem {
 
     if (weather === 'storm' && Math.random() < dt * 0.12) {
       this.lightningFlash = 0.85;
-      sound.playThunder();
+      if (this.onThunderCallback) {
+        const ang = Math.random() * Math.PI * 2;
+        const dist = 95 + Math.random() * 240;
+        this.onThunderCallback(
+          playerPos.x + Math.cos(ang) * dist,
+          playerPos.y + 65,
+          playerPos.z + Math.sin(ang) * dist,
+          0.95
+        );
+      } else {
+        sound.playThunder();
+      }
     }
     if (this.lightningFlash > 0) {
       this.lightningFlash = Math.max(0, this.lightningFlash - dt * 3.2);

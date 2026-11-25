@@ -101,6 +101,7 @@ import {
   CircleCollider,
   InteractiveEntry,
   SleepSpotInfo,
+  StructureAcousticsInfo,
   TentInfo,
   WorldPropsContext,
 } from '../world/architectureAndProps';
@@ -118,6 +119,19 @@ import {
   SpatialAudioEvent,
   SpatialClipKind,
 } from '../world/soundEngine';
+import type {
+  DiagnosticsSnapshot,
+  PersistedSoundscapeState,
+  SurfaceMaterial,
+  ValidationIssue,
+} from '../soundscape/types';
+import type { WebAudioHybridBackend } from '../soundscape/audioBackend';
+import {
+  buildWorldContextFromSimulator,
+  createSimulatorSoundscape,
+  loadSoundscapeSnapshotFromStorage,
+  saveSoundscapeSnapshotToStorage,
+} from '../world/soundscapeAdapter';
 import {
   ChunkVisibilityStats,
   TerrainChunkManager,
@@ -218,6 +232,7 @@ export interface WorldCallbacks {
   onToggleBackpack: () => void;
   onToggleFullMap: () => void;
   onCloseModals: () => void;
+  onToggleDiagnostics?: () => void;
 }
 
 export interface WorldActions {
@@ -230,6 +245,20 @@ export interface WorldActions {
   toggleMute: () => boolean;
   setResolutionScale: (scale: number | null) => void;
   setUiModalOpen: (open: boolean) => void;
+  setDiagnosticsOpen: (open: boolean) => void;
+  getSoundscapeDiagnostics: () => DiagnosticsSnapshot | null;
+  triggerSoundscapeEvent: (type: string, intensity?: number) => void;
+  auditionSoundscapeSound: (soundId: string) => boolean;
+  setSoundscapeBusVolume: (busId: string, vol: number) => void;
+  setSoundscapeBusMuted: (busId: string, muted: boolean) => void;
+  setSoundscapeMusicEnabled: (enabled: boolean) => void;
+  setSoundscapeMusicVolume: (vol: number) => void;
+  reloadSoundscapeConfigJson: (json: string) => {
+    ok: boolean;
+    issues: ValidationIssue[];
+    diffSummary?: string;
+  };
+  getSoundscapeConfigJson: () => string;
   eatItem: (itemId: ItemId) => void;
   drinkBottle: (uid: string) => void;
   loadBattery: () => void;
@@ -413,7 +442,30 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     scene.add(camera);
 
     const sound = new SoundEngine();
+    const soundscape = createSimulatorSoundscape({ seed: worldSeed });
+    sound.attachSoundscapeEngine(soundscape.engine, soundscape.backend as WebAudioHybridBackend);
+    loadSoundscapeSnapshotFromStorage(worldSeed, soundscape.engine);
+
     const weatherSky = new WeatherAndSkySystem(scene, isSoftwareGl, currentDpr, isLowPowerGpu);
+    let simClockMs = weatherSky.timeOfDay * 3_600_000;
+    let simDay = 1;
+    let prevSkyHour = weatherSky.timeOfDay;
+    let lastSnapshotSaveSec = 0;
+
+    weatherSky.setOnThunderCallback((tx, ty, tz, intensity) => {
+      soundscape.engine.emitEvent({
+        type: 'weather.thunder',
+        origin: 'environment',
+        simulationTimestamp: simClockMs,
+        position: { x: tx, y: ty, z: tz },
+        intensity,
+        correlationId: `thunder_${Math.round(simClockMs)}`,
+        dedupeKey: `thunder_${Math.floor(simClockMs / 250)}`,
+        dedupeWindowMs: 250,
+        payload: { weather: weatherSky.currentWeather },
+      });
+    });
+
     let lastShadowX = 9999;
     let lastShadowZ = 9999;
     let lastShadowSunY = -99;
@@ -447,6 +499,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     };
 
     let uiModalOpen = false;
+    let diagnosticsOpen = false;
     let vomitLurchTimer = 0;
     let collapseTimer = 0;
     let collapseStartMs = 0;
@@ -585,6 +638,20 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let lastWindStrength = 0.6;
     let lastShelterLabel: string | null = null;
     let lastNearFire = 0;
+    let totalDistanceMoved = 0;
+    let playerExertion = 0;
+    let prevOnGround = true;
+    let playerSpeedMps = 0;
+    let lastIsMoving = false;
+    let lastWantRun = false;
+    let lastCrouching = false;
+    let lastIsSwimming = false;
+    let lastIsSwampWading = false;
+    let lastOnBoardwalk = false;
+    let lastWaterDepthM = 0;
+    let lastWeatherIntensity = 0;
+    let lastFogDensity = 0.006;
+    let lastSunDirY = 0.5;
 
     const keysHeld = new Set<string>();
     const keysJustPressed = new Set<string>();
@@ -899,17 +966,61 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (player.carrying) {
         dropCarried(11.5);
         sound.playImpact(1.1);
+        soundscape.engine.emitEvent({
+          type: 'object.impact',
+          origin: 'player',
+          simulationTimestamp: simClockMs,
+          position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+          intensity: 0.7,
+          dedupeKey: `throw_${Math.floor(elapsed * 5)}`,
+          dedupeWindowMs: 120,
+          payload: { material: 'wood', breakable: false, broken: false },
+        });
         return;
       }
       if (!hoveredObj && hoveredDeadfall && vegetation && propsCtx) {
         survival.physicalTiredness = Math.min(100, survival.physicalTiredness + 3.5);
         const res = vegetation.kickDeadfall(hoveredDeadfall.id);
         if (res && res.hit) {
+          const corrId = `kick_deadfall_${hoveredDeadfall.id}_${Math.round(simClockMs)}`;
+          soundscape.engine.emitEvent({
+            type: 'player.kick',
+            origin: 'player',
+            simulationTimestamp: simClockMs,
+            position: { x: res.x, y: res.y, z: res.z },
+            intensity: res.broken ? 1.2 : 0.95,
+            correlationId: corrId,
+            dedupeKey: `kick_${hoveredDeadfall.id}_${Math.floor(elapsed * 5)}`,
+            dedupeWindowMs: 120,
+            payload: { material: 'wood', broken: res.broken },
+          });
           if (!res.broken) {
             sound.playImpact(1.1);
+            soundscape.engine.emitEvent({
+              type: 'object.impact',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: res.x, y: res.y, z: res.z },
+              intensity: 0.95,
+              correlationId: corrId,
+              dedupeKey: `impact_${hoveredDeadfall.id}_${Math.floor(elapsed * 5)}`,
+              dedupeWindowMs: 120,
+              payload: { material: 'wood', breakable: true, broken: false },
+            });
             callbacksRef.current.onToast(t('toast.deadfallCracked'));
           } else {
             sound.playImpact(1.45);
+            soundscape.engine.emitEvent({
+              type: 'object.break',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: res.x, y: res.y, z: res.z },
+              intensity: 1.25,
+              correlationId: corrId,
+              dedupeKey: `break_${hoveredDeadfall.id}_${Math.floor(elapsed * 5)}`,
+              dedupeWindowMs: 120,
+              payload: { material: 'wood', breakable: true, broken: true },
+            });
             const pieces = propsCtx.shatterWoodAt(res.x, res.y, res.z, res.rotY, 4);
             hoveredDeadfall = null;
             lastPromptKey = '';
@@ -952,8 +1063,44 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         );
         hoveredObj.resting = false;
         sound.playImpact(1.2);
+        soundscape.engine.emitEvent({
+          type: 'object.impact',
+          origin: 'player',
+          simulationTimestamp: simClockMs,
+          position: {
+            x: hoveredObj.mesh.position.x,
+            y: hoveredObj.mesh.position.y,
+            z: hoveredObj.mesh.position.z,
+          },
+          intensity: 1.0,
+          dedupeKey: `kickprop_${hoveredObj.name}_${Math.floor(elapsed * 5)}`,
+          dedupeWindowMs: 120,
+          payload: {
+            material: hoveredObj.materialType ?? 'wood',
+            breakable: Boolean(hoveredObj.breakable),
+            broken: false,
+          },
+        });
       } else {
         sound.playImpact(0.8);
+        soundscape.engine.emitEvent({
+          type: 'object.impact',
+          origin: 'player',
+          simulationTimestamp: simClockMs,
+          position: {
+            x: hoveredObj.mesh.position.x,
+            y: hoveredObj.mesh.position.y,
+            z: hoveredObj.mesh.position.z,
+          },
+          intensity: 0.75,
+          dedupeKey: `solid_${hoveredObj.name}_${Math.floor(elapsed * 5)}`,
+          dedupeWindowMs: 120,
+          payload: {
+            material: hoveredObj.materialType ?? 'wood',
+            breakable: false,
+            broken: false,
+          },
+        });
         callbacksRef.current.onToast(t('toast.wontBudge', { name: getEntryName(hoveredObj) }));
       }
     }
@@ -1078,6 +1225,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         lastBarHealth = -1;
         lastMinimapCanvas = null;
         lastMinimapFogVersion = -1;
+        totalDistanceMoved = 0;
+        playerExertion = 0;
+        prevOnGround = true;
         keysHeld.clear();
         keysJustPressed.clear();
         sound.resume();
@@ -1146,6 +1296,49 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           if (document.pointerLockElement) document.exitPointerLock?.();
           pushSurvivalSnapshot();
         }
+      },
+      setDiagnosticsOpen: (open: boolean) => {
+        diagnosticsOpen = open;
+        if (open) {
+          if (document.pointerLockElement) document.exitPointerLock?.();
+          mouseDragging = false;
+        }
+      },
+      getSoundscapeDiagnostics: () => soundscape.engine.getDiagnosticsSnapshot(),
+      triggerSoundscapeEvent: (type: string, intensity = 1) => {
+        sound.init();
+        sound.resume();
+        soundscape.engine.emitEvent({
+          type,
+          origin: 'player',
+          simulationTimestamp: simClockMs,
+          position: { x: player.pos.x, y: player.pos.y + 1.2, z: player.pos.z },
+          intensity,
+          payload: { material: 'wood', source: 'diagnostics' },
+        });
+      },
+      auditionSoundscapeSound: (soundId: string) => {
+        sound.init();
+        sound.resume();
+        return soundscape.engine.auditionSound(soundId);
+      },
+      setSoundscapeBusVolume: (busId: string, vol: number) => {
+        soundscape.engine.setBusVolume(busId, vol);
+      },
+      setSoundscapeBusMuted: (busId: string, muted: boolean) => {
+        soundscape.engine.setBusMuted(busId, muted);
+      },
+      setSoundscapeMusicEnabled: (enabled: boolean) => {
+        soundscape.engine.setMusicEnabled(enabled);
+      },
+      setSoundscapeMusicVolume: (vol: number) => {
+        soundscape.engine.setMusicVolume(vol);
+      },
+      reloadSoundscapeConfigJson: (json: string) => {
+        return soundscape.engine.reloadConfigFromJson(json);
+      },
+      getSoundscapeConfigJson: () => {
+        return JSON.stringify(soundscape.engine.getRawConfig(), null, 2);
       },
       eatItem: (itemId: ItemId) => {
         const res = eatFoodItem(survival, inventory, itemId);
@@ -1439,6 +1632,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           setHourForTest: (hour: number) => void;
           triggerLethalCollapse: (cause?: string) => void;
           setVitalsForTest: (patch: Partial<PlayerSurvivalState>) => void;
+          getSoundscapeDiagnostics: () => DiagnosticsSnapshot;
+          triggerSoundscapeEvent: (type: string, intensity?: number) => void;
+          auditionSoundscapeSound: (soundId: string) => boolean;
+          reloadSoundscapeConfigJson: (json: string) => {
+            ok: boolean;
+            issues: ValidationIssue[];
+            diffSummary?: string;
+          };
+          exportSoundscapeSnapshot: () => PersistedSoundscapeState;
+          importSoundscapeSnapshot: (snap: PersistedSoundscapeState) => void;
         };
       }
     ).__metsavaikusDebug = {
@@ -1712,6 +1915,29 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         syncVitalHudDom();
         pushSurvivalSnapshot();
       },
+      getSoundscapeDiagnostics: () => soundscape.engine.getDiagnosticsSnapshot(),
+      triggerSoundscapeEvent: (type: string, intensity = 1) => {
+        sound.init();
+        sound.resume();
+        soundscape.engine.emitEvent({
+          type,
+          origin: 'player',
+          simulationTimestamp: simClockMs,
+          position: { x: player.pos.x, y: player.pos.y + 1.2, z: player.pos.z },
+          intensity,
+          payload: { material: 'wood', source: 'debug' },
+        });
+      },
+      auditionSoundscapeSound: (soundId: string) => {
+        sound.init();
+        sound.resume();
+        return soundscape.engine.auditionSound(soundId);
+      },
+      reloadSoundscapeConfigJson: (json: string) => soundscape.engine.reloadConfigFromJson(json),
+      exportSoundscapeSnapshot: () => soundscape.engine.exportSnapshot(),
+      importSoundscapeSnapshot: (snap: PersistedSoundscapeState) => {
+        soundscape.engine.importSnapshot(snap);
+      },
     };
 
     const onPointerLockChange = () => {
@@ -1719,7 +1945,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      if (phaseRef.current !== 'playing' || uiModalOpen) return;
+      if (phaseRef.current !== 'playing' || uiModalOpen || diagnosticsOpen) return;
       if (e.target !== renderer.domElement) return;
       sound.init();
       mouseDragging = true;
@@ -1756,6 +1982,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
     const onKeyDown = (e: KeyboardEvent) => {
       const code = e.code;
+      const target = e.target as HTMLElement | null;
+      const isEditingText =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+      if (isEditingText && code !== 'F9' && code !== 'Escape') {
+        return;
+      }
+
       if (phaseRef.current === 'title' || phaseRef.current === 'packing') {
         return;
       }
@@ -1764,6 +1999,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         phaseRef.current === 'collapsing' ||
         phaseRef.current === 'collapsed'
       ) {
+        return;
+      }
+
+      if (code === 'F9') {
+        if (phaseRef.current === 'playing' || phaseRef.current === 'paused') {
+          e.preventDefault();
+          if (document.pointerLockElement) document.exitPointerLock?.();
+          keysHeld.clear();
+          keysJustPressed.clear();
+          mouseDragging = false;
+          callbacksRef.current.onToggleDiagnostics?.();
+        }
         return;
       }
 
@@ -1784,6 +2031,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
 
       if (code === 'KeyP' || (code === 'Escape' && !pointerLocked)) {
+        if (code === 'Escape' && diagnosticsOpen && !uiModalOpen) {
+          return;
+        }
         e.preventDefault();
         if (uiModalOpen) {
           callbacksRef.current.onCloseModals();
@@ -1968,17 +2218,51 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         else locomotion = 'walk';
       }
 
+      const prevX = player.pos.x;
+      const prevZ = player.pos.z;
       player.pos.addScaledVector(_move, speed * dt);
       resolvePlayerCollisions(player.pos);
+
+      const frameMovedM = Math.hypot(player.pos.x - prevX, player.pos.z - prevZ);
+      totalDistanceMoved += frameMovedM;
+      playerSpeedMps = dt > 0.0001 ? frameMovedM / dt : 0;
+      lastIsMoving = moving;
+      lastWantRun = wantRun;
+      lastCrouching = crouching;
+      lastIsSwimming = isSwimming;
+      lastIsSwampWading = isSwampWading;
+      lastOnBoardwalk = onBoardwalk;
+      lastWaterDepthM = waterDepth;
+
+      const targetExertion = isSwimming
+        ? 0.75
+        : moving && wantRun
+          ? survival.physicalTiredness > 60
+            ? 0.94
+            : 0.68
+          : moving
+            ? 0.25 + (survival.physicalTiredness / 100) * 0.28
+            : Math.max(0.05, (survival.physicalTiredness / 100) * 0.35 + ((100 - survival.energy) / 100) * 0.22);
+      const exRate = targetExertion > playerExertion ? dt * 0.45 : dt * 0.22;
+      playerExertion += (targetExertion - playerExertion) * Math.min(1, exRate);
 
       let jumped = false;
       if (keysJustPressed.has('Space') && player.onGround && !crouching && !isSwimming) {
         player.vel.y = 6.4;
         player.onGround = false;
         jumped = true;
+        soundscape.engine.emitEvent({
+          type: 'player.jump',
+          origin: 'player',
+          simulationTimestamp: simClockMs,
+          position: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
+          intensity: 0.8,
+          payload: { surface: onBoardwalk ? 'wooden_boardwalk' : 'forest_floor' },
+        });
       }
       keysJustPressed.clear();
 
+      const preLandVelY = player.vel.y;
       player.vel.y -= 16.5 * dt;
       player.pos.y += player.vel.y * dt;
 
@@ -1990,9 +2274,23 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         player.pos.y = minFloorY;
         player.vel.y = 0;
         player.onGround = true;
+        if (!prevOnGround && preLandVelY < -2.4) {
+          soundscape.engine.emitEvent({
+            type: 'player.land',
+            origin: 'player',
+            simulationTimestamp: simClockMs,
+            position: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
+            intensity: Math.min(1.2, Math.abs(preLandVelY) / 8),
+            payload: {
+              impactSpeed: Math.abs(preLandVelY),
+              surface: onBoardwalk ? 'wooden_boardwalk' : waterDepth > 0.02 ? 'water' : 'forest_floor',
+            },
+          });
+        }
       } else {
         player.onGround = false;
       }
+      prevOnGround = player.onGround;
 
       const targetEye = isSwimming
         ? 1.12
@@ -2009,7 +2307,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           player.stepTimer += dt * 1.4;
           if (player.stepTimer >= 1) {
             player.stepTimer = 0;
-            sound.playFootstep('water');
+            if (!sound.getSoundscapeEngine()) sound.playFootstep('water');
           }
         }
       } else if (moving && player.onGround) {
@@ -2023,7 +2321,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           if (onBoardwalk) surf = 'wood';
           else if (waterDepth > 0.02) surf = 'water';
           else if (distToRoadDetail(player.pos.x, player.pos.z).dist < 3.3) surf = 'road';
-          sound.playFootstep(surf);
+          if (!sound.getSoundscapeEngine()) sound.playFootstep(surf);
         }
       }
 
@@ -2089,7 +2387,27 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             SWAMP_WATER_Y - 0.15
           ) + obj.onGroundYOffset;
         if (obj.mesh.position.y <= floorY) {
-          if (obj.vel.y < -2.2) sound.playImpact(Math.min(1.0, Math.abs(obj.vel.y) / 8));
+          if (obj.vel.y < -2.2) {
+            sound.playImpact(Math.min(1.0, Math.abs(obj.vel.y) / 8));
+            soundscape.engine.emitEvent({
+              type: 'object.impact',
+              origin: 'environment',
+              simulationTimestamp: simClockMs,
+              position: {
+                x: obj.mesh.position.x,
+                y: obj.mesh.position.y,
+                z: obj.mesh.position.z,
+              },
+              intensity: Math.min(1.0, Math.abs(obj.vel.y) / 8),
+              dedupeKey: `dyn_impact_${obj.name}_${Math.floor(elapsed * 8)}`,
+              dedupeWindowMs: 120,
+              payload: {
+                material: obj.materialType ?? 'wood',
+                breakable: Boolean(obj.breakable),
+                broken: false,
+              },
+            });
+          }
           obj.mesh.position.y = floorY;
           obj.vel.y = Math.abs(obj.vel.y) > 1.8 ? -obj.vel.y * 0.3 : 0;
           obj.vel.x *= Math.pow(0.05, dt);
@@ -2447,8 +2765,29 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         skyTimeLabel = skyInfo.timeLabel;
         skyWindStrength = skyInfo.windStrength;
         lastWindStrength = skyInfo.windStrength;
+        lastWeatherIntensity =
+          weatherSky.currentWeather === 'storm'
+            ? 1.0
+            : weatherSky.currentWeather === 'rain'
+              ? 0.68
+              : weatherSky.currentWeather === 'mist'
+                ? 0.2
+                : 0;
+        lastFogDensity = skyInfo.fogDensity;
+        lastSunDirY = skyInfo.sunDir.y;
 
-        // Dynamic 3D spatial ambient soundscape (forest birds, crickets, buzzing insects)
+        const curHour = weatherSky.timeOfDay;
+        let hourDelta = curHour - prevSkyHour;
+        if (hourDelta < -12) {
+          hourDelta += 24;
+          simDay += 1;
+        } else if (hourDelta < 0) {
+          hourDelta = 0;
+        }
+        prevSkyHour = curHour;
+        simClockMs += Math.max(dt * 1000, hourDelta * 3_600_000);
+
+        // Dynamic 3D spatial ambient soundscape + full SoundscapeEngine step
         if (curPhase === 'playing' || curPhase === 'sleeping') {
           const curBiomeId = getBiomeInfo(player.pos.x, player.pos.z).id;
           sound.updateSpatialAmbience(dt, {
@@ -2463,6 +2802,95 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             hourOfDay: weatherSky.timeOfDay,
             shelter: effectiveShelter,
           });
+
+          const structAcoustics: StructureAcousticsInfo = propsCtx
+            ? propsCtx.getStructureAcousticsAt(player.pos.x, player.pos.z)
+            : {
+                id: null,
+                quality: 'outdoor',
+                profileId: 'outdoor',
+                enclosure: 0,
+                roofCoverage: 0,
+                hasRoof: false,
+                roofMaterial: 'none',
+                wallMaterial: 'none',
+                condition: 'intact',
+                portalOpenness: 1,
+                abandoned: false,
+                floorMaterial: 'forest_floor',
+                nearestShelterDistanceM: 999,
+              };
+          if (seatedTent) {
+            structAcoustics.id = seatedTent.id;
+            structAcoustics.quality = 'tent';
+            structAcoustics.profileId = 'tent';
+            structAcoustics.enclosure = 0.72;
+            structAcoustics.roofCoverage = 1.0;
+            structAcoustics.hasRoof = true;
+            structAcoustics.portalOpenness = 0.35;
+          }
+
+          const campfirePos = curEnvState?.nearestCampfire
+            ? {
+                x: curEnvState.nearestCampfire.x,
+                y: curEnvState.nearestCampfire.y,
+                z: curEnvState.nearestCampfire.z,
+              }
+            : undefined;
+
+          soundscape.engine.step(
+            dt,
+            buildWorldContextFromSimulator({
+              simulationTimeMs: simClockMs,
+              timeOfDayHours: weatherSky.timeOfDay,
+              simulationDay: simDay,
+              timeAcceleration: skyTimeScale,
+              sunDirY: lastSunDirY,
+              weather: weatherSky.currentWeather,
+              windStrength: skyInfo.windStrength,
+              fogDensity: lastFogDensity,
+              listenerPos: {
+                x: camera.position.x,
+                y: camera.position.y,
+                z: camera.position.z,
+              },
+              listenerForward: {
+                x: _camForward.x,
+                y: _camForward.y,
+                z: _camForward.z,
+              },
+              listenerVelocity: {
+                x: player.vel.x,
+                y: player.vel.y,
+                z: player.vel.z,
+              },
+              isMoving: lastIsMoving && curPhase === 'playing' && !uiModalOpen,
+              wantRun: lastWantRun,
+              crouching: lastCrouching,
+              isSwimming: lastIsSwimming,
+              isSwampWading: lastIsSwampWading,
+              onBoardwalk: lastOnBoardwalk,
+              waterDepthM: lastWaterDepthM,
+              speedMps: curPhase === 'playing' ? playerSpeedMps : 0,
+              stamina: survival.energy,
+              exertion: playerExertion,
+              tiredness: survival.physicalTiredness,
+              wetness: survival.wetness,
+              wearingRainJacket: isWearingRainJacket(inventory),
+              seatedInTent: seatedTent !== null,
+              distanceMovedTotal: totalDistanceMoved,
+              nearLitCampfireFactor: curEnvState?.nearLitCampfireFactor ?? 0,
+              nearestCampfirePos: campfirePos,
+              structure: structAcoustics,
+              muted: isMuted,
+            })
+          );
+
+          if (elapsed - lastSnapshotSaveSec >= 12) {
+            lastSnapshotSaveSec = elapsed;
+            saveSoundscapeSnapshotToStorage(worldSeed, soundscape.engine);
+          }
+          void lastWeatherIntensity;
         }
 
         // Continuous survival physiology tick during active gameplay
@@ -2952,8 +3380,51 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             syncVitalHudDom();
             pushSurvivalSnapshot();
           },
+          onDoorToggle: (info) => {
+            soundscape.engine.emitEvent({
+              type: info.open ? 'object.door.open' : 'object.door.close',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: info.x, y: info.y, z: info.z },
+              sourceEntityId: info.doorId,
+              intensity: 0.9,
+              dedupeKey: `door_${info.doorId}_${info.open ? 'o' : 'c'}`,
+              dedupeWindowMs: 120,
+              payload: {
+                material: info.abandoned ? 'decrepit_wooden_floor' : 'wooden_floor',
+                buildingId: info.buildingId,
+                abandoned: info.abandoned,
+              },
+            });
+          },
+          onStumpKick: (info) => {
+            const corrId = `stump_${Math.round(info.x)}_${Math.round(info.z)}_${Math.round(simClockMs)}`;
+            soundscape.engine.emitEvent({
+              type: 'player.kick',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: info.x, y: info.y, z: info.z },
+              intensity: info.broken ? 1.2 : 0.9,
+              correlationId: corrId,
+              dedupeKey: `kick_stump_${Math.floor(elapsed * 5)}`,
+              dedupeWindowMs: 120,
+              payload: { material: info.material, broken: info.broken },
+            });
+            soundscape.engine.emitEvent({
+              type: info.broken ? 'object.break' : 'object.impact',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: info.x, y: info.y, z: info.z },
+              intensity: info.broken ? 1.2 : 0.9,
+              correlationId: corrId,
+              dedupeKey: `stump_act_${Math.floor(elapsed * 5)}`,
+              dedupeWindowMs: 120,
+              payload: { material: info.material, breakable: true, broken: info.broken },
+            });
+          },
         }
       );
+      soundscape.spatialQuery.setBoxColliders(propsCtx.boxColliders);
       weatherSky.setShelterGeometry(propsCtx.shelters);
       propCircleColliders = propsCtx.circleColliders;
       const activeBp = getActiveBlueprint();
@@ -3075,6 +3546,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       minimap?.dispose();
       textures?.dispose();
       envTarget?.dispose();
+      saveSoundscapeSnapshotToStorage(worldSeed, soundscape.engine);
       sound.dispose();
       renderer.dispose();
       void computeEngine;

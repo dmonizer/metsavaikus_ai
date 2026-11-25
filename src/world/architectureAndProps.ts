@@ -66,6 +66,7 @@ export interface InteractiveEntry {
   isDynamic: boolean;
   resting: boolean;
   onGroundYOffset: number;
+  materialType?: 'wood' | 'metal' | 'stone' | 'glass';
 }
 
 export interface SleepSpotInfo {
@@ -106,6 +107,22 @@ export interface WorldInteractionHandlers {
     label: string,
     loot: Array<{ itemId: ItemId; qty: number }>
   ) => void;
+  onDoorToggle?: (info: {
+    doorId: string;
+    buildingId: string;
+    open: boolean;
+    abandoned: boolean;
+    x: number;
+    y: number;
+    z: number;
+  }) => void;
+  onStumpKick?: (info: {
+    broken: boolean;
+    material: 'wood';
+    x: number;
+    y: number;
+    z: number;
+  }) => void;
 }
 
 export interface WorldEnvironmentAtPoint {
@@ -113,6 +130,23 @@ export interface WorldEnvironmentAtPoint {
   shelterLabel: string | null;
   nearLitCampfireFactor: number;
   nearestCampfire: CampfireInfo | null;
+}
+
+export interface StructureAcousticsInfo {
+  id: string | null;
+  quality: ShelterQuality;
+  profileId: string;
+  enclosure: number;
+  roofCoverage: number;
+  hasRoof: boolean;
+  roofMaterial: string;
+  wallMaterial: string;
+  condition: 'intact' | 'weathered' | 'sagging' | 'decrepit' | 'ruins';
+  portalOpenness: number;
+  abandoned: boolean;
+  floorMaterial: 'wooden_floor' | 'decrepit_wooden_floor' | 'forest_floor';
+  nearestShelterDistanceM: number;
+  roofDrainagePoint?: { x: number; y: number; z: number };
 }
 
 export interface WorldPropsContext {
@@ -151,6 +185,7 @@ export interface WorldPropsContext {
   getBreakableStumps: () => Array<{ x: number; z: number; entry: InteractiveEntry }>;
   getPickupItems: () => Array<{ x: number; z: number; entry: InteractiveEntry }>;
   getEnvironmentStateAt: (x: number, z: number) => WorldEnvironmentAtPoint;
+  getStructureAcousticsAt: (x: number, z: number) => StructureAcousticsInfo;
   setCampfireLit: (id: string, lit: boolean) => boolean;
   getCampfireInfo: (id: string) => CampfireInfo | null;
   getCampfires: () => CampfireInfo[];
@@ -292,6 +327,22 @@ export function buildArchitectureAndProps(
     interactiveEntry: InteractiveEntry;
     geometries: THREE.BufferGeometry[];
   }
+  interface StructureAcousticMeta {
+    id: string;
+    x: number;
+    z: number;
+    yaw: number;
+    halfW: number;
+    halfD: number;
+    abandoned: boolean;
+    decay: HutDecayState;
+    roofMaterial: string;
+    wallMaterial: string;
+    hasDoor: boolean;
+    getDoorOpen: () => boolean;
+    roofDrainagePoint?: { x: number; y: number; z: number };
+  }
+  const structureMetas: StructureAcousticMeta[] = [];
   const campfires: CampfireEntry[] = [];
   const tents: TentEntry[] = [];
   let tentCounter = 0;
@@ -352,6 +403,7 @@ export function buildArchitectureAndProps(
       isDynamic: !!opts.isDynamic && !opts.gatherable,
       resting: false,
       onGroundYOffset: opts.onGroundYOffset ?? (opts.radius ?? 0.35),
+      materialType: opts.materialType,
     };
     mesh.updateMatrixWorld(true);
     mesh.userData.interactive = entry;
@@ -701,8 +753,10 @@ export function buildArchitectureAndProps(
     const name = opts.name ?? 'Rehemaja';
 
     const y = getTerrainHeight(x, z);
+    const buildingId = `house_${x}_${z}`;
+    let doorOpenRef = false;
     shelters.add({
-      id: `house_${x}_${z}`, x, z, yaw: rotY, halfW: w / 2, halfD: d / 2, floorY: y + 0.43,
+      id: buildingId, x, z, yaw: rotY, halfW: w / 2, halfD: d / 2, floorY: y + 0.43,
       shelter: decay === 'intact' || decay === 'sagging' ? {
         quality: !abandoned && decay === 'intact' ? 'warm_house' : 'drafty_hut', label: name,
       } : undefined,
@@ -710,6 +764,26 @@ export function buildArchitectureAndProps(
         eaveY: y + 0.4 + h - 0.16 + roofH * roofOverhang / (d / 2 + roofOverhang),
         rise: roofH * (d / 2) / (d / 2 + roofOverhang), axis: 'z',
       } : undefined,
+    });
+    const drainageX = x + Math.cos(rotY) * (w / 2 + 0.4);
+    const drainageZ = z - Math.sin(rotY) * (w / 2 + 0.4);
+    structureMetas.push({
+      id: buildingId,
+      x,
+      z,
+      yaw: rotY,
+      halfW: w / 2,
+      halfD: d / 2,
+      abandoned,
+      decay,
+      roofMaterial: roofStyle,
+      wallMaterial: 'wood',
+      hasDoor: decay !== 'ruins',
+      getDoorOpen: () => doorOpenRef,
+      roofDrainagePoint:
+        decay === 'intact' || decay === 'sagging'
+          ? { x: drainageX, y: y + 2.4, z: drainageZ }
+          : undefined,
     });
     const group = new THREE.Group();
     group.position.set(x, y, z);
@@ -1051,6 +1125,7 @@ export function buildArchitectureAndProps(
       group.add(doorPivot);
 
       let doorOpen = abandoned && rand() > 0.3;
+      doorOpenRef = doorOpen;
       doorPivot.rotation.y = doorOpen ? -Math.PI * 0.58 : 0;
 
       const c = Math.cos(rotY);
@@ -1065,6 +1140,7 @@ export function buildArchitectureAndProps(
       doorCollider.frame = { x: wx, z: wz, yaw: rotY, halfW: doorWidth / 2, halfD: wallThick / 2 };
       doorCollider.active = !doorOpen;
 
+      const doorId = `door_${buildingId}`;
       registerInteractive(doorMesh, {
         name: abandoned ? t('prop.oldCabinDoor') : t('prop.namedDoor', { name }),
         desc: abandoned ? t('prop.doorDescAbandoned') : t('prop.doorDescIntact'),
@@ -1072,10 +1148,23 @@ export function buildArchitectureAndProps(
         getDesc: () => (abandoned ? t('prop.doorDescAbandoned') : t('prop.doorDescIntact')),
         onUse: () => {
           doorOpen = !doorOpen;
+          doorOpenRef = doorOpen;
           lightShadowsDirty = true;
           if (doorCollider) doorCollider.active = !doorOpen;
           doorPivot.rotation.y = doorOpen ? -Math.PI * 0.58 : 0;
-          sound.playImpact(0.7);
+          if (handlers?.onDoorToggle) {
+            handlers.onDoorToggle({
+              doorId,
+              buildingId,
+              open: doorOpen,
+              abandoned,
+              x: wx,
+              y: y + 1.25,
+              z: wz,
+            });
+          } else {
+            sound.playImpact(0.7);
+          }
           showToast(doorOpen ? t('prop.doorOpened') : t('prop.doorClosed'));
         },
         onTouch: () =>
@@ -1807,7 +1896,9 @@ export function buildArchitectureAndProps(
       getDesc: () => t('prop.woodenCrateDesc'),
       carryable: true,
       kickable: true,
+      breakable: true,
       isDynamic: true,
+      materialType: 'wood',
       radius: size * 0.55,
       mass: 1.8,
       onGroundYOffset: size * 0.5,
@@ -1829,6 +1920,7 @@ export function buildArchitectureAndProps(
       carryable: false,
       kickable: true,
       isDynamic: true,
+      materialType: 'metal',
       radius: 0.42,
       mass: 2.5,
       onGroundYOffset: 0.95 / 2,
@@ -2067,7 +2159,11 @@ export function buildArchitectureAndProps(
         g.rotation.z += 0.12;
         g.rotation.y += 0.09;
         g.updateMatrixWorld(true);
-        sound.playImpact(1.1);
+        if (handlers?.onStumpKick) {
+          handlers.onStumpKick({ broken: false, material: 'wood', x, y: y + 0.25, z });
+        } else {
+          sound.playImpact(1.1);
+        }
         showToast(t('prop.stumpCracked'));
         return;
       }
@@ -2075,7 +2171,11 @@ export function buildArchitectureAndProps(
       // Second kick shatters the stump into 3-4 physical Split Firewood pieces + ground splinters
       stumpEntry.gathered = true;
       g.visible = false;
-      sound.playImpact(1.45);
+      if (handlers?.onStumpKick) {
+        handlers.onStumpKick({ broken: true, material: 'wood', x, y: y + 0.25, z });
+      } else {
+        sound.playImpact(1.45);
+      }
       const pieceCount = shatterWoodAt(x, y, z, yaw);
       showToast(t('prop.stumpShattered', { count: pieceCount }));
     };
@@ -2953,6 +3053,112 @@ export function buildArchitectureAndProps(
     return { shelter, shelterLabel, nearLitCampfireFactor, nearestCampfire };
   }
 
+  function getStructureAcousticsAt(px: number, pz: number): StructureAcousticsInfo {
+    let nearestShelterDist = Infinity;
+    let nearestRoofedDrainage: { x: number; y: number; z: number } | undefined;
+    let nearestHasRoof = false;
+
+    for (const s of structureMetas) {
+      const dx = px - s.x;
+      const dz = pz - s.z;
+      const dEdge = Math.max(0, Math.hypot(dx, dz) - Math.max(s.halfW, s.halfD));
+      if (dEdge < nearestShelterDist) {
+        nearestShelterDist = dEdge;
+        if (s.roofDrainagePoint) {
+          nearestRoofedDrainage = s.roofDrainagePoint;
+          nearestHasRoof = true;
+        }
+      }
+    }
+
+    for (const area of shelters.footprints) {
+      const distApprox = Math.max(0, Math.hypot(px - area.x, pz - area.z) - Math.max(area.halfW, area.halfD));
+      if (distApprox < nearestShelterDist) {
+        nearestShelterDist = distApprox;
+      }
+
+      if (containsFootprint(area, px, pz, -0.05)) {
+        if (area.shelter?.quality === 'tent') {
+          return {
+            id: area.id,
+            quality: 'tent',
+            profileId: 'tent',
+            enclosure: 0.58,
+            roofCoverage: 1.0,
+            hasRoof: true,
+            roofMaterial: 'canvas',
+            wallMaterial: 'canvas',
+            condition: 'intact',
+            portalOpenness: 0.28,
+            abandoned: false,
+            floorMaterial: 'forest_floor',
+            nearestShelterDistanceM: 0,
+            roofDrainagePoint: { x: area.x + 1.1, y: area.floorY + 0.8, z: area.z },
+          };
+        }
+
+        const meta = structureMetas.find((m) => m.id === area.id);
+        if (meta) {
+          const doorOpen = meta.hasDoor && meta.getDoorOpen();
+          const decay = meta.decay;
+          const profileId =
+            decay === 'ruins'
+              ? 'outdoor'
+              : decay === 'roofless'
+                ? 'decrepit_missing_roof'
+                : meta.abandoned || decay === 'sagging'
+                  ? 'drafty_hut'
+                  : 'wooden_house';
+          const enclosure =
+            decay === 'ruins' ? 0.35 : decay === 'roofless' ? 0.5 : decay === 'sagging' ? 0.68 : 0.92;
+          const roofCoverage =
+            decay === 'ruins' ? 0 : decay === 'roofless' ? 0.15 : decay === 'sagging' ? 0.72 : 1.0;
+          const portalOpenness = !meta.hasDoor ? 0.85 : doorOpen ? 0.68 : 0.08;
+          return {
+            id: meta.id,
+            quality: meta.abandoned || decay !== 'intact' ? 'drafty_hut' : 'warm_house',
+            profileId,
+            enclosure,
+            roofCoverage,
+            hasRoof: roofCoverage > 0.3,
+            roofMaterial: meta.roofMaterial,
+            wallMaterial: meta.wallMaterial,
+            condition:
+              decay === 'ruins'
+                ? 'ruins'
+                : meta.abandoned
+                  ? 'decrepit'
+                  : decay === 'sagging'
+                    ? 'sagging'
+                    : 'intact',
+            portalOpenness,
+            abandoned: meta.abandoned,
+            floorMaterial: meta.abandoned || decay !== 'intact' ? 'decrepit_wooden_floor' : 'wooden_floor',
+            nearestShelterDistanceM: 0,
+            roofDrainagePoint: meta.roofDrainagePoint ?? nearestRoofedDrainage,
+          };
+        }
+      }
+    }
+
+    return {
+      id: null,
+      quality: 'outdoor',
+      profileId: 'outdoor',
+      enclosure: 0,
+      roofCoverage: 0,
+      hasRoof: nearestShelterDist <= 30 && nearestHasRoof,
+      roofMaterial: 'none',
+      wallMaterial: 'none',
+      condition: 'intact',
+      portalOpenness: 1,
+      abandoned: false,
+      floorMaterial: 'forest_floor',
+      nearestShelterDistanceM: nearestShelterDist,
+      roofDrainagePoint: nearestRoofedDrainage,
+    };
+  }
+
   function setCampfireLit(id: string, lit: boolean): boolean {
     const cf = campfires.find((c) => c.id === id);
     if (!cf) return false;
@@ -3506,6 +3712,7 @@ export function buildArchitectureAndProps(
         .filter((p) => !p.entry.gathered)
         .map((p) => ({ x: p.entry.mesh.position.x, z: p.entry.mesh.position.z, entry: p.entry })),
     getEnvironmentStateAt,
+    getStructureAcousticsAt,
     setCampfireLit,
     getCampfireInfo,
     getCampfires: () =>

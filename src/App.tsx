@@ -34,6 +34,9 @@ import { CampfireHearthModal, SleepModal } from './components/SleepAndHearthModa
 import { CollapseOverlay } from './components/CollapseOverlay';
 import { FullMapModal } from './components/FullMapModal';
 import { LanguageSwitcher } from './components/LanguageSwitcher';
+import { SoundscapeDiagnosticsOverlay } from './components/SoundscapeDiagnosticsOverlay';
+import { SOUNDSCAPE_SOUNDS } from './config/soundscape/sounds';
+import type { DiagnosticsSnapshot } from './soundscape/types';
 import { t as translate, useLanguage } from './i18n/i18n';
 
 function getInitialPhase(): GamePhase {
@@ -102,6 +105,10 @@ export default function App() {
   const [fullMapOpen, setFullMapOpen] = useState<boolean>(false);
   const [activeSleepSpot, setActiveSleepSpot] = useState<SleepSpotInfo | null>(null);
   const [activeCampfire, setActiveCampfire] = useState<CampfireInfo | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState<boolean>(false);
+  const [diagSnapshot, setDiagSnapshot] = useState<DiagnosticsSnapshot | null>(null);
+
+  const availableSoundIds = useMemo(() => SOUNDSCAPE_SOUNDS.map((s) => s.id), []);
 
   const toastTimerRef = useRef<number | null>(null);
   const actionsRef = useRef<WorldActions | null>(null);
@@ -158,27 +165,45 @@ export default function App() {
   }, [anyGameplayModalOpen]);
 
   useEffect(() => {
+    actionsRef.current?.setDiagnosticsOpen(diagnosticsOpen);
+    if (!diagnosticsOpen) return;
+    setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+    const timer = window.setInterval(() => {
+      setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [diagnosticsOpen]);
+
+  useEffect(() => {
     if (phase !== 'playing') {
       setBackpackOpen(false);
       setFullMapOpen(false);
       setActiveSleepSpot(null);
       setActiveCampfire(null);
+      if (phase !== 'paused') {
+        setDiagnosticsOpen(false);
+      }
     }
   }, [phase]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Escape' && anyGameplayModalOpen) {
-        e.preventDefault();
-        setBackpackOpen(false);
-        setFullMapOpen(false);
-        setActiveSleepSpot(null);
-        setActiveCampfire(null);
+      if (e.code === 'Escape') {
+        if (anyGameplayModalOpen) {
+          e.preventDefault();
+          setBackpackOpen(false);
+          setFullMapOpen(false);
+          setActiveSleepSpot(null);
+          setActiveCampfire(null);
+        } else if (diagnosticsOpen) {
+          e.preventDefault();
+          setDiagnosticsOpen(false);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [anyGameplayModalOpen]);
+  }, [anyGameplayModalOpen, diagnosticsOpen]);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -248,6 +273,9 @@ export default function App() {
         setFullMapOpen(false);
         setActiveSleepSpot(null);
         setActiveCampfire(null);
+      },
+      onToggleDiagnostics: () => {
+        setDiagnosticsOpen((prev) => !prev);
       },
     }),
     [showToast]
@@ -1426,6 +1454,58 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Non-blocking Soundscape Diagnostics Overlay (F9) */}
+      {(phase === 'playing' || phase === 'paused') && (
+        <SoundscapeDiagnosticsOverlay
+          open={diagnosticsOpen}
+          snapshot={diagSnapshot}
+          availableSoundIds={availableSoundIds}
+          onClose={() => setDiagnosticsOpen(false)}
+          onTriggerEvent={(type, intensity) => {
+            actionsRef.current?.triggerSoundscapeEvent(type, intensity);
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+          }}
+          onAuditionSound={(soundId) => {
+            const ok = actionsRef.current?.auditionSoundscapeSound(soundId) ?? false;
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+            return ok;
+          }}
+          onSetBusVolume={(busId, vol) => {
+            actionsRef.current?.setSoundscapeBusVolume(busId, vol);
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+          }}
+          onSetBusMuted={(busId, muted) => {
+            actionsRef.current?.setSoundscapeBusMuted(busId, muted);
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+          }}
+          onSetMusicEnabled={(enabled) => {
+            actionsRef.current?.setSoundscapeMusicEnabled(enabled);
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+          }}
+          onSetMusicVolume={(vol) => {
+            actionsRef.current?.setSoundscapeMusicVolume(vol);
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+          }}
+          onGetConfigJson={() => actionsRef.current?.getSoundscapeConfigJson() ?? '{}'}
+          onReloadConfigJson={(json) => {
+            const res = actionsRef.current?.reloadSoundscapeConfigJson(json) ?? {
+              ok: false,
+              issues: [
+                {
+                  file: 'config.json',
+                  definition: 'engine',
+                  property: 'runtime',
+                  message: 'Engine not initialized',
+                  severity: 'error' as const,
+                },
+              ],
+            };
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+            return res;
+          }}
+        />
       )}
     </div>
   );

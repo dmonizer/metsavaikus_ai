@@ -1,0 +1,817 @@
+import { parseDistanceM, parseDurationMs, SeededRng } from './clocks';
+import type { AcousticEnvironmentManager } from './acoustics';
+import type { AudioBackend, BackendVoiceHandle } from './audioBackend';
+import type { DisturbanceManager } from './disturbanceManager';
+import type { AudioMixer } from './mixer';
+import type {
+  ActiveVoiceSnapshot,
+  AssetDefinition,
+  ConcurrencyPolicy,
+  InstanceLifecycleState,
+  SoundDefinition,
+  SpatialQueryProvider,
+  Vector3,
+  WorldContext,
+} from './types';
+
+export interface ActiveSoundInstance {
+  instanceId: string;
+  sound: SoundDefinition;
+  asset: AssetDefinition;
+  emitterId: string;
+  state: InstanceLifecycleState;
+  backendHandle: BackendVoiceHandle | null;
+  position: Vector3 | null;
+  sourceStructureId: string | null;
+  sourceInsideSameStructure: boolean;
+  baseVolume: number;
+  pitch: number;
+  priority: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+  currentEnvelopeGain: number;
+  targetEnvelopeGain: number;
+  startedAtRealMs: number;
+  stoppingStartedAtRealMs: number | null;
+  loopCountTarget: number | 'infinite';
+  loopsCompleted: number;
+  elapsedSec: number;
+  durationSec: number;
+  pauseBetweenLoopsUntilRealMs: number | null;
+  resumeOffsetSec: number;
+  reason: string;
+  exemptFromDisturbance: boolean;
+}
+
+interface QueuedSoundRequest {
+  sound: SoundDefinition;
+  emitterId: string;
+  position: Vector3 | null;
+  enqueuedAtRealMs: number;
+  maxQueueAgeMs: number;
+  sourceStructureId: string | null;
+  sourceInsideSameStructure: boolean;
+  reason: string;
+  exemptFromDisturbance: boolean;
+}
+
+function resolveRange(val: number | [number, number] | undefined, fallback: number, rng: SeededRng): number {
+  if (val === undefined) return fallback;
+  if (typeof val === 'number') return val;
+  return rng.range(val[0], val[1]);
+}
+
+function dist3(a: Vector3, b: Vector3): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+export class InstanceManager {
+  private instances: ActiveSoundInstance[] = [];
+  private queued: QueuedSoundRequest[] = [];
+  private lastAssetBySound = new Map<string, string>();
+  private shuffleBags = new Map<string, number[]>();
+  private sequentialIdx = new Map<string, number>();
+  private seq = 1;
+
+  getInstances(): readonly ActiveSoundInstance[] {
+    return this.instances;
+  }
+
+  getQueuedCount(): number {
+    return this.queued.length;
+  }
+
+  findActiveForSound(soundId: string, emitterId?: string): ActiveSoundInstance | undefined {
+    return this.instances.find(
+      (i) =>
+        i.sound.id === soundId &&
+        i.state !== 'completed' &&
+        (emitterId === undefined || i.emitterId === emitterId)
+    );
+  }
+
+  private selectAsset(
+    sound: SoundDefinition,
+    assetsMap: ReadonlyMap<string, AssetDefinition>,
+    rng: SeededRng
+  ): AssetDefinition | null {
+    const valid = sound.assets
+      .map((ref) => ({ asset: assetsMap.get(ref.assetId), weight: ref.weight ?? 1 }))
+      .filter((x): x is { asset: AssetDefinition; weight: number } => Boolean(x.asset));
+    if (valid.length === 0) return null;
+    if (valid.length === 1) {
+      this.lastAssetBySound.set(sound.id, valid[0].asset.id);
+      return valid[0].asset;
+    }
+
+    const mode = sound.playback.selection ?? 'weighted';
+    const avoidRepeat = sound.playback.avoidConsecutiveRepetition ?? true;
+    const prevId = this.lastAssetBySound.get(sound.id);
+
+    let chosen: AssetDefinition;
+    if (mode === 'sequential') {
+      const idx = (this.sequentialIdx.get(sound.id) ?? 0) % valid.length;
+      this.sequentialIdx.set(sound.id, idx + 1);
+      chosen = valid[idx].asset;
+    } else if (mode === 'shuffle_bag') {
+      let bag = this.shuffleBags.get(sound.id);
+      if (!bag || bag.length === 0) {
+        bag = valid.map((_, i) => i);
+        for (let i = bag.length - 1; i > 0; i--) {
+          const j = rng.int(0, i);
+          const tmp = bag[i];
+          bag[i] = bag[j];
+          bag[j] = tmp;
+        }
+        if (avoidRepeat && valid[bag[bag.length - 1]].asset.id === prevId && bag.length > 1) {
+          const tmp = bag[bag.length - 1];
+          bag[bag.length - 1] = bag[0];
+          bag[0] = tmp;
+        }
+        this.shuffleBags.set(sound.id, bag);
+      }
+      const nextIdx = bag.pop()!;
+      chosen = valid[nextIdx].asset;
+    } else {
+      const pool = avoidRepeat ? valid.filter((v) => v.asset.id !== prevId) : valid;
+      const picked = rng.pickWeighted(pool.length > 0 ? pool : valid);
+      chosen = picked!.asset;
+    }
+
+    this.lastAssetBySound.set(sound.id, chosen.id);
+    return chosen;
+  }
+
+  private resolveSpawnPosition(
+    sound: SoundDefinition,
+    world: WorldContext,
+    rng: SeededRng,
+    spatialQuery?: SpatialQueryProvider,
+    explicitPos?: Vector3
+  ): { ok: boolean; pos: Vector3 | null } {
+    if (explicitPos) {
+      return { ok: true, pos: { ...explicitPos } };
+    }
+    const mode = sound.spatial.mode;
+    if (mode === 'non_spatial' || mode === 'player_attached') {
+      return { ok: true, pos: mode === 'player_attached' ? { ...world.listener.position } : null };
+    }
+    if (sound.spatial.onFeature && spatialQuery) {
+      const minD = sound.spatial.spawnDistanceM ? parseDistanceM(sound.spatial.spawnDistanceM[0], 10) : 10;
+      const maxD = sound.spatial.spawnDistanceM ? parseDistanceM(sound.spatial.spawnDistanceM[1], 100) : 100;
+      const res = spatialQuery.findPointOnFeature(
+        sound.spatial.onFeature,
+        world.listener.position,
+        minD,
+        maxD,
+        () => rng.next()
+      );
+      if (!res || !res.featureFound) {
+        return { ok: false, pos: null };
+      }
+      return { ok: true, pos: res.position };
+    }
+
+    const [minD, maxD] = sound.spatial.spawnDistanceM
+      ? [
+          parseDistanceM(sound.spatial.spawnDistanceM[0], 8),
+          parseDistanceM(sound.spatial.spawnDistanceM[1], 30),
+        ]
+      : [0, 0];
+    if (maxD > 0) {
+      const angle = rng.range(0, Math.PI * 2);
+      const dist = rng.range(minD, maxD);
+      const elev = resolveRange(sound.spatial.elevationOffsetM, 0, rng);
+      return {
+        ok: true,
+        pos: {
+          x: world.listener.position.x + Math.cos(angle) * dist,
+          y: world.listener.position.y + elev,
+          z: world.listener.position.z + Math.sin(angle) * dist,
+        },
+      };
+    }
+
+    return { ok: true, pos: { ...world.listener.position } };
+  }
+
+  spawnOrResume(params: {
+    sound: SoundDefinition;
+    assetsMap: ReadonlyMap<string, AssetDefinition>;
+    world: WorldContext;
+    backend: AudioBackend;
+    mixer: AudioMixer;
+    rng: SeededRng;
+    nowRealMs: number;
+    maxGlobalActiveVoices: number;
+    spatialQuery?: SpatialQueryProvider;
+    emitterId?: string;
+    explicitPosition?: Vector3;
+    sourceStructureId?: string | null;
+    sourceInsideSameStructure?: boolean;
+    reason?: string;
+    exemptFromDisturbance?: boolean;
+    volumeScale?: number;
+    pitchScale?: number;
+  }): { started: boolean; virtualised: boolean; rejectedReason?: string; instance?: ActiveSoundInstance } {
+    const {
+      sound,
+      assetsMap,
+      world,
+      backend,
+      mixer,
+      rng,
+      nowRealMs,
+      maxGlobalActiveVoices,
+      spatialQuery,
+      emitterId = `${sound.id}:default`,
+      explicitPosition,
+      sourceStructureId = null,
+      sourceInsideSameStructure = false,
+      reason = 'triggered',
+      exemptFromDisturbance = false,
+      volumeScale = 1,
+      pitchScale = 1,
+    } = params;
+
+    // Fade-reversal support: if an instance of this sound+emitter is currently stopping (fading out), reverse fade instead of restarting!
+    const existingStopping = this.instances.find(
+      (i) => i.sound.id === sound.id && i.emitterId === emitterId && i.state === 'stopping'
+    );
+    if (existingStopping) {
+      existingStopping.state = 'playing';
+      existingStopping.stoppingStartedAtRealMs = null;
+      existingStopping.targetEnvelopeGain = 1;
+      existingStopping.reason = `${reason} (fade reversed)`;
+      return { started: true, virtualised: false, instance: existingStopping };
+    }
+
+    // Check definition/emitter/bus concurrency limits
+    const sameDef = this.instances.filter((i) => i.sound.id === sound.id && i.state !== 'completed');
+    const maxDef = sound.playback.maxInstances;
+    const sameBus = this.instances.filter(
+      (i) => i.sound.bus === sound.bus && i.state !== 'completed' && i.state !== 'virtualised'
+    );
+    const maxBus = mixer.getMaxConcurrency(sound.bus);
+    const activeNonVirtual = this.instances.filter(
+      (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
+    );
+
+    const defHit = maxDef !== undefined && sameDef.length >= maxDef;
+    const busHit = maxBus !== undefined && sameBus.length >= maxBus;
+    const globalHit = activeNonVirtual.length >= maxGlobalActiveVoices;
+
+    const policy: ConcurrencyPolicy = sound.playback.concurrencyPolicy ?? 'allow';
+    const newPriority = sound.playback.priority ?? 50;
+
+    if (defHit || busHit) {
+      const candidates = defHit ? sameDef : sameBus;
+
+      if (policy === 'reject_new') {
+        return { started: false, virtualised: false, rejectedReason: 'concurrency reject_new' };
+      }
+      if (policy === 'queue') {
+        const maxQueueAgeMs = parseDurationMs(sound.playback.maxQueueAgeMs, 350);
+        const posRes = this.resolveSpawnPosition(sound, world, rng, spatialQuery, explicitPosition);
+        if (!posRes.ok) return { started: false, virtualised: false, rejectedReason: 'source placement unavailable' };
+        this.queued.push({
+          sound,
+          emitterId,
+          position: posRes.pos,
+          enqueuedAtRealMs: nowRealMs,
+          maxQueueAgeMs,
+          sourceStructureId,
+          sourceInsideSameStructure,
+          reason,
+          exemptFromDisturbance,
+        });
+        return { started: false, virtualised: false, rejectedReason: 'queued' };
+      }
+      if (policy === 'restart' && candidates.length > 0) {
+        this.disposeInstance(candidates[0], backend);
+      } else if (policy === 'replace_oldest' && candidates.length > 0) {
+        const oldest = [...candidates].sort((a, b) => a.startedAtRealMs - b.startedAtRealMs)[0];
+        this.disposeInstance(oldest, backend);
+      } else if (policy === 'replace_quietest' && candidates.length > 0) {
+        const quietest = [...candidates].sort((a, b) => a.currentEnvelopeGain * a.baseVolume - b.currentEnvelopeGain * b.baseVolume)[0];
+        if (quietest.priority <= newPriority) {
+          this.disposeInstance(quietest, backend);
+        } else {
+          return { started: false, virtualised: false, rejectedReason: 'existing priority higher' };
+        }
+      } else if (policy === 'replace_lowest_priority' && candidates.length > 0) {
+        const lowest = [...candidates].sort((a, b) => a.priority - b.priority)[0];
+        if (lowest.priority < newPriority) {
+          this.disposeInstance(lowest, backend);
+        } else {
+          return { started: false, virtualised: false, rejectedReason: 'no lower priority voice' };
+        }
+      }
+    }
+
+    // Re-evaluate global active voice budget after any def/bus eviction; preempt lowest priority if needed
+    const activeAfterDef = this.instances.filter(
+      (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
+    );
+    if (activeAfterDef.length >= maxGlobalActiveVoices && policy !== 'virtualise') {
+      const lowestGlobal = [...activeAfterDef].sort((a, b) => a.priority - b.priority)[0];
+      if (lowestGlobal && lowestGlobal.priority < newPriority) {
+        if (lowestGlobal.loopCountTarget === 'infinite') {
+          lowestGlobal.state = 'virtualised';
+          if (lowestGlobal.backendHandle) {
+            backend.stopVoice(lowestGlobal.backendHandle, 0.04);
+            lowestGlobal.backendHandle = null;
+          }
+        } else {
+          this.disposeInstance(lowestGlobal, backend);
+        }
+      } else if (policy === 'queue') {
+        const maxQueueAgeMs = parseDurationMs(sound.playback.maxQueueAgeMs, 350);
+        const posRes = this.resolveSpawnPosition(sound, world, rng, spatialQuery, explicitPosition);
+        if (!posRes.ok) return { started: false, virtualised: false, rejectedReason: 'source placement unavailable' };
+        this.queued.push({
+          sound,
+          emitterId,
+          position: posRes.pos,
+          enqueuedAtRealMs: nowRealMs,
+          maxQueueAgeMs,
+          sourceStructureId,
+          sourceInsideSameStructure,
+          reason,
+          exemptFromDisturbance,
+        });
+        return { started: false, virtualised: false, rejectedReason: 'queued_global_budget' };
+      } else {
+        return { started: false, virtualised: false, rejectedReason: 'global_voice_budget_full' };
+      }
+    }
+
+    const posRes = this.resolveSpawnPosition(sound, world, rng, spatialQuery, explicitPosition);
+    if (!posRes.ok) {
+      return { started: false, virtualised: false, rejectedReason: 'feature placement failed' };
+    }
+
+    const asset = this.selectAsset(sound, assetsMap, rng);
+    if (!asset) {
+      return { started: false, virtualised: false, rejectedReason: 'no valid asset' };
+    }
+
+    const baseVolume = Math.max(0, resolveRange(sound.playback.volume, 0.7, rng) * volumeScale);
+    const pitch = Math.max(0.25, resolveRange(sound.playback.pitch, 1.0, rng) * pitchScale);
+    const fadeInSec = Math.max(0, parseDurationMs(sound.playback.fadeInMs, 0) / 1000);
+    const fadeOutSec = Math.max(0.02, parseDurationMs(sound.playback.fadeOutMs, 200) / 1000);
+    const loopCountTarget = sound.playback.loop?.count ?? 1;
+    const durationSec = asset.durationSec ?? 2.0;
+
+    // Check distance cull -> spawn virtualised if beyond maximumDistanceM or if policy is virtualise on budget hit
+    const maxDistM = parseDistanceM(sound.spatial.maximumDistanceM, 200);
+    const curDistM = posRes.pos ? dist3(posRes.pos, world.listener.position) : 0;
+    const activeCountAfter = this.instances.filter(
+      (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
+    ).length;
+    const shouldVirtualise =
+      policy === 'virtualise' &&
+      (activeCountAfter >= maxGlobalActiveVoices ||
+        (sound.spatial.mode !== 'non_spatial' && curDistM > maxDistM));
+
+    const inst: ActiveSoundInstance = {
+      instanceId: `voice_${this.seq++}`,
+      sound,
+      asset,
+      emitterId,
+      state: shouldVirtualise ? 'virtualised' : fadeInSec > 0 ? 'starting' : 'playing',
+      backendHandle: null,
+      position: posRes.pos,
+      sourceStructureId,
+      sourceInsideSameStructure,
+      baseVolume,
+      pitch,
+      priority: sound.playback.priority ?? 50,
+      fadeInSec,
+      fadeOutSec,
+      currentEnvelopeGain: fadeInSec > 0 ? 0 : 1,
+      targetEnvelopeGain: 1,
+      startedAtRealMs: nowRealMs,
+      stoppingStartedAtRealMs: null,
+      loopCountTarget,
+      loopsCompleted: 0,
+      elapsedSec: 0,
+      durationSec,
+      pauseBetweenLoopsUntilRealMs: null,
+      resumeOffsetSec: 0,
+      reason,
+      exemptFromDisturbance,
+    };
+
+    if (!shouldVirtualise) {
+      const initialGain = inst.currentEnvelopeGain * baseVolume * mixer.getEffectiveGain(sound.bus);
+      inst.backendHandle = backend.startVoice({
+        instanceId: inst.instanceId,
+        soundId: sound.id,
+        asset,
+        busId: sound.bus,
+        spatialMode: sound.spatial.mode,
+        position: inst.position,
+        referenceDistanceM: parseDistanceM(sound.spatial.referenceDistanceM, 5),
+        maximumDistanceM: maxDistM,
+        rolloffFactor: sound.spatial.rolloffFactor ?? 1.0,
+        gain: initialGain,
+        pitch,
+        lowpassHz: 18000,
+        loop: loopCountTarget === 'infinite' && !sound.playback.loop?.pause,
+        offsetSec: 0,
+      });
+    }
+
+    this.instances.push(inst);
+    return { started: !shouldVirtualise, virtualised: shouldVirtualise, instance: inst };
+  }
+
+  requestConditionStop(inst: ActiveSoundInstance, backend: AudioBackend, nowRealMs: number): void {
+    if (inst.state === 'completed' || inst.state === 'stopping') return;
+    const policy =
+      inst.sound.playback.onConditionLost ??
+      (inst.sound.trigger.type === 'continuous' || inst.sound.trigger.type === 'state_driven'
+        ? 'fade_out'
+        : 'finish');
+
+    if (policy === 'finish') {
+      // Allow current transient playback to finish naturally!
+      if (inst.loopCountTarget === 'infinite') {
+        inst.loopCountTarget = inst.loopsCompleted + 1;
+      }
+      return;
+    }
+    if (policy === 'pause') {
+      inst.state = 'paused';
+      inst.resumeOffsetSec = inst.elapsedSec;
+      if (inst.backendHandle) {
+        backend.stopVoice(inst.backendHandle, 0.04);
+        inst.backendHandle = null;
+      }
+      return;
+    }
+    if (policy === 'stop_immediately') {
+      this.disposeInstance(inst, backend);
+      return;
+    }
+    // fade_out / crossfade
+    inst.state = 'stopping';
+    inst.targetEnvelopeGain = 0;
+    inst.stoppingStartedAtRealMs = nowRealMs;
+  }
+
+  resumePaused(
+    inst: ActiveSoundInstance,
+    backend: AudioBackend,
+    mixer: AudioMixer
+  ): void {
+    if (inst.state !== 'paused') return;
+    inst.state = 'playing';
+    inst.targetEnvelopeGain = 1;
+    const offset = inst.sound.playback.loop?.preserveOffsetOnResume !== false ? inst.resumeOffsetSec : 0;
+    const maxDistM = parseDistanceM(inst.sound.spatial.maximumDistanceM, 200);
+    inst.backendHandle = backend.startVoice({
+      instanceId: inst.instanceId,
+      soundId: inst.sound.id,
+      asset: inst.asset,
+      busId: inst.sound.bus,
+      spatialMode: inst.sound.spatial.mode,
+      position: inst.position,
+      referenceDistanceM: parseDistanceM(inst.sound.spatial.referenceDistanceM, 5),
+      maximumDistanceM: maxDistM,
+      rolloffFactor: inst.sound.spatial.rolloffFactor ?? 1.0,
+      gain: inst.currentEnvelopeGain * inst.baseVolume * mixer.getEffectiveGain(inst.sound.bus),
+      pitch: inst.pitch,
+      lowpassHz: 18000,
+      loop: inst.loopCountTarget === 'infinite' && !inst.sound.playback.loop?.pause,
+      offsetSec: offset,
+    });
+  }
+
+  disposeInstance(inst: ActiveSoundInstance, backend: AudioBackend): void {
+    if (inst.backendHandle) {
+      backend.stopVoice(inst.backendHandle, 0.02);
+      inst.backendHandle = null;
+    }
+    inst.state = 'completed';
+  }
+
+  step(params: {
+    dtRealSec: number;
+    nowRealMs: number;
+    nowSimMs: number;
+    world: WorldContext;
+    backend: AudioBackend;
+    mixer: AudioMixer;
+    acoustics: AcousticEnvironmentManager;
+    disturbances: DisturbanceManager;
+    assetsMap: ReadonlyMap<string, AssetDefinition>;
+    rng: SeededRng;
+    maxGlobalActiveVoices: number;
+    spatialQuery?: SpatialQueryProvider;
+  }): Map<string, number> {
+    const {
+      dtRealSec,
+      nowRealMs,
+      nowSimMs,
+      world,
+      backend,
+      mixer,
+      acoustics,
+      disturbances,
+      assetsMap,
+      rng,
+      maxGlobalActiveVoices,
+      spatialQuery,
+    } = params;
+
+    // 1. Drain or expire queued requests (prevent stale transients playing long after originating action!)
+    if (this.queued.length > 0) {
+      const nextQueued: QueuedSoundRequest[] = [];
+      for (const q of this.queued) {
+        if (nowRealMs - q.enqueuedAtRealMs > q.maxQueueAgeMs) {
+          continue; // Drop expired transient!
+        }
+        const activeCount = this.instances.filter(
+          (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
+        ).length;
+        if (activeCount < maxGlobalActiveVoices) {
+          this.spawnOrResume({
+            sound: q.sound,
+            assetsMap,
+            world,
+            backend,
+            mixer,
+            rng,
+            nowRealMs,
+            maxGlobalActiveVoices,
+            spatialQuery,
+            emitterId: q.emitterId,
+            explicitPosition: q.position ?? undefined,
+            sourceStructureId: q.sourceStructureId,
+            sourceInsideSameStructure: q.sourceInsideSameStructure,
+            reason: `${q.reason} (dequeued)`,
+            exemptFromDisturbance: q.exemptFromDisturbance,
+          });
+        } else {
+          nextQueued.push(q);
+        }
+      }
+      this.queued = nextQueued;
+    }
+
+    const activeByBus = new Map<string, number>();
+
+    for (const inst of this.instances) {
+      if (inst.state === 'completed' || inst.state === 'paused') continue;
+
+      if (this.spatialModeIsAttached(inst)) {
+        inst.position = { ...world.listener.position };
+        inst.sourceStructureId = world.structure.id;
+        inst.sourceInsideSameStructure = world.structure.quality !== 'outdoor';
+      }
+
+      // Advance logical playback timer
+      if (inst.pauseBetweenLoopsUntilRealMs !== null) {
+        if (nowRealMs >= inst.pauseBetweenLoopsUntilRealMs) {
+          inst.pauseBetweenLoopsUntilRealMs = null;
+          inst.elapsedSec = 0;
+          if (inst.state !== 'virtualised' && !inst.backendHandle) {
+            const nextAsset = this.selectAsset(inst.sound, assetsMap, rng) ?? inst.asset;
+            inst.asset = nextAsset;
+            inst.durationSec = nextAsset.durationSec ?? inst.durationSec;
+            inst.backendHandle = backend.startVoice({
+              instanceId: inst.instanceId,
+              soundId: inst.sound.id,
+              asset: inst.asset,
+              busId: inst.sound.bus,
+              spatialMode: inst.sound.spatial.mode,
+              position: inst.position,
+              referenceDistanceM: parseDistanceM(inst.sound.spatial.referenceDistanceM, 5),
+              maximumDistanceM: parseDistanceM(inst.sound.spatial.maximumDistanceM, 200),
+              rolloffFactor: inst.sound.spatial.rolloffFactor ?? 1.0,
+              gain: inst.currentEnvelopeGain * inst.baseVolume * mixer.getEffectiveGain(inst.sound.bus),
+              pitch: inst.pitch,
+              lowpassHz: 18000,
+              loop: false,
+              offsetSec: 0,
+            });
+          }
+        }
+      } else {
+        inst.elapsedSec += dtRealSec;
+        const duration = Math.max(0.1, inst.backendHandle?.durationSec ?? inst.durationSec);
+        if (inst.elapsedSec >= duration) {
+          inst.loopsCompleted += 1;
+          const targetLoops = inst.loopCountTarget;
+          if (targetLoops !== 'infinite' && inst.loopsCompleted >= targetLoops) {
+            this.disposeInstance(inst, backend);
+            continue;
+          }
+          if (inst.sound.playback.loop?.pause) {
+            const [pA, pB] = inst.sound.playback.loop.pause;
+            const pauseMs = rng.range(parseDurationMs(pA, 0), parseDurationMs(pB, 0));
+            if (pauseMs > 20) {
+              if (inst.backendHandle) {
+                backend.stopVoice(inst.backendHandle, 0.04);
+                inst.backendHandle = null;
+              }
+              inst.pauseBetweenLoopsUntilRealMs = nowRealMs + pauseMs;
+            }
+          }
+          inst.elapsedSec %= duration;
+        }
+      }
+
+      // Envelope fades (supports smooth fade reversal!)
+      if (inst.state === 'starting') {
+        if (inst.fadeInSec <= 0.001) {
+          inst.currentEnvelopeGain = 1;
+          inst.state = 'playing';
+        } else {
+          inst.currentEnvelopeGain = Math.min(1, inst.currentEnvelopeGain + dtRealSec / inst.fadeInSec);
+          if (inst.currentEnvelopeGain >= 0.999) {
+            inst.currentEnvelopeGain = 1;
+            inst.state = 'playing';
+          }
+        }
+      } else if (inst.state === 'playing') {
+        if (inst.currentEnvelopeGain < 1) {
+          const rate = inst.fadeInSec > 0.01 ? 1 / inst.fadeInSec : 6;
+          inst.currentEnvelopeGain = Math.min(1, inst.currentEnvelopeGain + dtRealSec * rate);
+        }
+      } else if (inst.state === 'stopping') {
+        if (inst.fadeOutSec <= 0.001) {
+          this.disposeInstance(inst, backend);
+          continue;
+        }
+        inst.currentEnvelopeGain = Math.max(0, inst.currentEnvelopeGain - dtRealSec / inst.fadeOutSec);
+        if (inst.currentEnvelopeGain <= 0.002) {
+          this.disposeInstance(inst, backend);
+          continue;
+        }
+      }
+
+      // Check virtualisation transitions for spatial sounds
+      const maxDistM = parseDistanceM(inst.sound.spatial.maximumDistanceM, 200);
+      const distM = inst.position ? dist3(inst.position, world.listener.position) : 0;
+      if (inst.state === 'virtualised') {
+        const activeNow = this.instances.filter(
+          (i) => i.state === 'starting' || i.state === 'playing' || i.state === 'stopping'
+        ).length;
+        if (
+          activeNow < maxGlobalActiveVoices &&
+          (inst.sound.spatial.mode === 'non_spatial' || distM <= maxDistM * 0.92)
+        ) {
+          inst.state = 'playing';
+          inst.backendHandle = backend.startVoice({
+            instanceId: inst.instanceId,
+            soundId: inst.sound.id,
+            asset: inst.asset,
+            busId: inst.sound.bus,
+            spatialMode: inst.sound.spatial.mode,
+            position: inst.position,
+            referenceDistanceM: parseDistanceM(inst.sound.spatial.referenceDistanceM, 5),
+            maximumDistanceM: maxDistM,
+            rolloffFactor: inst.sound.spatial.rolloffFactor ?? 1.0,
+            gain: 0.001,
+            pitch: inst.pitch,
+            lowpassHz: 18000,
+            loop: inst.loopCountTarget === 'infinite' && !inst.sound.playback.loop?.pause,
+            offsetSec: inst.elapsedSec,
+          });
+        }
+        continue;
+      }
+
+      if (inst.sound.spatial.mode !== 'non_spatial' && distM > maxDistM * 1.15 && inst.loopCountTarget === 'infinite') {
+        inst.state = 'virtualised';
+        if (inst.backendHandle) {
+          backend.stopVoice(inst.backendHandle, 0.05);
+          inst.backendHandle = null;
+        }
+        continue;
+      }
+
+      // Compute final gain & filtering (Bus * Envelope * Acoustics * Disturbance)
+      const busGain = mixer.getEffectiveGain(inst.sound.bus);
+      const bypassEnv = mixer.bypassesEnvironmentalAttenuation(inst.sound.bus);
+      const occFactor =
+        inst.sound.spatial.occlusion && inst.position && spatialQuery?.computeOcclusionFactor
+          ? spatialQuery.computeOcclusionFactor(world.listener.position, inst.position)
+          : 0;
+
+      const prop = acoustics.evaluatePropagation({
+        busId: inst.sound.bus,
+        spatialMode: inst.sound.spatial.mode,
+        environmentalAcoustics: inst.sound.spatial.environmentalAcoustics ?? true,
+        occlusionEnabled: inst.sound.spatial.occlusion ?? false,
+        bypassBusEnvironmental: bypassEnv,
+        sourceInsideSameStructure: inst.sourceInsideSameStructure,
+        sourceStructureId: inst.sourceStructureId,
+        listenerStructureId: world.structure.id,
+        occlusionFactor: occFactor,
+        soundTags: inst.sound.tags,
+      });
+
+      const distSupp = disturbances.evaluateSuppression({
+        soundId: inst.sound.id,
+        busId: inst.sound.bus,
+        tags: inst.sound.tags,
+        position: inst.position ?? world.listener.position,
+        simTimeMs: nowSimMs,
+        mixer,
+        exemptFromDisturbance: inst.exemptFromDisturbance,
+      });
+
+      const finalGain =
+        inst.currentEnvelopeGain *
+        inst.baseVolume *
+        busGain *
+        prop.gainMultiplier *
+        distSupp.gainMultiplier;
+
+      if (inst.backendHandle) {
+        backend.updateVoice(inst.backendHandle, {
+          gain: finalGain,
+          pitch: inst.pitch,
+          lowpassHz: prop.lowpassHz,
+          position: inst.position,
+        });
+      }
+
+      activeByBus.set(inst.sound.bus, (activeByBus.get(inst.sound.bus) ?? 0) + 1);
+    }
+
+    this.instances = this.instances.filter((i) => i.state !== 'completed');
+    return activeByBus;
+  }
+
+  private spatialModeIsAttached(inst: ActiveSoundInstance): boolean {
+    return inst.sound.spatial.mode === 'player_attached' || inst.sound.spatial.mode === 'listener_relative';
+  }
+
+  getSnapshots(listenerPos: Vector3, mixer: AudioMixer, acoustics: AcousticEnvironmentManager, disturbances: DisturbanceManager, nowSimMs: number): ActiveVoiceSnapshot[] {
+    return this.instances.map((inst) => {
+      const distM = inst.position ? Math.round(dist3(inst.position, listenerPos) * 10) / 10 : null;
+      const prop = acoustics.evaluatePropagation({
+        busId: inst.sound.bus,
+        spatialMode: inst.sound.spatial.mode,
+        environmentalAcoustics: inst.sound.spatial.environmentalAcoustics ?? true,
+        occlusionEnabled: inst.sound.spatial.occlusion ?? false,
+        bypassBusEnvironmental: mixer.bypassesEnvironmentalAttenuation(inst.sound.bus),
+        sourceInsideSameStructure: inst.sourceInsideSameStructure,
+        sourceStructureId: inst.sourceStructureId,
+        listenerStructureId: null,
+        soundTags: inst.sound.tags,
+      });
+      const supp = disturbances.evaluateSuppression({
+        soundId: inst.sound.id,
+        busId: inst.sound.bus,
+        tags: inst.sound.tags,
+        position: inst.position ?? listenerPos,
+        simTimeMs: nowSimMs,
+        mixer,
+        exemptFromDisturbance: inst.exemptFromDisturbance,
+      });
+      const effGain =
+        inst.currentEnvelopeGain *
+        inst.baseVolume *
+        mixer.getEffectiveGain(inst.sound.bus) *
+        prop.gainMultiplier *
+        supp.gainMultiplier;
+
+      return {
+        instanceId: inst.instanceId,
+        soundId: inst.sound.id,
+        assetId: inst.asset.id,
+        bus: inst.sound.bus,
+        state: inst.state,
+        spatialMode: inst.sound.spatial.mode,
+        position: inst.position ? { ...inst.position } : null,
+        distanceM: distM,
+        effectiveGain: Math.round(effGain * 1000) / 1000,
+        lowpassHz: prop.lowpassHz,
+        pitch: Math.round(inst.pitch * 100) / 100,
+        loopCountTarget: inst.loopCountTarget,
+        loopsCompleted: inst.loopsCompleted,
+        elapsedSec: Math.round(inst.elapsedSec * 10) / 10,
+        durationSec: Math.round(inst.durationSec * 10) / 10,
+        reason: inst.reason,
+      };
+    });
+  }
+
+  disposeAll(backend: AudioBackend): void {
+    for (const inst of this.instances) {
+      if (inst.backendHandle) {
+        backend.stopVoice(inst.backendHandle, 0);
+        inst.backendHandle = null;
+      }
+      inst.state = 'completed';
+    }
+    this.instances = [];
+    this.queued = [];
+  }
+}
