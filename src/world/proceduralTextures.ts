@@ -253,6 +253,9 @@ export interface WorldTextures {
   spruceBoughCard: THREE.CanvasTexture;
   fernFrondCard: THREE.CanvasTexture;
   grassClumpCard: THREE.CanvasTexture;
+  shortGrassCard: THREE.CanvasTexture;
+  mossCarpetTex: THREE.CanvasTexture;
+  mossNormal: THREE.CanvasTexture;
   tallUndergrowthCard: THREE.CanvasTexture;
   bogMistTex: THREE.CanvasTexture;
   contactShadowTex: THREE.CanvasTexture;
@@ -1184,6 +1187,191 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     { clamp: true, anisotropy: aniso, bleedRgb: [72, 108, 38] }
   );
 
+  // Dense Ground-Hugging Short Turf Grass, Woodland Clover & Mossy Collar (512x512)
+  // Fills inter-clump spaces with velvety low foliage that hides bare ground from every angle
+  const shortGrassCard = makeCanvasTex(
+    512,
+    512,
+    (ctx, w, h) => {
+      const rand = seededRand(329);
+      ctx.clearRect(0, 0, w, h);
+      const gPat = ctx.createPattern(grassPatternCanvas, 'repeat')!;
+
+      // Soft mossy-turf basal skirt across bottom third so adjacent rosettes knit seamlessly
+      for (let i = 0; i < 64; i++) {
+        const u = (i + rand()) / 64;
+        const cx = w * 0.09 + u * (w * 0.82);
+        const edge = Math.abs(cx - w * 0.5) / (w * 0.44);
+        const cy = h - 4 - rand() * 44 * (1 - edge * 0.45);
+        const rx = (22 + rand() * 26) * (1 - edge * 0.25);
+        const ry = (14 + rand() * 22) * (1 - edge * 0.25);
+        ctx.fillStyle = gPat;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, (rand() - 0.5) * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle =
+          rand() > 0.45 ? 'rgba(56,92,28,0.46)' : 'rgba(34,62,18,0.54)';
+        ctx.fill();
+      }
+
+      // 150 fine short turf grass & fine fescue blades fanning outward in soft organic arcs
+      for (let i = 0; i < 150; i++) {
+        const u = (i + rand()) / 150;
+        const bx = w * 0.08 + u * (w * 0.84) + (rand() - 0.5) * 20;
+        const edgeFrac = Math.abs(bx - w * 0.5) / (w * 0.44);
+        const by = h - 2 - edgeFrac * edgeFrac * 18;
+        const bh = (115 + rand() * 255) * (1.0 - edgeFrac * 0.34);
+        const lean = (bx - w * 0.5) * 0.72 + (rand() - 0.5) * 150;
+        const bw = 3.8 + rand() * 4.8;
+        const cpx = bx + lean * 0.46;
+        const cpy = by - bh * 0.62;
+        const tx = Math.max(10, Math.min(w - 10, bx + lean));
+        const ty = Math.max(26, by - bh);
+
+        ctx.beginPath();
+        ctx.moveTo(bx - bw * 0.5, by);
+        ctx.quadraticCurveTo(cpx - bw * 0.22, cpy, tx, ty);
+        ctx.quadraticCurveTo(cpx + bw * 0.22, cpy, bx + bw * 0.5, by);
+        ctx.closePath();
+
+        ctx.fillStyle = gPat;
+        ctx.fill();
+
+        const shade = ctx.createLinearGradient(bx, by, tx, ty);
+        if (rand() < 0.14) {
+          shade.addColorStop(0, 'rgba(38,52,20,0.5)');
+          shade.addColorStop(0.55, 'rgba(116,134,54,0.34)');
+          shade.addColorStop(1, 'rgba(176,184,84,0.48)');
+        } else if (rand() < 0.55) {
+          shade.addColorStop(0, 'rgba(26,50,16,0.48)');
+          shade.addColorStop(0.5, 'rgba(76,120,38,0.22)');
+          shade.addColorStop(1, 'rgba(148,186,66,0.42)');
+        } else {
+          shade.addColorStop(0, 'rgba(24,44,16,0.52)');
+          shade.addColorStop(0.6, 'rgba(54,94,30,0.24)');
+          shade.addColorStop(1, 'rgba(112,152,50,0.36)');
+        }
+        ctx.fillStyle = shade;
+        ctx.fill();
+      }
+
+      // Rich low woodland clover & wood-sorrel leaf clusters woven into the short sward
+      for (let i = 0; i < 48; i++) {
+        const cx = 42 + rand() * (w - 84);
+        const cy = h - 22 - rand() * 210;
+        const r = 8.5 + rand() * 11.5;
+        for (let l = 0; l < 3; l++) {
+          const a = (l / 3) * Math.PI * 2 + rand() * 0.6;
+          ctx.fillStyle =
+            rand() > 0.45
+              ? 'rgba(98,144,44,0.92)'
+              : rand() > 0.4
+                ? 'rgba(66,108,30,0.94)'
+                : 'rgba(124,164,54,0.88)';
+          ctx.beginPath();
+          ctx.ellipse(
+            cx + Math.cos(a) * r * 0.72,
+            cy + Math.sin(a) * r * 0.56,
+            r * 0.66,
+            r * 0.48,
+            a,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
+      }
+    },
+    { clamp: true, anisotropy: aniso, bleedRgb: [64, 102, 34] }
+  );
+
+  // Seamless Baltic Feather-Moss & Velvety Forest Moss Carpet Texture + Normal Map (512x512)
+  const mossCarpetTex = makeCanvasTex(
+    512,
+    512,
+    (ctx, w, h) => {
+      const rand = seededRand(347);
+      // Warm mossy organic photographic base
+      ctx.drawImage(imgForestFloor, 0, 0, w, h);
+      ctx.globalAlpha = 0.42;
+      ctx.drawImage(imgMeadowGrass, 0, 0, w, h);
+      ctx.globalAlpha = 1.0;
+
+      // Rich Baltic feather-moss undertone wash
+      ctx.fillStyle = 'rgba(66, 98, 32, 0.58)';
+      ctx.fillRect(0, 0, w, h);
+
+      // Soft pillowy moss tuft mottling (seamless tiled across edges)
+      for (let i = 0; i < 240; i++) {
+        const cx = rand() * w;
+        const cy = rand() * h;
+        const rad = 14 + rand() * 34;
+        const isSunlit = rand() > 0.42;
+        const colInner = isSunlit
+          ? rand() > 0.5
+            ? 'rgba(128,162,56,0.42)'
+            : 'rgba(98,136,42,0.44)'
+          : 'rgba(38,64,22,0.48)';
+        for (const ox of [-w, 0, w]) {
+          for (const oy of [-h, 0, h]) {
+            if (cx + ox < -rad || cx + ox > w + rad || cy + oy < -rad || cy + oy > h + rad) continue;
+            const g = ctx.createRadialGradient(cx + ox, cy + oy, 1, cx + ox, cy + oy, rad);
+            g.addColorStop(0, colInner);
+            g.addColorStop(1, 'rgba(58,86,28,0)');
+            ctx.fillStyle = g;
+            ctx.beginPath();
+            ctx.arc(cx + ox, cy + oy, rad, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      // Thousands of tiny starry moss fronds / Pleurozium feather shoots for tactile close-up micro-detail
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 1650; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const arms = 3 + Math.floor(rand() * 3);
+        const baseA = rand() * Math.PI * 2;
+        const len = 4 + rand() * 7.5;
+        const bright = rand();
+        ctx.strokeStyle =
+          bright > 0.68
+            ? 'rgba(164,194,74,0.62)'
+            : bright > 0.3
+              ? 'rgba(108,144,44,0.58)'
+              : 'rgba(42,70,22,0.62)';
+        ctx.lineWidth = 1.3 + rand() * 1.1;
+        for (let a = 0; a < arms; a++) {
+          const ang = baseA + (a / arms) * Math.PI * 2 + (rand() - 0.5) * 0.45;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+          ctx.stroke();
+        }
+      }
+
+      // Occasional tiny fallen spruce needles & lichen specks nestled in the moss
+      for (let i = 0; i < 110; i++) {
+        const x = rand() * w;
+        const y = rand() * h;
+        const a = rand() * Math.PI * 2;
+        const l = 6 + rand() * 10;
+        ctx.strokeStyle = rand() > 0.25 ? 'rgba(98,66,34,0.44)' : 'rgba(186,196,158,0.46)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
+        ctx.stroke();
+      }
+    },
+    { repeatX: 2, repeatY: 2, anisotropy: aniso }
+  );
+  const mossNormal = makeSobelNormalTex(mossCarpetTex.image as HTMLCanvasElement, 256, 256, 3.4, {
+    repeatX: 2,
+    repeatY: 2,
+  });
+
   // Tall Estonian Woodland & Meadow Undergrowth Card (512x512: tall sedges, feathery grass panicles & wild herbs)
   const tallUndergrowthCard = makeCanvasTex(
     512,
@@ -1387,6 +1575,9 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     spruceBoughCard,
     fernFrondCard,
     grassClumpCard,
+    shortGrassCard,
+    mossCarpetTex,
+    mossNormal,
     tallUndergrowthCard,
     bogMistTex,
     contactShadowTex,
@@ -1432,6 +1623,9 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
     spruceBoughCard,
     fernFrondCard,
     grassClumpCard,
+    shortGrassCard,
+    mossCarpetTex,
+    mossNormal,
     tallUndergrowthCard,
     bogMistTex,
     contactShadowTex,

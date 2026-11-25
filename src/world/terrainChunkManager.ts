@@ -88,6 +88,7 @@ export class TerrainChunkManager {
       forestTex: THREE.Texture;
       meadowTex: THREE.Texture;
       roadTex: THREE.Texture;
+      mossTex?: THREE.Texture;
     }
   ) {
     this.compute = compute;
@@ -98,9 +99,10 @@ export class TerrainChunkManager {
     const forestTex = splatTextures?.forestTex ?? groundDetailTex;
     const meadowTex = splatTextures?.meadowTex ?? groundDetailTex;
     const roadTex = splatTextures?.roadTex ?? groundDetailTex;
+    const mossTex = splatTextures?.mossTex ?? meadowTex;
 
     // Physically-based 4-biome photographic splat terrain with world-space anti-tiling,
-    // organic road verges, wet peat shoreline sheen, and dappled forest-canopy sunlight!
+    // organic mossy & short-turf ground filler, road verges, wet peat shoreline sheen, and dappled sunlight!
     this.material = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: forestTex,
@@ -110,10 +112,11 @@ export class TerrainChunkManager {
       metalness: 0.0,
       envMapIntensity: 0.36,
     });
-    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_v5';
+    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_moss_v6';
     this.material.onBeforeCompile = (shader) => {
       shader.uniforms.uMeadowTex = { value: meadowTex };
       shader.uniforms.uRoadTex = { value: roadTex };
+      shader.uniforms.uMossTex = { value: mossTex };
       shader.uniforms.uSunDay = this.sunDayUniform;
       shader.uniforms.uTime = this.timeUniform;
       shader.uniforms.uTerrainFadeStart = this.terrainFadeStartUniform;
@@ -129,7 +132,7 @@ export class TerrainChunkManager {
         );
 
       shader.fragmentShader =
-        `uniform sampler2D uMeadowTex;\nuniform sampler2D uRoadTex;\nuniform float uSunDay;\nuniform float uTime;\nuniform float uTerrainFadeStart;\nuniform float uTerrainFadeEnd;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
+        `uniform sampler2D uMeadowTex;\nuniform sampler2D uRoadTex;\nuniform sampler2D uMossTex;\nuniform float uSunDay;\nuniform float uTime;\nuniform float uTerrainFadeStart;\nuniform float uTerrainFadeEnd;\nvarying vec3 vTerrainWorldPos;\nvarying vec4 vSplat;\n` +
         shader.fragmentShader
           .replace(
             '#include <color_fragment>',
@@ -144,7 +147,7 @@ export class TerrainChunkManager {
           .replace(
             '#include <map_fragment>',
             `#ifdef USE_MAP
-              // World-space UVs with conditional biome splat sampling (1-2 fetches/pixel instead of 6!)
+              // World-space UVs with conditional biome splat sampling
               vec2 uvFine = vTerrainWorldPos.xz * 0.24;
 
               // Fast organic edge break-up & macro anti-tiling modulation
@@ -160,6 +163,19 @@ export class TerrainChunkManager {
                 vec3 colMeadow = texture2D(uMeadowTex, uvFine * 1.12).rgb;
                 baseGround = mix(baseGround, colMeadow, wMeadow / max(0.001, wMeadow + wForest));
               }
+
+              // Lush organic moss & short-turf undercarpet filling spaces between 3D grass tufts
+              if (wRoad < 0.94) {
+                float mossMacro = sin(vTerrainWorldPos.x * 0.46 + cos(vTerrainWorldPos.z * 0.38)) * 0.5 + 0.5;
+                float mossMicro = cos(vTerrainWorldPos.x * 1.65 - vTerrainWorldPos.z * 1.42) * 0.5 + 0.5;
+                float mossPatch = smoothstep(0.24, 0.78, mossMacro * 0.65 + mossMicro * 0.35);
+                float mossAmt = mossPatch * (1.0 - wRoad) * mix(0.42, 0.68, wForest);
+                if (mossAmt > 0.02) {
+                  vec3 colMoss = texture2D(uMossTex, vTerrainWorldPos.xz * 0.34).rgb;
+                  baseGround = mix(baseGround, colMoss, mossAmt);
+                }
+              }
+
               if (wBog > 0.02) {
                 vec3 colBog = mix(baseGround * vec3(0.46, 0.40, 0.24), vec3(0.085, 0.068, 0.038), 0.48);
                 baseGround = mix(baseGround, colBog, wBog);

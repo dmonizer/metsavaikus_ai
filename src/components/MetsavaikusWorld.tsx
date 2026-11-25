@@ -3719,6 +3719,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           forestTex: loadedTextures.terrainForestTex,
           meadowTex: loadedTextures.terrainMeadowTex,
           roadTex: loadedTextures.terrainRoadTex,
+          mossTex: loadedTextures.mossCarpetTex,
         }
       );
       terrainMgr.prewarmAround(player.pos.x, player.pos.z);

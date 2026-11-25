@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 import {
   buildDeterministicShuffle,
   computeGrassClumpScale,
+  computeMossCarpetScale,
   computeOpennessFactor,
   computeRoadVergeCoverage,
+  computeRoadVergeFillerCoverage,
+  computeShortGrassScale,
   computeTallUndergrowthScale,
   generateR2TileSamples,
+  shouldKeepMossCarpet,
   shouldKeepTallUndergrowth,
 } from './grassScatter';
 
-test('generateR2TileSamples distributes points smoothly in 2D without grid-line alignment', () => {
+test('generateR2TileSamples distributes points smoothly in 2D without grid or diagonal line alignment', () => {
   const pts = generateR2TileSamples(2, -3, 2026, 16, 760, 17);
   assert.equal(pts.length, 760);
 
@@ -34,6 +38,39 @@ test('generateR2TileSamples distributes points smoothly in 2D without grid-line 
   }
   for (const bz of zBins) {
     assert.ok(bz >= 65 && bz <= 125, `Expected smooth Z histogram ~95, got ${bz}`);
+  }
+
+  // Check nearest-neighbor angle isotropy across 8 directional sectors (no horizontal/vertical/diagonal lines)
+  const angleBins = new Array(8).fill(0);
+  for (let i = 0; i < pts.length; i++) {
+    let bestSq = Infinity;
+    let bestDx = 0;
+    let bestDz = 0;
+    for (let j = 0; j < pts.length; j++) {
+      if (i === j) continue;
+      let dx = pts[j].lx - pts[i].lx;
+      let dz = pts[j].lz - pts[i].lz;
+      if (dx > 8) dx -= 16;
+      else if (dx < -8) dx += 16;
+      if (dz > 8) dz -= 16;
+      else if (dz < -8) dz += 16;
+      const dSq = dx * dx + dz * dz;
+      if (dSq < bestSq) {
+        bestSq = dSq;
+        bestDx = dx;
+        bestDz = dz;
+      }
+    }
+    let ang = Math.atan2(bestDz, bestDx);
+    if (ang < 0) ang += Math.PI;
+    const bin = Math.min(7, Math.floor((ang / Math.PI) * 8));
+    angleBins[bin]++;
+  }
+  for (const count of angleBins) {
+    assert.ok(
+      count >= 55 && count <= 145,
+      `Expected isotropic nearest-neighbor angles ~95 per sector without directional lines, got [${angleBins.join(', ')}]`
+    );
   }
 });
 
@@ -71,6 +108,11 @@ test('computeRoadVergeCoverage feathers road shoulders and keeps tall undergrowt
 
   const tallVergeBlocked = computeRoadVergeCoverage(2.3, false, 0, 0.5, true);
   assert.equal(tallVergeBlocked.keep, false);
+
+  // Filler short grass & moss feather slightly closer to the shoulder than medium grass
+  const fillerRoadEdge = computeRoadVergeFillerCoverage(1.85, false, 0, 0.2);
+  assert.equal(fillerRoadEdge.keep, true);
+  assert.ok(fillerRoadEdge.heightScale >= 0.38 && fillerRoadEdge.heightScale < 0.85);
 });
 
 test('Grass and tall undergrowth scale helpers produce wide randomized height diversity in open areas', () => {
@@ -82,6 +124,29 @@ test('Grass and tall undergrowth scale helpers produce wide randomized height di
   const shortUndergrowth = computeTallUndergrowthScale(0.1, 0.1, 0.1, 0.05, 1, 1);
   const tallUndergrowth = computeTallUndergrowthScale(0.9, 0.9, 0.9, 0.95, 1, 1);
   assert.ok(tallUndergrowth.sy > shortUndergrowth.sy * 1.9);
+});
+
+test('Short filler grass and moss carpet fill inter-clump spaces in both forest and open meadows', () => {
+  const pts = generateR2TileSamples(3, -1, 2026, 16, 400, 73);
+  let forestMoss = 0;
+  let meadowMoss = 0;
+
+  for (const p of pts) {
+    const mossNoise = (p.lx / 16) * 0.5 + (p.lz / 16) * 0.5;
+    if (shouldKeepMossCarpet(0, mossNoise, 0, p.r1, p.r4)) forestMoss++;
+    if (shouldKeepMossCarpet(1, mossNoise, 0, p.r1, p.r4)) meadowMoss++;
+  }
+
+  assert.ok(forestMoss > 260, `Expected lush forest moss coverage >65%, got ${forestMoss}/400`);
+  assert.ok(meadowMoss > 150 && meadowMoss < forestMoss, `Expected natural meadow moss patches, got ${meadowMoss}/400 vs forest ${forestMoss}`);
+
+  const shortOpen = computeShortGrassScale(0, 0.5, 0.5, 0.5, 0.5, 1, 1);
+  const shortForest = computeShortGrassScale(0, 0.5, 0.5, 0.5, 0.5, 1, 0);
+  assert.ok(shortOpen.sxz >= 1.0 && shortForest.sy < shortOpen.sy);
+
+  const mossForest = computeMossCarpetScale(0, 0.6, 0.5, 0.5, 0.5, 1, 0);
+  const mossOpen = computeMossCarpetScale(0, 0.6, 0.5, 0.5, 0.5, 1, 1);
+  assert.ok(mossForest.sxz > mossOpen.sxz && mossForest.sy > mossOpen.sy);
 });
 
 test('computeOpennessFactor distinguishes open village/road clearings from deep forest', () => {

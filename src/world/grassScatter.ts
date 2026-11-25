@@ -19,10 +19,30 @@ function hashUint(x: number): number {
   return (h ^ (h >>> 16)) >>> 0;
 }
 
+function halton(index: number, base: number): number {
+  let f = 1;
+  let r = 0;
+  let i = index;
+  while (i > 0) {
+    f /= base;
+    r += f * (i % base);
+    i = Math.floor(i / base);
+  }
+  return r;
+}
+
+function wrapCoord(v: number, tileSize: number): number {
+  let out = v % tileSize;
+  if (out < 0) out += tileSize;
+  return out >= tileSize ? 0 : out;
+}
+
 /**
- * Generates organic, non-grid 2D coordinates inside [0, tileSize)^2 using a
- * tile-seeded 2D R2 quasi-random sequence perturbed by independent per-point jitter.
- * Eliminates axis-aligned rows/lines caused by grid-cell iteration.
+ * Generates organic, isotropic, line-free 2D coordinates inside [0, tileSize)^2.
+ * Uses a Cranley-Patterson shifted Halton(2, 3) sequence (eliminating rank-1 lattice
+ * diagonal lines present in R2 sequences), perturbed by independent isotropic polar
+ * disk jitter and smooth periodic 2D curl-like domain warping.
+ * Returned random values (r1..r4) use independent hash streams uncorrelated with jitter.
  */
 export function generateR2TileSamples(
   tileX: number,
@@ -35,33 +55,48 @@ export function generateR2TileSamples(
   const out: TileSamplePoint[] = [];
   if (sampleCount <= 0 || tileSize <= 0) return out;
 
-  const baseSeed =
-    hashUint(Math.imul(tileX, 73856093) ^ Math.imul(tileZ, 19349663) ^ Math.imul(worldSeed | 0, 83492791) ^ salt);
-  const startOffsetX = ((baseSeed & 0xffff) / 65536);
-  const startOffsetZ = (((baseSeed >>> 16) & 0xffff) / 65536);
+  const baseSeed = hashUint(
+    Math.imul(tileX, 73856093) ^
+      Math.imul(tileZ, 19349663) ^
+      Math.imul(worldSeed | 0, 83492791) ^
+      Math.imul(salt | 0, 2654435761)
+  );
+  const shiftSeed = hashUint(baseSeed ^ 0x517cc1b7);
+  const startOffsetX = (shiftSeed & 0xffff) / 65536;
+  const startOffsetZ = ((shiftSeed >>> 16) & 0xffff) / 65536;
 
-  // R2 golden-ratio 2D low-discrepancy constants (Roberts 2018)
-  const g1 = 0.7548776662466927;
-  const g2 = 0.5698402909980532;
-  const jitterSpan = (tileSize / Math.sqrt(sampleCount)) * 0.78;
+  const warpSeed = hashUint(baseSeed ^ 0x2c1b3c6d);
+  const phaseX = ((warpSeed & 0xffff) / 65536) * Math.PI * 2;
+  const phaseZ = (((warpSeed >>> 16) & 0xffff) / 65536) * Math.PI * 2;
+
+  const cellSpacing = tileSize / Math.sqrt(sampleCount);
+  const jitterRadius = cellSpacing * 0.72;
+  const warpAmp = cellSpacing * 0.34;
+  const tau = Math.PI * 2;
 
   for (let i = 0; i < sampleCount; i++) {
+    // Independent hash streams for spatial jitter vs. returned botanical variation (r1..r4)
+    const hJitter = hashUint(baseSeed ^ Math.imul(i + 1, 1597334677));
     const hA = hashUint(baseSeed ^ Math.imul(i + 1, 374761393));
     const hB = hashUint(baseSeed ^ Math.imul(i + 1, 668265263));
+
+    const jAng = ((hJitter & 0xffff) / 65536) * tau;
+    const jRad = Math.sqrt(((hJitter >>> 16) & 0xffff) / 65535) * jitterRadius;
+
     const r1 = (hA & 0xffff) / 65535;
     const r2 = ((hA >>> 16) & 0xffff) / 65535;
     const r3 = (hB & 0xffff) / 65535;
     const r4 = ((hB >>> 16) & 0xffff) / 65535;
 
-    const u = (startOffsetX + (i + 1) * g1) % 1;
-    const v = (startOffsetZ + (i + 1) * g2) % 1;
+    const u = (startOffsetX + halton(i + 1, 2)) % 1;
+    const v = (startOffsetZ + halton(i + 1, 3)) % 1;
 
-    let lx = u * tileSize + (r1 - 0.5) * jitterSpan;
-    let lz = v * tileSize + (r2 - 0.5) * jitterSpan;
-    if (lx < 0) lx += tileSize;
-    else if (lx >= tileSize) lx -= tileSize;
-    if (lz < 0) lz += tileSize;
-    else if (lz >= tileSize) lz -= tileSize;
+    // Gentle divergence-free periodic warp breaks any residual linear alignment
+    const warpX = Math.sin(v * tau + phaseX) * warpAmp;
+    const warpZ = Math.cos(u * tau + phaseZ) * warpAmp;
+
+    const lx = wrapCoord(u * tileSize + Math.cos(jAng) * jRad + warpX, tileSize);
+    const lz = wrapCoord(v * tileSize + Math.sin(jAng) * jRad + warpZ, tileSize);
 
     out.push({ lx, lz, r1, r2, r3, r4 });
   }
@@ -114,6 +149,36 @@ export function computeRoadVergeCoverage(
   return {
     keep: true,
     heightScale: tallLayer ? 0.55 + smooth * 0.45 : 0.44 + smooth * 0.56,
+  };
+}
+
+/**
+ * Softer road/trail verge feathering for short ground-hugging filler grass & creeping moss
+ * so shoulders transition organically from gravel into mossy short turf before taller grass begins.
+ */
+export function computeRoadVergeFillerCoverage(
+  distToRoad: number,
+  isTrail: boolean,
+  edgeJitterSigned: number,
+  randRoll: number
+): RoadVergeResult {
+  const inner = (isTrail ? 0.92 : 1.62) + edgeJitterSigned * 0.48;
+  const outer = (isTrail ? 2.15 : 3.35) + edgeJitterSigned * 0.58;
+  if (distToRoad < inner) {
+    return { keep: false, heightScale: 0 };
+  }
+  if (distToRoad >= outer) {
+    return { keep: true, heightScale: 1 };
+  }
+  const t = (distToRoad - inner) / Math.max(0.1, outer - inner);
+  const smooth = t * t * (3 - 2 * t);
+  const prob = 0.18 + smooth * 0.82;
+  if (randRoll > prob) {
+    return { keep: false, heightScale: 0 };
+  }
+  return {
+    keep: true,
+    heightScale: 0.38 + smooth * 0.62,
   };
 }
 
@@ -195,6 +260,31 @@ export function shouldKeepTallUndergrowth(
 }
 
 /**
+ * Controls lush 3D moss carpet placement filling spaces between grass clumps:
+ * - Deep forest floor: dense continuous moss drifts (~75% coverage)
+ * - Bog rims & damp hollows: rich sphagnum moss cushions (~80%)
+ * - Open meadows & clearings: natural mossy ground patches nestled between grass tufts (~44%)
+ */
+export function shouldKeepMossCarpet(
+  openness: number,
+  mossNoise: number,
+  swampFactor: number,
+  r1: number,
+  r4: number
+): boolean {
+  if (swampFactor > 0.28) {
+    return mossNoise > 0.24 || r4 > 0.22;
+  }
+  const effectiveOpenness = clamp01(openness);
+  const forestKeep = mossNoise > 0.28 || r4 > 0.34;
+  const openKeep = mossNoise > 0.48 || (mossNoise > 0.34 && r1 < 0.58) || r4 > 0.76;
+  if (effectiveOpenness <= 0.2) return forestKeep;
+  if (effectiveOpenness >= 0.78) return openKeep;
+  const t = (effectiveOpenness - 0.2) / 0.58;
+  return r1 < 1 - t ? forestKeep : openKeep;
+}
+
+/**
  * Computes natural randomized width & height scales for covering ground grass:
  * - Open areas (openness=1): full tall meadow height
  * - Forest (openness=0): ~half shorter floor carpet with ~15% scattered long tufts
@@ -223,6 +313,52 @@ export function computeGrassClumpScale(
   const sy = Math.max(minSy, baseH * heightMult * vergeHeightScale);
   const widthFactor = isSwamp ? 1 : lerpNum(isForestLongTuft ? 1.04 : 0.92, 1, effectiveOpenness);
   const sxz = (1.02 + r2 * 0.68) * widthFactor * (0.78 + vergeHeightScale * 0.22);
+  return { sxz, sy };
+}
+
+/**
+ * Computes broad, ground-hugging scale for dense short filler grass & clover rosettes
+ * that knit the open spaces between taller grass tufts and moss cushions.
+ */
+export function computeShortGrassScale(
+  swampFactor: number,
+  patchNoise: number,
+  r1: number,
+  r2: number,
+  r3: number,
+  vergeHeightScale: number,
+  openness = 1
+): { sxz: number; sy: number } {
+  const isSwamp = swampFactor > 0.35;
+  const effectiveOpenness = clamp01(openness);
+  const baseSy = isSwamp
+    ? 0.65 + r3 * 0.55
+    : 0.52 + Math.pow(r3, 1.1) * 0.62 + patchNoise * 0.16;
+  const heightMult = isSwamp ? 1 : lerpNum(0.72, 1.0, effectiveOpenness);
+  const sy = Math.max(0.32, baseSy * heightMult * vergeHeightScale);
+  const sxz = (0.95 + r2 * 0.58 + r1 * 0.14) * (0.82 + vergeHeightScale * 0.18);
+  return { sxz, sy };
+}
+
+/**
+ * Computes organic pillow dimensions for low 3D moss cushions carpeting between grass tufts.
+ */
+export function computeMossCarpetScale(
+  swampFactor: number,
+  mossNoise: number,
+  r1: number,
+  r2: number,
+  r3: number,
+  vergeHeightScale: number,
+  openness = 1
+): { sxz: number; sy: number } {
+  const effectiveOpenness = clamp01(openness);
+  const lushBoost = swampFactor > 0.3 ? 1.16 : lerpNum(1.14, 0.88, effectiveOpenness);
+  const sxz = (0.76 + r2 * 0.78 + mossNoise * 0.22) * lushBoost * (0.74 + vergeHeightScale * 0.26);
+  const sy = Math.max(
+    0.45,
+    (0.58 + r3 * 0.68 + r1 * 0.16) * (swampFactor > 0.3 ? 1.15 : lerpNum(1.08, 0.82, effectiveOpenness)) * vergeHeightScale
+  );
   return { sxz, sy };
 }
 

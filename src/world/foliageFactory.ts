@@ -31,10 +31,14 @@ import { computeTreeLodFadeBands } from '../game/qualityGovernor';
 import {
   buildDeterministicShuffle,
   computeGrassClumpScale,
+  computeMossCarpetScale,
   computeOpennessFactor,
   computeRoadVergeCoverage,
+  computeRoadVergeFillerCoverage,
+  computeShortGrassScale,
   computeTallUndergrowthScale,
   generateR2TileSamples,
+  shouldKeepMossCarpet,
   shouldKeepTallUndergrowth,
 } from './grassScatter';
 
@@ -111,6 +115,8 @@ function applyHeightGradient(
 const _upVec = new THREE.Vector3(0, 1, 0);
 const _tmpDir = new THREE.Vector3();
 const _tmpQuat = new THREE.Quaternion();
+const _yawQuat = new THREE.Quaternion();
+const _slopeNormal = new THREE.Vector3();
 
 export interface ConnectedTubeSegment {
   start: THREE.Vector3;
@@ -858,52 +864,116 @@ function buildJuniperBushGeo(): THREE.BufferGeometry {
 // ============================================================================
 
 /**
- * Photorealistic 3-plane crossed Estonian meadow/forest grass, sedge & clover clump (6 tris total!).
- * Uses 512x512 photo-sampled grassClumpCard with upward-biased terrain-blended normals for seamless ground merging.
+ * Builds a single horizontally bowed (curved arc) grass/sward strip (4 tris)
+ * with upward-biased terrain normals. Horizontal curvature + radial offset
+ * eliminates the ruler-straight "growing in lines" artifact of flat crossed cards.
+ */
+function makeBowedGrassArc(
+  hw: number,
+  h: number,
+  tilt: number,
+  bow: number,
+  ang: number,
+  ox: number,
+  oz: number,
+  rootCol: THREE.Color,
+  tipCol: THREE.Color,
+  yRoot = -0.025
+): THREE.BufferGeometry {
+  const topW = hw * 1.1;
+  // 6 vertices -> 2 angled sub-panels forming a smooth horizontal U/arc curve
+  const positions = new Float32Array([
+    -hw,   yRoot, -bow,
+     0,    yRoot,  bow * 0.55,
+     hw,   yRoot, -bow,
+    -topW, h,      tilt - bow * 0.85,
+     0,    h * 1.03, tilt + bow * 0.72,
+     topW, h,      tilt - bow * 0.85,
+  ]);
+  const uvs = new Float32Array([
+    0.03, 0.0,
+    0.50, 0.0,
+    0.97, 0.0,
+    0.03, 0.98,
+    0.50, 0.98,
+    0.97, 0.98,
+  ]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  g.setIndex([0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4]);
+  g.rotateY(ang);
+  g.translate(ox, 0, oz);
+  const nonIdx = g.toNonIndexed();
+  g.dispose();
+
+  const pos = nonIdx.attributes.position;
+  const nrms = new Float32Array(pos.count * 3);
+  const cols = new Float32Array(pos.count * 3);
+  const invH = 1 / Math.max(0.05, h);
+  for (let i = 0; i < pos.count; i++) {
+    const t = Math.min(1, Math.max(0, pos.getY(i) * invH));
+    cols[i * 3] = rootCol.r + (tipCol.r - rootCol.r) * t;
+    cols[i * 3 + 1] = rootCol.g + (tipCol.g - rootCol.g) * t;
+    cols[i * 3 + 2] = rootCol.b + (tipCol.b - rootCol.b) * t;
+    nrms[i * 3] = 0;
+    nrms[i * 3 + 1] = 1;
+    nrms[i * 3 + 2] = 0;
+  }
+  nonIdx.setAttribute('normal', new THREE.BufferAttribute(nrms, 3));
+  nonIdx.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+  return nonIdx;
+}
+
+/**
+ * Compact volumetric Estonian meadow/forest grass tuft cluster:
+ * 3 radially offset horizontally-curved arcs + 2 low outward-splayed basal sprays (16 tris).
+ * Eliminates flat straight crossed-card lines while filling downward sightlines organically.
  */
 function buildGrassTuftGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const rootCol = new THREE.Color(0x5e6e46);
+  const rootCol = new THREE.Color(0x5b6c43);
   const tipCol = new THREE.Color(0xeef4cc);
-  const planeConfigs = [
-    { ang: -0.08, hw: 0.54, h: 0.44, tilt: 0.14 },
-    { ang: 1.01, hw: 0.56, h: 0.50, tilt: 0.19 },
-    { ang: 2.09, hw: 0.52, h: 0.56, tilt: -0.17 },
+  const arcConfigs = [
+    { ang: 0.14, hw: 0.29, h: 0.43, tilt: 0.13, bow: 0.095, ox: 0.08, oz: 0.05 },
+    { ang: 2.26, hw: 0.31, h: 0.49, tilt: 0.16, bow: 0.105, ox: -0.09, oz: 0.06 },
+    { ang: 4.35, hw: 0.28, h: 0.54, tilt: 0.14, bow: 0.09, ox: 0.02, oz: -0.1 },
   ];
+  for (let p = 0; p < arcConfigs.length; p++) {
+    const c = arcConfigs[p];
+    parts.push(makeBowedGrassArc(c.hw, c.h, c.tilt, c.bow, c.ang, c.ox, c.oz, rootCol, tipCol));
+  }
 
-  // 3 splayed crossed photo-card planes (6 tris total) for lush, gap-free omnidirectional ground coverage
-  for (let p = 0; p < planeConfigs.length; p++) {
-    const { ang, hw, h, tilt } = planeConfigs[p];
+  // 2 low outward-splayed basal fans so looking down reveals rich overlapping turf volume
+  const skirtConfigs = [
+    { ang: 1.18, hw: 0.27, h: 0.21, tilt: 0.27, ox: -0.05, oz: -0.04 },
+    { ang: 3.42, hw: 0.28, h: 0.23, tilt: 0.29, ox: 0.06, oz: 0.03 },
+  ];
+  for (let p = 0; p < skirtConfigs.length; p++) {
+    const c = skirtConfigs[p];
     const positions = new Float32Array([
-      -hw, -0.025, 0,
-       hw, -0.025, 0,
-       hw * 1.12, h, tilt,
-      -hw * 1.12, h, tilt,
+      -c.hw, -0.02, 0,
+       c.hw, -0.02, 0,
+       c.hw * 1.14, c.h, c.tilt,
+      -c.hw * 1.14, c.h, c.tilt,
     ]);
-    const uvs = new Float32Array([
-      0.02, 0.0,
-      0.98, 0.0,
-      0.98, 0.98,
-      0.02, 0.98,
-    ]);
+    const uvs = new Float32Array([0.04, 0.0, 0.96, 0.0, 0.96, 0.72, 0.04, 0.72]);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     g.setIndex([0, 1, 2, 0, 2, 3]);
-    g.rotateY(ang);
+    g.rotateY(c.ang);
+    g.translate(c.ox, 0, c.oz);
     const nonIdx = g.toNonIndexed();
     g.dispose();
-
     const pos = nonIdx.attributes.position;
     const nrms = new Float32Array(pos.count * 3);
     const cols = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
-      const t = Math.min(1, Math.max(0, pos.getY(i) / h));
-      const c = rootCol.clone().lerp(tipCol, t);
-      cols[i * 3] = c.r;
-      cols[i * 3 + 1] = c.g;
-      cols[i * 3 + 2] = c.b;
-      // Upward-biased terrain normal so clumps blend seamlessly into ground lighting from every angle
+      const t = Math.min(1, Math.max(0, pos.getY(i) / c.h));
+      cols[i * 3] = rootCol.r + (tipCol.r - rootCol.r) * t * 0.82;
+      cols[i * 3 + 1] = rootCol.g + (tipCol.g - rootCol.g) * t * 0.82;
+      cols[i * 3 + 2] = rootCol.b + (tipCol.b - rootCol.b) * t * 0.82;
       nrms[i * 3] = 0;
       nrms[i * 3 + 1] = 1;
       nrms[i * 3 + 2] = 0;
@@ -915,47 +985,55 @@ function buildGrassTuftGeo(): THREE.BufferGeometry {
   return mergeGeometries(parts)!;
 }
 
-function buildTallUndergrowthGeo(): THREE.BufferGeometry {
+/**
+ * Dense ground-hugging short turf grass & clover filler rosette (16 tris).
+ * Knit-fills open ground spaces between medium/tall grass clumps and moss pillows.
+ */
+function buildShortGrassGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];
-  const rootCol = new THREE.Color(0x52643c);
-  const tipCol = new THREE.Color(0xf2f4d4);
-  const planeConfigs = [
-    { ang: 0.12, hw: 0.56, h: 0.92, tilt: 0.2 },
-    { ang: 1.18, hw: 0.58, h: 1.08, tilt: -0.22 },
-    { ang: 2.24, hw: 0.54, h: 1.24, tilt: 0.25 },
-  ];
+  const rootCol = new THREE.Color(0x56683c);
+  const tipCol = new THREE.Color(0xdce8a8);
 
-  for (let p = 0; p < planeConfigs.length; p++) {
-    const { ang, hw, h, tilt } = planeConfigs[p];
+  const arcConfigs = [
+    { ang: 0.32, hw: 0.29, h: 0.18, tilt: 0.16, bow: 0.095, ox: 0.08, oz: 0.04 },
+    { ang: 2.41, hw: 0.31, h: 0.21, tilt: 0.18, bow: 0.105, ox: -0.07, oz: 0.07 },
+    { ang: 4.52, hw: 0.28, h: 0.24, tilt: 0.17, bow: 0.09, ox: -0.01, oz: -0.09 },
+  ];
+  for (let p = 0; p < arcConfigs.length; p++) {
+    const c = arcConfigs[p];
+    parts.push(makeBowedGrassArc(c.hw, c.h, c.tilt, c.bow, c.ang, c.ox, c.oz, rootCol, tipCol, -0.02));
+  }
+
+  // 2 wide outward-leaning clover/turf ground skirts to seal vertical sightlines cleanly
+  const lowSkirts = [
+    { ang: 1.38, hw: 0.32, h: 0.14, tilt: 0.28, ox: -0.04, oz: -0.03 },
+    { ang: 4.92, hw: 0.31, h: 0.15, tilt: 0.29, ox: 0.05, oz: 0.04 },
+  ];
+  for (let p = 0; p < lowSkirts.length; p++) {
+    const c = lowSkirts[p];
     const positions = new Float32Array([
-      -hw, -0.03, 0,
-       hw, -0.03, 0,
-       hw * 1.15, h, tilt,
-      -hw * 1.15, h, tilt,
+      -c.hw, -0.018, 0,
+       c.hw, -0.018, 0,
+       c.hw * 1.18, c.h, c.tilt,
+      -c.hw * 1.18, c.h, c.tilt,
     ]);
-    const uvs = new Float32Array([
-      0.02, 0.0,
-      0.98, 0.0,
-      0.98, 0.99,
-      0.02, 0.99,
-    ]);
+    const uvs = new Float32Array([0.04, 0.0, 0.96, 0.0, 0.96, 0.85, 0.04, 0.85]);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     g.setIndex([0, 1, 2, 0, 2, 3]);
-    g.rotateY(ang);
+    g.rotateY(c.ang);
+    g.translate(c.ox, 0, c.oz);
     const nonIdx = g.toNonIndexed();
     g.dispose();
-
     const pos = nonIdx.attributes.position;
     const nrms = new Float32Array(pos.count * 3);
     const cols = new Float32Array(pos.count * 3);
     for (let i = 0; i < pos.count; i++) {
-      const t = Math.min(1, Math.max(0, pos.getY(i) / h));
-      const c = rootCol.clone().lerp(tipCol, t);
-      cols[i * 3] = c.r;
-      cols[i * 3 + 1] = c.g;
-      cols[i * 3 + 2] = c.b;
+      const t = Math.min(1, Math.max(0, pos.getY(i) / c.h));
+      cols[i * 3] = rootCol.r + (tipCol.r - rootCol.r) * t * 0.9;
+      cols[i * 3 + 1] = rootCol.g + (tipCol.g - rootCol.g) * t * 0.9;
+      cols[i * 3 + 2] = rootCol.b + (tipCol.b - rootCol.b) * t * 0.9;
       nrms[i * 3] = 0;
       nrms[i * 3 + 1] = 1;
       nrms[i * 3 + 2] = 0;
@@ -963,6 +1041,53 @@ function buildTallUndergrowthGeo(): THREE.BufferGeometry {
     nonIdx.setAttribute('normal', new THREE.BufferAttribute(nrms, 3));
     nonIdx.setAttribute('color', new THREE.BufferAttribute(cols, 3));
     parts.push(nonIdx);
+  }
+  return mergeGeometries(parts)!;
+}
+
+/**
+ * Low, undulating, velvety 3D Baltic moss cushion pillow (opaque, zero alpha-test overdraw!).
+ * Irregular multi-lobe silhouette with skirt tucked -0.04m below origin so it seats cleanly on slopes.
+ */
+function buildMossCarpetGeo(): THREE.BufferGeometry {
+  const g = new THREE.SphereGeometry(0.46, 9, 4, 0, Math.PI * 2, 0, Math.PI * 0.52);
+  const pos = g.attributes.position;
+  const uvs = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    const px = pos.getX(i);
+    const py = pos.getY(i);
+    const pz = pos.getZ(i);
+    const ang = Math.atan2(pz, px);
+    const lobe = 0.88 + 0.16 * Math.sin(ang * 3 + 0.6) + 0.11 * Math.cos(ang * 2 - 0.9);
+    const n1 = smoothNoise(px * 4.8 + 2.3, pz * 4.8 - 1.7);
+    const n2 = smoothNoise(px * 9.5 - 4.1, pz * 9.5 + 3.4);
+    const nx = px * lobe * (0.94 + n1 * 0.24);
+    const nz = pz * lobe * (0.92 + n2 * 0.26);
+    const rimFrac = Math.min(1, Math.hypot(px, pz) / 0.46);
+    const skirtDrop = rimFrac > 0.78 ? -0.058 * ((rimFrac - 0.78) / 0.22) : 0;
+    const ny = Math.max(-0.06, py * (0.19 + n1 * 0.08 + n2 * 0.05) + skirtDrop);
+    pos.setXYZ(i, nx, ny, nz);
+    // Planar top-down UVs avoid spherical pole pinching on velvety moss detail
+    uvs[i * 2] = nx * 0.95 + 0.5;
+    uvs[i * 2 + 1] = nz * 0.95 + 0.5;
+  }
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  g.computeVertexNormals();
+  return prepGeo(g, new THREE.Color(0x8c967a), new THREE.Color(0xf4f8e4));
+}
+
+function buildTallUndergrowthGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const rootCol = new THREE.Color(0x52643c);
+  const tipCol = new THREE.Color(0xf2f4d4);
+  const arcConfigs = [
+    { ang: 0.2, hw: 0.35, h: 0.88, tilt: 0.19, bow: 0.11, ox: 0.09, oz: 0.05 },
+    { ang: 2.32, hw: 0.38, h: 1.04, tilt: 0.22, bow: 0.12, ox: -0.09, oz: 0.07 },
+    { ang: 4.44, hw: 0.34, h: 1.2, tilt: 0.24, bow: 0.105, ox: 0.01, oz: -0.11 },
+  ];
+  for (let p = 0; p < arcConfigs.length; p++) {
+    const c = arcConfigs[p];
+    parts.push(makeBowedGrassArc(c.hw, c.h, c.tilt, c.bow, c.ang, c.ox, c.oz, rootCol, tipCol, -0.03));
   }
   return mergeGeometries(parts)!;
 }
@@ -1008,19 +1133,25 @@ function buildBilberrySubShrubGeo(): THREE.BufferGeometry {
 }
 
 function buildMossHummockGeo(): THREE.BufferGeometry {
-  const g = new THREE.SphereGeometry(0.65, 8, 4, 0, Math.PI * 2, 0, Math.PI * 0.48);
+  const g = new THREE.SphereGeometry(0.65, 8, 4, 0, Math.PI * 2, 0, Math.PI * 0.5);
   const pos = g.attributes.position;
+  const uvs = new Float32Array(pos.count * 2);
   for (let i = 0; i < pos.count; i++) {
     const px = pos.getX(i);
     const py = pos.getY(i);
     const pz = pos.getZ(i);
     const n = smoothNoise(px * 4.2 + 3.1, pz * 4.2 - 1.9);
-    pos.setX(i, px * (1.1 + n * 0.35));
-    pos.setY(i, py * (0.14 + n * 0.1));
-    pos.setZ(i, pz * (0.98 + n * 0.32));
+    const nx = px * (1.1 + n * 0.35);
+    const nz = pz * (0.98 + n * 0.32);
+    const rimFrac = Math.min(1, Math.hypot(px, pz) / 0.65);
+    const skirtDrop = rimFrac > 0.8 ? -0.055 * ((rimFrac - 0.8) / 0.2) : 0;
+    pos.setXYZ(i, nx, Math.max(-0.058, py * (0.15 + n * 0.1) + skirtDrop), nz);
+    uvs[i * 2] = nx * 0.72 + 0.5;
+    uvs[i * 2 + 1] = nz * 0.72 + 0.5;
   }
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
   g.computeVertexNormals();
-  return prepGeo(g, new THREE.Color(0x3f5425), new THREE.Color(0x637d35));
+  return prepGeo(g, new THREE.Color(0x828e72), new THREE.Color(0xeef4dc));
 }
 
 function buildOpaqueReedClumpGeo(): THREE.BufferGeometry {
@@ -1426,6 +1557,8 @@ interface ChunkBucketBaked {
 
 interface GrassTileBaked {
   slab: BakedSlab;
+  shortSlab: BakedSlab;
+  mossSlab: BakedSlab;
   tallSlab: BakedSlab;
   cx: number;
   cy: number;
@@ -1435,6 +1568,8 @@ interface GrassTileBaked {
 
 const EMPTY_GRASS_TILE: GrassTileBaked = {
   slab: EMPTY_SLAB,
+  shortSlab: EMPTY_SLAB,
+  mossSlab: EMPTY_SLAB,
   tallSlab: EMPTY_SLAB,
   cx: 0,
   cy: 0,
@@ -1496,15 +1631,19 @@ const CAP_REED = 2200;
 const CAP_BOULDER = 650;
 const CAP_DEADFALL = 480;
 
-// Each instanced photographic grass clump renders 3 crossed splayed photo-cards (6 tris!)
-// Non-grid R2 scatter + Fisher-Yates tile shuffling eliminates rows/lines across every ring.
-const GRASS_BLADE_CAP = 18500;
-const TALL_UNDERGROWTH_CAP = 6500;
+// Compact curved 3D grass tufts + dense short filler grass + velvety 3D moss pillows
+// Isotropic Halton(2,3) + polar jitter + Fisher-Yates tile shuffling eliminates all line patterns.
+const GRASS_BLADE_CAP = 16500;
+const SHORT_GRASS_CAP = 22000;
+const MOSS_CARPET_CAP = 12000;
+const TALL_UNDERGROWTH_CAP = 5800;
 const GRASS_TILE_SIZE = 16;
 const GRASS_TILE_RADIUS = 2; // Baseline 5x5; High expands to ring 3 (~48m), Ultra to ring 4 (~64m)
 const MAX_GRASS_TILE_CACHE = 420;
-const GRASS_TILE_SAMPLES = 760;
-const TALL_TILE_SAMPLES = 220;
+const GRASS_TILE_SAMPLES = 580;
+const SHORT_GRASS_TILE_SAMPLES = 860;
+const MOSS_TILE_SAMPLES = 420;
+const TALL_TILE_SAMPLES = 200;
 const MAX_CHUNK_CACHE = 450;
 const COLLIDER_CELL_SIZE = 8;
 
@@ -1526,6 +1665,8 @@ export class WorldVegetationSystem {
   private readonly underFadeUniforms: FadeUniformPair = { start: { value: 54 }, end: { value: 86 } };
   private readonly boulderFadeUniforms: FadeUniformPair = { start: { value: 112 }, end: { value: 146 } };
   private readonly grassFadeUniforms: FadeUniformPair = { start: { value: 18 }, end: { value: 30 } };
+  private readonly shortGrassFadeUniforms: FadeUniformPair = { start: { value: 14 }, end: { value: 26 } };
+  private readonly mossCarpetFadeUniforms: FadeUniformPair = { start: { value: 16 }, end: { value: 28 } };
   private readonly tallGrassFadeUniforms: FadeUniformPair = { start: { value: 22 }, end: { value: 38 } };
 
   private readonly chunkCache = new Map<string, ChunkBucketBaked>();
@@ -1583,8 +1724,10 @@ export class WorldVegetationSystem {
   private hazelLeafMesh!: THREE.InstancedMesh;
   private juniperMesh!: THREE.InstancedMesh;
 
-  // Ground Coverage + Player-Centered Frustum-Culled Grass Carpet + Tall Randomized Undergrowth
+  // Ground Coverage + Player-Centered Frustum-Culled Grass, Short Turf, Velvety Moss & Tall Undergrowth
   private grassBladeMesh!: THREE.InstancedMesh;
+  private shortGrassMesh!: THREE.InstancedMesh;
+  private mossCarpetMesh!: THREE.InstancedMesh;
   private tallUndergrowthMesh!: THREE.InstancedMesh;
   private fernMesh!: THREE.InstancedMesh;
   private shrubMesh!: THREE.InstancedMesh;
@@ -1605,20 +1748,26 @@ export class WorldVegetationSystem {
 
   private readonly isLowPowerGpu: boolean;
   private readonly grassCap: number;
+  private readonly shortGrassCap: number;
+  private readonly mossCarpetCap: number;
   private readonly tallCap: number;
   private lastGrassMaxRing = GRASS_TILE_RADIUS;
   private readonly grassRingSortBuf: Array<{ tx: number; tz: number; dSq: number }> = [];
 
   constructor(textures: WorldTextures, isSoftwareGl: boolean, isLowPowerGpu: boolean, private readonly shelters: ShelterGeometry) {
     this.isLowPowerGpu = isLowPowerGpu;
-    this.grassCap = isSoftwareGl ? 2400 : isLowPowerGpu ? 11000 : GRASS_BLADE_CAP;
-    this.tallCap = isSoftwareGl ? 800 : isLowPowerGpu ? 3800 : TALL_UNDERGROWTH_CAP;
+    this.grassCap = isSoftwareGl ? 2200 : isLowPowerGpu ? 9500 : GRASS_BLADE_CAP;
+    this.shortGrassCap = isSoftwareGl ? 3200 : isLowPowerGpu ? 13000 : SHORT_GRASS_CAP;
+    this.mossCarpetCap = isSoftwareGl ? 1800 : isLowPowerGpu ? 7000 : MOSS_CARPET_CAP;
+    this.tallCap = isSoftwareGl ? 750 : isLowPowerGpu ? 3400 : TALL_UNDERGROWTH_CAP;
     this.buildInstancedLayers(textures, isSoftwareGl);
     this.group.traverse(node => {
       if (node instanceof THREE.InstancedMesh) node.receiveShadow = true;
     });
     const groundLayers = [
       this.grassBladeMesh,
+      this.shortGrassMesh,
+      this.mossCarpetMesh,
       this.tallUndergrowthMesh,
       this.fernMesh,
       this.shrubMesh,
@@ -1952,15 +2101,15 @@ export class WorldVegetationSystem {
           g: 0.92 + rand() * 0.18,
           b: 0.76 + rand() * 0.14,
         });
-      } else if (rand() < 0.3 && getDistanceToNearestVillage(gx, gz).dist > 34) {
+      } else if (rand() < 0.42 && getDistanceToNearestVillage(gx, gz).dist > 14) {
         mossHummock.push({
           x: gx,
           y: gy - 0.04,
           z: gz,
           scale: 0.78 + rand() * 0.78,
           rotY: rand() * Math.PI * 2,
-          r: 0.78 + rand() * 0.18,
-          g: 0.88 + rand() * 0.14,
+          r: 0.8 + rand() * 0.18,
+          g: 0.9 + rand() * 0.14,
           b: 0.68 + rand() * 0.12,
         });
       }
@@ -2649,11 +2798,11 @@ export class WorldVegetationSystem {
     this.hazelLeafMesh = this.createPairedFollower(this.hazelStemMesh, hazel.leaves, hazelLeafMat, CAP_HAZEL);
     this.juniperMesh = this.createInstanced(juniperGeo, juniperMat, CAP_JUNIPER, false, false);
 
-    // Photorealistic Multi-Blade Grass, Sedge & Wild Clover Carpet (6 tris/clump, 1 draw call, backlit SSS!)
+    // Photorealistic Bowed 3D Grass, Sedge & Wild Clover Tufts (compact curved arcs, backlit SSS!)
     const bladeGeo = buildGrassTuftGeo();
     const bladeMat = new THREE.MeshLambertMaterial({
       map: textures.grassClumpCard,
-      alphaTest: 0.39,
+      alphaTest: 0.38,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
@@ -2668,6 +2817,40 @@ export class WorldVegetationSystem {
       heightFadeScale: 0.34,
     });
     this.grassBladeMesh = this.createInstanced(bladeGeo, bladeMat, this.grassCap, false, false, false);
+
+    // Dense Ground-Hugging Short Grass & Woodland Clover Carpet (fills inter-clump spaces!)
+    const shortGrassGeo = buildShortGrassGeo();
+    const shortGrassMat = new THREE.MeshLambertMaterial({
+      map: textures.shortGrassCard,
+      alphaTest: 0.36,
+      vertexColors: true,
+      side: THREE.DoubleSide,
+    });
+    addWindSway(shortGrassMat, windUniforms, {
+      bendStart: 0.015,
+      bendSpan: 0.24,
+      bendAmp: 0.075,
+      leafAmp: 0.028,
+      leafFreq: 5.4,
+      sssStrength: 0.4,
+      fade: this.shortGrassFadeUniforms,
+      heightFadeScale: 0.3,
+    });
+    this.shortGrassMesh = this.createInstanced(shortGrassGeo, shortGrassMat, this.shortGrassCap, false, false, false);
+
+    // Opaque Velvety 3D Moss Cushion Carpet (zero alpha-test overdraw, carpets between grass clumps!)
+    const mossCarpetGeo = buildMossCarpetGeo();
+    const mossCarpetMat = new THREE.MeshStandardMaterial({
+      map: textures.mossCarpetTex,
+      normalMap: textures.mossNormal,
+      normalScale: new THREE.Vector2(0.95, 0.95),
+      roughness: 0.96,
+      metalness: 0.0,
+      envMapIntensity: 0.32,
+      vertexColors: true,
+    });
+    addDistanceFade(mossCarpetMat, this.mossCarpetFadeUniforms);
+    this.mossCarpetMesh = this.createInstanced(mossCarpetGeo, mossCarpetMat, this.mossCarpetCap, false, true, false);
 
     // Randomized Taller Undergrowth Layer (tall wild grasses, feathery plumes, woodland herbs & sedges)
     const tallGeo = buildTallUndergrowthGeo();
@@ -2725,12 +2908,12 @@ export class WorldVegetationSystem {
 
     const mossGeo = buildMossHummockGeo();
     const mossMat = new THREE.MeshStandardMaterial({
-      map: textures.terrainForestTex,
-      normalMap: textures.groundNormal,
-      normalScale: new THREE.Vector2(0.85, 0.85),
-      roughness: 0.95,
+      map: textures.mossCarpetTex,
+      normalMap: textures.mossNormal,
+      normalScale: new THREE.Vector2(0.9, 0.9),
+      roughness: 0.96,
       metalness: 0.0,
-      envMapIntensity: 0.35,
+      envMapIntensity: 0.34,
       vertexColors: true,
     });
     addDistanceFade(mossMat, this.underFadeUniforms);
@@ -2787,6 +2970,8 @@ export class WorldVegetationSystem {
 
     const randSeed = getActiveBlueprint().seed | 0;
     const grassSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, GRASS_TILE_SAMPLES, 13);
+    const shortSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, SHORT_GRASS_TILE_SAMPLES, 41);
+    const mossSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, MOSS_TILE_SAMPLES, 73);
     const tallSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, TALL_TILE_SAMPLES, 97);
 
     const rawMat = new Float32Array(grassSamples.length * 16);
@@ -2803,7 +2988,8 @@ export class WorldVegetationSystem {
       if (localBuildings.some(area => containsFootprint(area, px, pz, 1.2))) continue;
 
       const roadInfo = distToRoadDetail(px, pz);
-      const vergeJitter = smoothNoise(px * 0.42, pz * 0.42) * 2 - 1;
+      const vergeJitter =
+        (smoothNoise(px * 0.42, pz * 0.42) * 0.65 + smoothNoise(px * 1.15, pz * 1.15) * 0.35) * 2 - 1;
       const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4, false);
       if (!verge.keep) continue;
 
@@ -2857,6 +3043,167 @@ export class WorldVegetationSystem {
       grassCount++;
     }
 
+    // Dense ground-hugging short turf grass & clover filler layer (fills every space between tufts!)
+    const rawShortMat = new Float32Array(shortSamples.length * 16);
+    const rawShortCol = new Float32Array(shortSamples.length * 3);
+    let shortCount = 0;
+
+    for (let i = 0; i < shortSamples.length; i++) {
+      const s = shortSamples[i];
+      const px = minX + s.lx;
+      const pz = minZ + s.lz;
+      if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
+      if (localBuildings.some(area => containsFootprint(area, px, pz, 1.1))) continue;
+
+      const roadInfo = distToRoadDetail(px, pz);
+      const vergeJitter =
+        (smoothNoise(px * 0.45 + 3.1, pz * 0.45 - 2.4) * 0.65 +
+          smoothNoise(px * 1.25 - 1.7, pz * 1.25 + 4.2) * 0.35) *
+          2 -
+        1;
+      const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4);
+      if (!verge.keep) continue;
+
+      const py = getTerrainHeight(px, pz);
+      if (py < SWAMP_WATER_Y + 0.1) continue;
+
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+
+      const isl = getNearestSwampIsland(px, pz);
+      const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
+      const nearVillage = getDistanceToNearestVillage(px, pz);
+      const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
+      const openness = computeOpennessFactor(
+        nearVillage.dist,
+        nearVillage.village?.clearingRadius ?? 0,
+        roadInfo.dist,
+        roadInfo.isTrail,
+        swamp,
+        isl.islandMask,
+        gladeNoise
+      );
+      const patchNoise = smoothNoise(px * 0.14 + 4.7, pz * 0.14 - 3.3);
+      const { sxz, sy } = computeShortGrassScale(
+        swamp,
+        patchNoise,
+        s.r1,
+        s.r2,
+        s.r3,
+        verge.heightScale,
+        openness
+      );
+
+      _bakeDummy.position.set(px, py - 0.02, pz);
+      _bakeDummy.rotation.set((s.r4 - 0.5) * 0.22, s.r1 * Math.PI * 2, (s.r2 - 0.5) * 0.22);
+      _bakeDummy.scale.set(sxz, sy, sxz);
+      _bakeDummy.updateMatrix();
+      _bakeDummy.matrix.toArray(rawShortMat, shortCount * 16);
+
+      const cOff = shortCount * 3;
+      const tone = 0.72 + s.r2 * 0.32;
+      if (swamp > 0.35) {
+        rawShortCol[cOff] = tone * (0.94 + s.r4 * 0.12);
+        rawShortCol[cOff + 1] = tone * (0.86 + s.r3 * 0.1);
+        rawShortCol[cOff + 2] = tone * 0.52;
+      } else {
+        rawShortCol[cOff] = tone * (0.76 + s.r1 * 0.18);
+        rawShortCol[cOff + 1] = tone * (0.92 + s.r3 * 0.16);
+        rawShortCol[cOff + 2] = tone * (0.56 + s.r4 * 0.12);
+      }
+      shortCount++;
+    }
+
+    // Velvety 3D moss cushions carpeting inter-clump spaces in forest, verges, and shaded meadow patches
+    const rawMossMat = new Float32Array(mossSamples.length * 16);
+    const rawMossCol = new Float32Array(mossSamples.length * 3);
+    let mossCount = 0;
+
+    for (let i = 0; i < mossSamples.length; i++) {
+      const s = mossSamples[i];
+      const px = minX + s.lx;
+      const pz = minZ + s.lz;
+      if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
+      if (localBuildings.some(area => containsFootprint(area, px, pz, 1.1))) continue;
+
+      const roadInfo = distToRoadDetail(px, pz);
+      const vergeJitter =
+        (smoothNoise(px * 0.4 - 6.2, pz * 0.4 + 2.1) * 0.65 +
+          smoothNoise(px * 1.1 + 3.8, pz * 1.1 - 5.1) * 0.35) *
+          2 -
+        1;
+      const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4);
+      if (!verge.keep) continue;
+
+      const py = getTerrainHeight(px, pz);
+      if (py < SWAMP_WATER_Y + 0.08) continue;
+
+      const isl = getNearestSwampIsland(px, pz);
+      const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
+      const nearVillage = getDistanceToNearestVillage(px, pz);
+      const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
+      const openness = computeOpennessFactor(
+        nearVillage.dist,
+        nearVillage.village?.clearingRadius ?? 0,
+        roadInfo.dist,
+        roadInfo.isTrail,
+        swamp,
+        isl.islandMask,
+        gladeNoise
+      );
+
+      const mossNoise =
+        smoothNoise(px * 0.13 + 11.4, pz * 0.13 - 8.2) * 0.64 +
+        smoothNoise(px * 0.34 - 4.5, pz * 0.34 + 6.7) * 0.36;
+      if (!shouldKeepMossCarpet(openness, mossNoise, swamp, s.r1, s.r4)) continue;
+
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+
+      const { sxz, sy } = computeMossCarpetScale(
+        swamp,
+        mossNoise,
+        s.r1,
+        s.r2,
+        s.r3,
+        verge.heightScale,
+        openness
+      );
+      // Align moss pillow exactly to terrain normal, then apply random local yaw around that normal
+      const slopeX = (getTerrainHeight(px - 0.35, pz) - getTerrainHeight(px + 0.35, pz)) / 0.7;
+      const slopeZ = (getTerrainHeight(px, pz - 0.35) - getTerrainHeight(px, pz + 0.35)) / 0.7;
+      _slopeNormal
+        .set(
+          Math.max(-0.48, Math.min(0.48, slopeX)),
+          1,
+          Math.max(-0.48, Math.min(0.48, slopeZ))
+        )
+        .normalize();
+      _tmpQuat.setFromUnitVectors(_upVec, _slopeNormal);
+      _yawQuat.setFromAxisAngle(_upVec, s.r1 * Math.PI * 2);
+
+      _bakeDummy.position.set(px, py - 0.028, pz);
+      _bakeDummy.quaternion.copy(_tmpQuat).multiply(_yawQuat);
+      _bakeDummy.scale.set(sxz, sy, sxz * (0.86 + s.r3 * 0.28));
+      _bakeDummy.updateMatrix();
+      _bakeDummy.matrix.toArray(rawMossMat, mossCount * 16);
+
+      const cOff = mossCount * 3;
+      const tone = 0.78 + s.r2 * 0.3;
+      if (swamp > 0.32) {
+        // Golden-olive Baltic bog sphagnum cushions
+        rawMossCol[cOff] = tone * (0.98 + s.r3 * 0.16);
+        rawMossCol[cOff + 1] = tone * (0.92 + s.r1 * 0.12);
+        rawMossCol[cOff + 2] = tone * (0.54 + s.r4 * 0.1);
+      } else {
+        // Rich velvety emerald-chartreuse Pleurozium woodland moss
+        rawMossCol[cOff] = tone * (0.78 + s.r3 * 0.22);
+        rawMossCol[cOff + 1] = tone * (0.96 + s.r1 * 0.16);
+        rawMossCol[cOff + 2] = tone * (0.54 + s.r4 * 0.14);
+      }
+      mossCount++;
+    }
+
     const rawTallMat = new Float32Array(tallSamples.length * 16);
     const rawTallCol = new Float32Array(tallSamples.length * 3);
     let tallCount = 0;
@@ -2869,7 +3216,8 @@ export class WorldVegetationSystem {
       if (localBuildings.some(area => containsFootprint(area, px, pz, 1.35))) continue;
 
       const roadInfo = distToRoadDetail(px, pz);
-      const vergeJitter = smoothNoise(px * 0.38, pz * 0.38) * 2 - 1;
+      const vergeJitter =
+        (smoothNoise(px * 0.38, pz * 0.38) * 0.65 + smoothNoise(px * 1.05, pz * 1.05) * 0.35) * 2 - 1;
       const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4, true);
       if (!verge.keep) continue;
 
@@ -2925,7 +3273,9 @@ export class WorldVegetationSystem {
       tallCount++;
     }
 
-    if (grassCount === 0 && tallCount === 0) return EMPTY_GRASS_TILE;
+    if (grassCount === 0 && shortCount === 0 && mossCount === 0 && tallCount === 0) {
+      return EMPTY_GRASS_TILE;
+    }
 
     const shuffleSeed = (tx * 73856093) ^ (tz * 19349663) ^ randSeed;
     const packShuffled = (matSrc: Float32Array, colSrc: Float32Array, count: number, seedOffset: number): BakedSlab => {
@@ -2952,6 +3302,8 @@ export class WorldVegetationSystem {
     const halfXZ = GRASS_TILE_SIZE * 0.5 + 0.8;
     return {
       slab: packShuffled(rawMat, rawCol, grassCount, 1),
+      shortSlab: packShuffled(rawShortMat, rawShortCol, shortCount, 3),
+      mossSlab: packShuffled(rawMossMat, rawMossCol, mossCount, 5),
       tallSlab: packShuffled(rawTallMat, rawTallCol, tallCount, 2),
       cx: tileCx,
       cy,
@@ -2981,6 +3333,12 @@ export class WorldVegetationSystem {
     const grassEnd = Math.max(14, maxRing * GRASS_TILE_SIZE - 2);
     this.grassFadeUniforms.end.value = grassEnd;
     this.grassFadeUniforms.start.value = Math.max(6, grassEnd * 0.54);
+    const shortEnd = Math.max(12, grassEnd * 0.84);
+    this.shortGrassFadeUniforms.end.value = shortEnd;
+    this.shortGrassFadeUniforms.start.value = Math.max(5, shortEnd * 0.52);
+    const mossEnd = Math.max(14, grassEnd * 0.9);
+    this.mossCarpetFadeUniforms.end.value = mossEnd;
+    this.mossCarpetFadeUniforms.start.value = Math.max(6, mossEnd * 0.56);
     const tallEnd = grassEnd + 10;
     this.tallGrassFadeUniforms.end.value = tallEnd;
     this.tallGrassFadeUniforms.start.value = Math.max(10, tallEnd * 0.56);
@@ -3016,12 +3374,20 @@ export class WorldVegetationSystem {
     let missingTiles = 0;
     const matArr = this.grassBladeMesh.instanceMatrix.array as Float32Array;
     const colArr = this.grassBladeMesh.instanceColor!.array as Float32Array;
+    const shortMatArr = this.shortGrassMesh.instanceMatrix.array as Float32Array;
+    const shortColArr = this.shortGrassMesh.instanceColor!.array as Float32Array;
+    const mossMatArr = this.mossCarpetMesh.instanceMatrix.array as Float32Array;
+    const mossColArr = this.mossCarpetMesh.instanceColor!.array as Float32Array;
     const tallMatArr = this.tallUndergrowthMesh.instanceMatrix.array as Float32Array;
     const tallColArr = this.tallUndergrowthMesh.instanceColor!.array as Float32Array;
     const grassCap = this.grassCap;
+    const shortGrassCap = this.shortGrassCap;
+    const mossCarpetCap = this.mossCarpetCap;
     const tallCap = this.tallCap;
     const sortBuf = this.grassRingSortBuf;
     let count = 0;
+    let shortCount = 0;
+    let mossCount = 0;
     let tallCount = 0;
 
     const appendShuffledSlab = (
@@ -3096,6 +3462,7 @@ export class WorldVegetationSystem {
               : ring === 3
                 ? ring3Step
                 : ring4Step;
+      const fillerStep = ring <= 1 ? ringStep : Math.min(4, ringStep + 1);
 
       for (let s = 0; s < sortBuf.length; s++) {
         const tx = sortBuf[s].tx;
@@ -3132,6 +3499,24 @@ export class WorldVegetationSystem {
         }
 
         count = appendShuffledSlab(tile.slab, matArr, colArr, count, grassCap, ring, ringStep);
+        shortCount = appendShuffledSlab(
+          tile.shortSlab,
+          shortMatArr,
+          shortColArr,
+          shortCount,
+          shortGrassCap,
+          ring,
+          fillerStep
+        );
+        mossCount = appendShuffledSlab(
+          tile.mossSlab,
+          mossMatArr,
+          mossColArr,
+          mossCount,
+          mossCarpetCap,
+          ring,
+          fillerStep
+        );
         tallCount = appendShuffledSlab(
           tile.tallSlab,
           tallMatArr,
@@ -3148,6 +3533,10 @@ export class WorldVegetationSystem {
     this.diagGrassRebuilds++;
     this.grassBladeMesh.count = count;
     commitCompactedInstancedMesh(this.grassBladeMesh);
+    this.shortGrassMesh.count = shortCount;
+    commitCompactedInstancedMesh(this.shortGrassMesh);
+    this.mossCarpetMesh.count = mossCount;
+    commitCompactedInstancedMesh(this.mossCarpetMesh);
     this.tallUndergrowthMesh.count = tallCount;
     commitCompactedInstancedMesh(this.tallUndergrowthMesh);
   }
@@ -3282,6 +3671,8 @@ export class WorldVegetationSystem {
       apply(this.pairedFollowers[i].follower);
     }
     apply(this.grassBladeMesh);
+    apply(this.shortGrassMesh);
+    apply(this.mossCarpetMesh);
     apply(this.tallUndergrowthMesh);
   }
 
@@ -3403,7 +3794,11 @@ export class WorldVegetationSystem {
       if (stats) {
         stats.treesRendered = this.cachedTreesCount;
         stats.foliageRendered =
-          this.cachedFoliageCount + this.grassBladeMesh.count + this.tallUndergrowthMesh.count;
+          this.cachedFoliageCount +
+          this.grassBladeMesh.count +
+          this.shortGrassMesh.count +
+          this.mossCarpetMesh.count +
+          this.tallUndergrowthMesh.count;
         stats.culledInstances = this.cachedCulledCount;
         stats.candidateInstances = this.cachedCandidateCount;
       }
@@ -3567,7 +3962,11 @@ export class WorldVegetationSystem {
     if (stats) {
       stats.treesRendered = this.cachedTreesCount;
       stats.foliageRendered =
-        this.cachedFoliageCount + this.grassBladeMesh.count + this.tallUndergrowthMesh.count;
+        this.cachedFoliageCount +
+        this.grassBladeMesh.count +
+        this.shortGrassMesh.count +
+        this.mossCarpetMesh.count +
+        this.tallUndergrowthMesh.count;
       stats.culledInstances = this.cachedCulledCount;
       stats.candidateInstances = this.cachedCandidateCount;
     }
@@ -3721,7 +4120,11 @@ export class WorldVegetationSystem {
       chunkEvictions: this.diagChunkEvictions,
       visRebuilds: this.diagVisRebuilds,
       grassRebuilds: this.diagGrassRebuilds,
-      grassCount: this.grassBladeMesh.count + this.tallUndergrowthMesh.count,
+      grassCount:
+        this.grassBladeMesh.count +
+        this.shortGrassMesh.count +
+        this.mossCarpetMesh.count +
+        this.tallUndergrowthMesh.count,
       colliderCells: this.colliderGrid.size,
     };
     this.diagChunkBakes = 0;
