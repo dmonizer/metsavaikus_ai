@@ -14,6 +14,15 @@ import type {
   WorldContext,
 } from './types';
 
+// Gapless repeats share one native source, including finite repeat counts.
+// The instance timer still releases finite voices after their final clip.
+function usesContinuousPlayback(sound: SoundDefinition): boolean {
+  const count = sound.playback.loop?.count ?? 1;
+  const pause = sound.playback.loop?.pause;
+  const hasPause = pause?.some((duration) => parseDurationMs(duration, 0) > 0) ?? false;
+  return (count === 'infinite' || count > 1) && !hasPause;
+}
+
 export interface ActiveSoundInstance {
   instanceId: string;
   sound: SoundDefinition;
@@ -540,7 +549,7 @@ export class InstanceManager {
       gain: inst.currentEnvelopeGain * inst.baseVolume * mixer.getEffectiveGain(inst.sound.bus),
       pitch: inst.pitch,
       lowpassHz: 18000,
-      loop: inst.loopCountTarget === 'infinite' && !inst.sound.playback.loop?.pause,
+      loop: usesContinuousPlayback(inst.sound),
       offsetSec: offset,
     });
   }
@@ -789,7 +798,7 @@ export class InstanceManager {
           if (inst.sound.playback.loop?.pause) {
             const [pA, pB] = inst.sound.playback.loop.pause;
             const pauseMs = rng.range(parseDurationMs(pA, 0), parseDurationMs(pB, 0));
-            if (pauseMs > 20) {
+            if (pauseMs > 0 || !usesContinuousPlayback(inst.sound)) {
               if (inst.backendHandle) {
                 backend.stopVoice(inst.backendHandle, 0.04);
                 inst.backendHandle = null;
@@ -855,7 +864,7 @@ export class InstanceManager {
             gain: 0.001,
             pitch: inst.pitch,
             lowpassHz: 18000,
-            loop: inst.loopCountTarget === 'infinite' && !inst.sound.playback.loop?.pause,
+            loop: usesContinuousPlayback(inst.sound),
             offsetSec: inst.elapsedSec,
           });
         }
