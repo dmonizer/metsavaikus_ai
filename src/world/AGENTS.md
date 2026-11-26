@@ -12,6 +12,8 @@
 - `minimapMath.ts` owns fog of war, minimap rendering, and map coordinate helpers.
 - `soundEngine.ts` owns the legacy/synth audio facade and shared AudioContext. `soundscapeAdapter.ts` maps simulator state and spatial queries into the declarative audio engine. Each world owns a `SimulatorSoundscapeContextBuilder`: static geography is resampled after 1m movement or within 200ms of smaller movement, with immediate seed/water/boardwalk invalidation; dynamic context remains fresh each frame; read [../soundscape/AGENTS.md](../soundscape/AGENTS.md) for audio changes.
 
+`surfaceMaterial.ts` is authoritative for surface precedence shared by landing/physical events and the soundscape adapter. Terrain queries can be lazy getters; preserve boardwalk, water, interior floor, mud, gravel, village grass, forest ordering.
+
 ## Shared geometry and physics
 
 `shelterGeometry.ts` is authoritative for rotated house/tent footprints, floors, cover, and vegetation exclusion. Its data texture supplies shared shader queries. Register/remove runtime footprints with the same lifecycle as their object. Preserve rotation conventions and roof-ridge coverage across CPU and GPU consumers.

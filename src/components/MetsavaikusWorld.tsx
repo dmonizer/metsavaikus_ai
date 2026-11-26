@@ -1,3 +1,4 @@
+import { resolveSurfaceMaterial } from '../world/surfaceMaterial';
 import { consumeGameKeyDown } from '../game/keyboardInput';
 import { computeFrameTiming } from '../game/frameTiming';
 import { moveSphere, pushCharacterOut, sweepSphere } from '../world/spatialPhysics';
@@ -1051,19 +1052,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       inWaterNow: boolean,
       swampWadingNow: boolean
     ): SurfaceMaterial {
-      if (onBoardwalkNow) return 'wooden_boardwalk';
-      if (inWaterNow) return 'water';
-      if (propsCtx) {
-        const struct = propsCtx.getStructureAcousticsAt(x, z);
-        if (struct.id && struct.quality !== 'outdoor' && struct.quality !== 'tent') {
-          return struct.floorMaterial;
-        }
-      }
-      if (swampWadingNow) return 'mud';
-      const roadInfo = distToRoadDetail(x, z);
-      if (roadInfo.dist < 3.3 && !roadInfo.isTrail) return 'gravel';
-      if (getBiomeInfo(x, z).id === 'village') return 'grass';
-      return 'forest_floor';
+      return resolveSurfaceMaterial({
+        onBoardwalk: onBoardwalkNow,
+        inWater: inWaterNow,
+        swampWading: swampWadingNow,
+        get structure() { return propsCtx?.getStructureAcousticsAt(x, z) ?? null; },
+        get road() { return distToRoadDetail(x, z); },
+        get biomeId() { return getBiomeInfo(x, z).id; },
+      });
     }
 
     function applyCirclePush(pos: THREE.Vector3, list: CircleCollider[], pR: number): void {

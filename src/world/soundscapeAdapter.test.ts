@@ -106,3 +106,18 @@ test('cached adapter contexts remain usable by the real soundscape engine across
     assert.ok(engine.getDiagnosticsSnapshot());
   } finally { engine.dispose(); }
 });
+
+test('soundscape uses shared surface precedence for boardwalk, water, interiors and mud', () => {
+  const input = makeInput();
+  input.structure = { ...input.structure, id: 'house', quality: 'warm_house', floorMaterial: 'wooden_floor' };
+  input.isSwampWading = true;
+  input.waterDepthM = 0.2;
+  input.onBoardwalk = true;
+  assert.equal(buildWorldContextFromSimulator(input).player.surfaceMaterial, 'wooden_boardwalk');
+  input.onBoardwalk = false;
+  assert.equal(buildWorldContextFromSimulator(input).player.surfaceMaterial, 'water');
+  input.waterDepthM = 0.02;
+  assert.equal(buildWorldContextFromSimulator(input).player.surfaceMaterial, 'wooden_floor');
+  input.structure = { ...input.structure, quality: 'tent' };
+  assert.equal(buildWorldContextFromSimulator(input).player.surfaceMaterial, 'mud');
+});

@@ -1,3 +1,4 @@
+import { resolveSurfaceMaterial } from './surfaceMaterial';
 import { DEFAULT_SOUNDSCAPE_CONFIG } from '../config/soundscape';
 import {
   AudioBackend,
@@ -14,7 +15,6 @@ import type {
   PlayerActivity,
   SpatialQueryProvider,
   SpatialQueryResult,
-  SurfaceMaterial,
   Vector3,
   WeatherType,
   WorldContext,
@@ -364,22 +364,14 @@ export function buildWorldContextFromSimulator(
               ? 'walk'
               : null;
 
-  let surfaceMaterial: SurfaceMaterial = 'forest_floor';
-  if (input.onBoardwalk) {
-    surfaceMaterial = 'wooden_boardwalk';
-  } else if (input.waterDepthM > 0.02) {
-    surfaceMaterial = 'water';
-  } else if (input.structure.id && input.structure.quality !== 'outdoor' && input.structure.quality !== 'tent') {
-    surfaceMaterial = input.structure.floorMaterial;
-  } else if (input.isSwampWading) {
-    surfaceMaterial = 'mud';
-  } else if (roadInfo.dist < 3.3 && !roadInfo.isTrail) {
-    surfaceMaterial = 'gravel';
-  } else if (biomeId === 'village') {
-    surfaceMaterial = 'grass';
-  } else {
-    surfaceMaterial = 'forest_floor';
-  }
+  const surfaceMaterial = resolveSurfaceMaterial({
+    onBoardwalk: input.onBoardwalk,
+    inWater: input.waterDepthM > 0.02,
+    structure: input.structure,
+    swampWading: input.isSwampWading,
+    road: roadInfo,
+    biomeId,
+  });
 
   return {
     simulationTimeMs: input.simulationTimeMs,

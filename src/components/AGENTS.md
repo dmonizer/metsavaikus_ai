@@ -20,6 +20,8 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
 - `ItemArtwork.tsx`: shared item presentation; `LanguageSwitcher.tsx`: language control.
 - `src/index.css`: shared styles; `App.tsx` also contains substantial screen/HUD markup.
 
+Landing/physical surface events and continuous audio share `world/surfaceMaterial.ts`; keep the runtime adapter lazy so covered surfaces do not trigger unnecessary terrain sampling.
+
 ## Invariants and verification
 
 `game/keyboardInput.ts` decides which keys belong to gameplay and cancels their browser defaults (including Firefox quick find). Preserve native controls/text editing, composition, modified browser shortcuts and Escape from pointer lock. The canvas is focusable; gameplay start/resume, canvas clicks and the last overlay closing restore its focus.
