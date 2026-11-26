@@ -9,6 +9,7 @@ import type { ConditionEvaluator, EntityContext } from './conditionEvaluator';
 import type { DisturbanceManager } from './disturbanceManager';
 import type { AudioMixer } from './mixer';
 import type {
+  ConditionNode,
   EventReactionDefinition,
   PersistedSoundscapeState,
   QuotaPeriod,
@@ -45,17 +46,36 @@ export interface TriggerRequest {
   skipQuotaRecord?: boolean;
 }
 
-function extractTimeWindows(def: SoundDefinition): TimeWindowDef[] {
-  const t = def.conditions?.time;
-  if (!t) return [];
-  const out: TimeWindowDef[] = [];
-  if (t.from && t.to) out.push({ from: t.from, to: t.to });
-  if (t.windows) {
-    for (const w of t.windows) {
-      if (Array.isArray(w)) out.push({ from: w[0], to: w[1] });
-      else out.push(w);
+function collectTimeWindowsFromNode(
+  node: ConditionNode | undefined,
+  out: TimeWindowDef[]
+): void {
+  if (!node) return;
+  const t = node.time;
+  if (t) {
+    if (t.from && t.to) out.push({ from: t.from, to: t.to });
+    if (t.windows) {
+      for (const w of t.windows) {
+        if (Array.isArray(w)) out.push({ from: w[0], to: w[1] });
+        else out.push(w);
+      }
     }
   }
+  if (node.all) {
+    for (const child of node.all) {
+      collectTimeWindowsFromNode(child, out);
+    }
+  }
+  if (node.any) {
+    for (const child of node.any) {
+      collectTimeWindowsFromNode(child, out);
+    }
+  }
+}
+
+function extractTimeWindows(def: SoundDefinition): TimeWindowDef[] {
+  const out: TimeWindowDef[] = [];
+  collectTimeWindowsFromNode(def.conditions, out);
   return out;
 }
 
@@ -360,17 +380,25 @@ export class RuleScheduler {
         if (eligibility.eligible && remainingNeed > 0) {
           if (nextDue === undefined) {
             const delayBase = Math.max(minIntMs, 30_000);
-            nextDue = nowClockMs + rng.range(Math.min(5000, delayBase * 0.2), delayBase * 1.4);
+            if (eligibility.currentUsed === 0) {
+              const firstMin = Math.min(5000, delayBase * 0.1);
+              const firstMax = Math.min(delayBase * 0.65, 2_400_000);
+              nextDue = nowClockMs + rng.range(firstMin, Math.max(firstMin, firstMax));
+            } else {
+              nextDue = nowClockMs + rng.range(Math.min(5000, delayBase * 0.2), delayBase * 1.4);
+            }
             dueMap.set(sound.id, nextDue);
           } else if (nowClockMs >= nextDue) {
             // Execute at most ONCE per tick (missed_occurrence: skip — no bursts on time acceleration!)
-            const spreadMs = Math.max(minIntMs, 90_000);
-            dueMap.set(sound.id, nowClockMs + rng.range(minIntMs + 5000, spreadMs));
+            const minNext = minIntMs + 5000;
+            const spreadMs = Math.max(minNext + 60_000, minIntMs * 1.35, 90_000);
+            dueMap.set(sound.id, nowClockMs + rng.range(minNext, spreadMs));
             onTrigger({ sound });
           }
         } else if (nextDue !== undefined && nowClockMs > nextDue && sound.schedule?.missedOccurrence !== 'play_latest') {
-          // Advance missed schedule cleanly without bursting when conditions are lost or accelerated
-          dueMap.set(sound.id, nowClockMs + Math.max(minIntMs, 30_000));
+          // Clear expired schedule cleanly when conditions are lost or quota exhausted;
+          // cooldowns remain enforced independently via cooldownUntilSimMs/lastTriggerSimMs.
+          dueMap.delete(sound.id);
         }
       } else if (sound.trigger.type === 'stochastic' || sound.trigger.type === 'repeating') {
         if (sound.schedule?.ratePerMinute !== undefined) {
@@ -692,5 +720,15 @@ export class RuleScheduler {
         reservedQuotaKey: pr.reservedQuotaKey,
       });
     }
+  }
+
+  resetQuotasAndCooldowns(): void {
+    this.windowStates.clear();
+    this.cooldownUntilSimMs.clear();
+    this.nextAttemptSimMs.clear();
+    this.nextAttemptRealMs.clear();
+    this.lastTriggerSimMs.clear();
+    this.pendingReactions = [];
+    this.chainEventCounts.clear();
   }
 }

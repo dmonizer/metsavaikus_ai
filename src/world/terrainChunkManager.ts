@@ -314,11 +314,14 @@ export class TerrainChunkManager {
           );
     };
 
+    this.group.userData.debugLayer = 'terrain';
     for (let i = 0; i < CHUNK_COUNT; i++) {
       const mesh = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
       mesh.receiveShadow = true;
       mesh.frustumCulled = false;
       mesh.visible = false;
+      mesh.userData.debugLayer = 'terrain';
+      mesh.userData.debugName = 'Procedural Terrain';
       this.meshes.push(mesh);
       this.group.add(mesh);
       this.activeSlots.push({

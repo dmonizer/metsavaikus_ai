@@ -26,6 +26,7 @@ import {
   computeWeightBurden,
   cookCampfireRecipe,
   createInitialSurvivalState,
+  createPoisonEffect,
   DiscoveryTracker,
   drinkFromBottle,
   eatFoodItem,
@@ -856,5 +857,68 @@ describe('Dynamic 3D Ambient Soundscape Ecology', () => {
     );
   });
 });
+
+describe('Debug Survival Overrides & Ballast Thresholds', () => {
+  it('prevents collapse under lethal conditions when godMode is enabled', () => {
+    const inv = createInventoryFromPacking({});
+    const state = createInitialSurvivalState(100);
+    state.health = 0;
+    state.bodyTempC = 28.0;
+    state.hydration = 0;
+    state.stomachFullness = 0;
+    state.nausea = 95;
+    state.poisons.push(createPoisonEffect('destroying_angel', 1.0));
+
+    const ev = stepSurvivalTick(
+      state,
+      inv,
+      {
+        locomotion: 'swim',
+        weather: 'storm',
+        windStrength: 1.5,
+        hourOfDay: 3,
+        shelter: 'outdoor',
+        nearLitCampfireFactor: 0,
+        flashlightActive: false,
+        godMode: true,
+      },
+      1.0,
+      0.5
+    );
+
+    assert.equal(ev.died, false, 'godMode must prevent death/collapse even when health is 0');
+    assert.equal(classifyHypothermia(state.bodyTempC), 'severe');
+  });
+
+  it('includes positive and negative debugBallastKg clamped at zero and honors custom weightThresholds', () => {
+    const inv = createInventoryFromPacking({ chocolate_bar: 2, compass: 1 });
+    const baseWeight = computeInventoryWeightKg(inv);
+    assert.ok(baseWeight > 0);
+
+    inv.debugBallastKg = 10;
+    assert.ok(Math.abs(computeInventoryWeightKg(inv) - (baseWeight + 10)) < 0.001);
+
+    // Negative ballast reduces total pack weight and clamps cleanly at 0 kg
+    inv.debugBallastKg = -999;
+    assert.equal(computeInventoryWeightKg(inv), 0);
+
+    // Custom thresholds shift load tiers dynamically
+    const lightWithHighCap = computeWeightBurden(18, 0, {
+      moderateKg: 20,
+      heavyKg: 25,
+      overburdenedKg: 30,
+    });
+    assert.equal(lightWithHighCap.loadTier, 'light');
+
+    const overburdenedWithLowCap = computeWeightBurden(6.5, 0, {
+      moderateKg: 2,
+      heavyKg: 4,
+      overburdenedKg: 6,
+    });
+    assert.equal(overburdenedWithLowCap.loadTier, 'overburdened');
+    assert.ok(overburdenedWithLowCap.moveSpeedMultiplier < 1.0);
+  });
+});
+
 
 

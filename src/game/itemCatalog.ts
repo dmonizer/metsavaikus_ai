@@ -157,6 +157,7 @@ export interface InventoryState {
   lighterUses: number;
   matchStrikes: number;
   nextBottleUid: number;
+  debugBallastKg?: number;
 }
 
 export const MUSHROOM_TO_ITEM_ID: Record<MushroomSpecies, ItemId> = {
@@ -682,6 +683,7 @@ export function cloneInventory(inv: InventoryState): InventoryState {
     lighterUses: inv.lighterUses,
     matchStrikes: inv.matchStrikes,
     nextBottleUid: inv.nextBottleUid,
+    debugBallastKg: inv.debugBallastKg,
   };
 }
 
@@ -760,7 +762,8 @@ export function computeInventoryWeightKg(inv: InventoryState): number {
   for (let i = 0; i < inv.bottles.length; i++) {
     total += getBottleWeightKg(inv.bottles[i]);
   }
-  return Math.round(total * 100) / 100;
+  total += inv.debugBallastKg ?? 0;
+  return Math.max(0, Math.round(total * 100) / 100);
 }
 
 export function getNavigationMode(inv: InventoryState): NavigationMode {

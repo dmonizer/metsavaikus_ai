@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { X, AlertTriangle, Trash2, Flame, Droplets, Utensils, BatteryCharging, Map as MapIcon, Tent, Moon, CloudRain } from 'lucide-react';
+import { X, AlertTriangle, Trash2, Flame, Droplets, Utensils, BatteryCharging, Map as MapIcon, Tent, Moon, CloudRain, Scale } from 'lucide-react';
 import {
   CAMPFIRE_WOOD_COST,
   computeClothingBonuses,
@@ -43,6 +43,7 @@ interface BackpackStatusDrawerProps {
   onOpenFullMap: () => void;
   onDropItem: (itemId: ItemId) => void;
   onDropBottle: (uid: string) => void;
+  onDropBallast?: () => void;
 }
 
 type WheelSlot =
@@ -61,6 +62,13 @@ type WheelSlot =
       qty: number;
       badge: string;
       accent: 'food' | 'gear' | 'worn' | 'danger' | 'warn';
+    }
+  | {
+      key: string;
+      kind: 'ballast';
+      ballastKg: number;
+      badge: string;
+      accent: 'warn' | 'water';
     };
 
 function VitalRow({
@@ -145,6 +153,7 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
   onOpenFullMap,
   onDropItem,
   onDropBottle,
+  onDropBallast,
 }) => {
   const { lang, t } = useLanguage();
   const wheelRef = useRef<HTMLDivElement | null>(null);
@@ -212,6 +221,17 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
       });
     }
 
+    if (inventory.debugBallastKg && Math.abs(inventory.debugBallastKg) >= 0.01) {
+      const kg = inventory.debugBallastKg;
+      list.push({
+        key: 'debug:ballast',
+        kind: 'ballast',
+        ballastKg: kg,
+        badge: `${kg >= 0 ? '+' : ''}${kg.toFixed(1)}kg`,
+        accent: kg < 0 ? 'water' : 'warn',
+      });
+    }
+
     return list;
   }, [inventory, t]);
 
@@ -272,6 +292,41 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
         <div className="flex flex-col items-center justify-center text-center px-4">
           <div className="text-sm font-medium text-[#b5c4b4]">{t('backpack.wheelEmpty')}</div>
           <div className="mt-1 text-[11px] text-[#7f947e]">{t('backpack.noFood')}</div>
+        </div>
+      );
+    }
+
+    if (activeSlot.kind === 'ballast') {
+      const kg = activeSlot.ballastKg;
+      const sign = kg >= 0 ? '+' : '';
+      return (
+        <div className="flex flex-col items-center text-center px-3 w-full">
+          <Scale className="w-10 h-10 text-[#d8c182] shrink-0" />
+          <div className="mt-1 text-sm font-semibold text-[#eef4ec] leading-tight">
+            Debug Ballast
+          </div>
+          <div className="mt-0.5 font-mono tabular-nums text-[11px] text-[#e3cb8c]">
+            {sign}
+            {kg.toFixed(2)} kg
+          </div>
+          <div className="mt-1 text-[10.5px] text-[#98ac97] leading-snug line-clamp-2">
+            {kg < 0
+              ? 'Anti-gravity debug weight offsetting total pack burden.'
+              : 'Calibration ballast weight added to backpack load.'}
+          </div>
+          {onDropBallast && (
+            <div className="mt-2.5 flex items-center gap-1.5">
+              <button
+                type="button"
+                data-testid="drop-btn-ballast"
+                onClick={onDropBallast}
+                className="px-3 py-1.5 text-xs rounded bg-[#18221c] hover:bg-[#2a1c19] border border-white/10 text-[#b4c4b3] hover:text-[#ebb1a4] flex items-center gap-1 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Remove Ballast
+              </button>
+            </div>
+          )}
         </div>
       );
     }
@@ -795,7 +850,8 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
                 const x = CX + Math.cos(angle) * RING_RADIUS;
                 const y = CY + Math.sin(angle) * RING_RADIUS;
                 const isSelected = idx === activeIndex;
-                const itemName = getItemName(slot.itemId, lang);
+                const itemName =
+                  slot.kind === 'ballast' ? 'Debug Ballast' : getItemName(slot.itemId, lang);
 
                 const borderCls = isSelected
                   ? 'border-[#9ad09e] bg-[#1e3224] shadow-[0_0_18px_rgba(127,179,130,0.38)] scale-110 z-20'
@@ -803,9 +859,11 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
                     ? 'border-[#ddb055]/85 bg-[#292213] hover:border-[#f0c76e] z-10'
                     : slot.accent === 'danger'
                       ? 'border-[#b05646]/60 bg-[#1c1311] hover:border-[#d67563] z-10'
-                      : slot.accent === 'water'
-                        ? 'border-[#5c94ad]/50 bg-[#101c21] hover:border-[#85bfd6] z-10'
-                        : 'border-white/14 bg-[#121c16] hover:border-white/35 z-10';
+                      : slot.accent === 'warn'
+                        ? 'border-[#c49c4f]/65 bg-[#211b11] hover:border-[#e8be6b] z-10'
+                        : slot.accent === 'water'
+                          ? 'border-[#5c94ad]/50 bg-[#101c21] hover:border-[#85bfd6] z-10'
+                          : 'border-white/14 bg-[#121c16] hover:border-white/35 z-10';
 
                 return (
                   <button
@@ -814,7 +872,9 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
                     data-testid={
                       slot.kind === 'bottle'
                         ? `wheel-node-${slot.bottle.uid}`
-                        : `wheel-node-${slot.itemId}`
+                        : slot.kind === 'ballast'
+                          ? 'wheel-node-ballast'
+                          : `wheel-node-${slot.itemId}`
                     }
                     aria-label={itemName}
                     aria-pressed={isSelected}
@@ -829,16 +889,20 @@ export const BackpackStatusDrawer: React.FC<BackpackStatusDrawerProps> = ({
                     }}
                     className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 flex items-center justify-center transition-transform duration-120 cursor-pointer ${borderCls}`}
                   >
-                    <ItemArtwork
-                      itemId={slot.itemId}
-                      waterFillRatio={
-                        slot.kind === 'bottle'
-                          ? slot.bottle.waterLiters / Math.max(0.1, slot.bottle.capacityLiters)
-                          : 1
-                      }
-                      waterQuality={slot.kind === 'bottle' ? slot.bottle.waterQuality : 'clean'}
-                      className={slots.length > 12 ? 'w-8 h-8' : 'w-10 h-10'}
-                    />
+                    {slot.kind === 'ballast' ? (
+                      <Scale className={slots.length > 12 ? 'w-6 h-6 text-[#e3cb8c]' : 'w-8 h-8 text-[#e3cb8c]'} />
+                    ) : (
+                      <ItemArtwork
+                        itemId={slot.itemId}
+                        waterFillRatio={
+                          slot.kind === 'bottle'
+                            ? slot.bottle.waterLiters / Math.max(0.1, slot.bottle.capacityLiters)
+                            : 1
+                        }
+                        waterQuality={slot.kind === 'bottle' ? slot.bottle.waterQuality : 'clean'}
+                        className={slots.length > 12 ? 'w-8 h-8' : 'w-10 h-10'}
+                      />
+                    )}
                     <span className="absolute -bottom-1.5 right-0 px-1.5 py-0.25 rounded bg-[#090f0b] border border-white/15 font-mono tabular-nums text-[9.5px] font-semibold text-[#e6efe4] leading-tight">
                       {slot.badge}
                     </span>

@@ -1151,6 +1151,15 @@ function partitionByQuadrant(
   return q;
 }
 
+export type DynamicFloraKind =
+  | 'spruce'
+  | 'lone_spruce'
+  | 'spruce_sapling'
+  | 'pine'
+  | 'birch'
+  | 'bog_pine'
+  | 'boulder';
+
 export interface VegetationStats {
   treesRendered: number;
   foliageRendered: number;
@@ -1310,7 +1319,13 @@ export class WorldVegetationSystem {
   private diagVisRebuilds = 0;
   private diagGrassRebuilds = 0;
 
+  readonly dynamicPropsGroup = new THREE.Group();
+  readonly inspectableMeshes: THREE.Object3D[] = [];
+  private readonly dynamicPropMaterials = new Map<string, THREE.Material>();
+  private dynamicPropCounter = 0;
+
   private readonly isLowPowerGpu: boolean;
+  private readonly isSoftwareGl: boolean;
   private readonly grassCap: number;
   private readonly shortGrassCap: number;
   private readonly mossCarpetCap: number;
@@ -1320,11 +1335,16 @@ export class WorldVegetationSystem {
 
   constructor(textures: WorldTextures, isSoftwareGl: boolean, isLowPowerGpu: boolean, private readonly shelters: ShelterGeometry) {
     this.isLowPowerGpu = isLowPowerGpu;
+    this.isSoftwareGl = isSoftwareGl;
     this.grassCap = isSoftwareGl ? 2200 : isLowPowerGpu ? 9500 : GRASS_BLADE_CAP;
     this.shortGrassCap = isSoftwareGl ? 3200 : isLowPowerGpu ? 13000 : SHORT_GRASS_CAP;
     this.mossCarpetCap = isSoftwareGl ? 1800 : isLowPowerGpu ? 7000 : MOSS_CARPET_CAP;
     this.tallCap = isSoftwareGl ? 750 : isLowPowerGpu ? 3400 : TALL_UNDERGROWTH_CAP;
+    this.group.userData.debugLayer = 'foliage';
+    this.dynamicPropsGroup.userData.debugLayer = 'foliage';
     this.buildInstancedLayers(textures, isSoftwareGl);
+    this.group.add(this.dynamicPropsGroup);
+    this.tagInspectableLayers();
     this.group.traverse(node => {
       if (node instanceof THREE.InstancedMesh) node.receiveShadow = true;
     });
@@ -1346,6 +1366,171 @@ export class WorldVegetationSystem {
         excludeShelterVegetation(material, shelters);
       }
     }
+  }
+
+  private tagInspectableLayers(): void {
+    const tag = (mesh: THREE.Object3D, debugName: string, species: string) => {
+      mesh.userData.debugLayer = 'foliage';
+      mesh.userData.debugName = debugName;
+      mesh.userData.debugMeta = { species };
+      this.inspectableMeshes.push(mesh);
+    };
+    tag(this.birchTrunk0, 'Silver Birch (Arukask)', 'birch');
+    tag(this.birchCrown0, 'Silver Birch Canopy', 'birch');
+    tag(this.birchTrunk1, 'Silver Birch (LOD1)', 'birch');
+    tag(this.birchCrown1, 'Silver Birch Canopy (LOD1)', 'birch');
+    tag(this.pineTrunk0, 'Scots Pine (Harilik mänd)', 'pine');
+    tag(this.pineCrown0, 'Scots Pine Canopy', 'pine');
+    tag(this.pineTrunk1, 'Scots Pine (LOD1)', 'pine');
+    tag(this.pineCrown1, 'Scots Pine Canopy (LOD1)', 'pine');
+    tag(this.spruceTrunk0, 'Norway Spruce (Kuusk)', 'spruce');
+    tag(this.spruceCrown0, 'Norway Spruce Canopy', 'spruce');
+    tag(this.spruceTrunk1, 'Norway Spruce (LOD1)', 'spruce');
+    tag(this.spruceCrown1, 'Norway Spruce Canopy (LOD1)', 'spruce');
+    tag(this.loneSpruceTrunk0, 'Lone Norway Spruce', 'lone_spruce');
+    tag(this.loneSpruceCrown0, 'Lone Norway Spruce Canopy', 'lone_spruce');
+    tag(this.loneSpruceTrunk1, 'Lone Norway Spruce (LOD1)', 'lone_spruce');
+    tag(this.loneSpruceCrown1, 'Lone Norway Spruce Canopy (LOD1)', 'lone_spruce');
+    tag(this.bogPineTrunk, 'Bog Pine (Rabamänd)', 'bog_pine');
+    tag(this.bogPineCrown, 'Bog Pine Canopy', 'bog_pine');
+    tag(this.saplingTrunkMesh, 'Spruce Sapling', 'spruce_sapling');
+    tag(this.saplingLeafMesh, 'Spruce Sapling Boughs', 'spruce_sapling');
+    tag(this.deadfallMesh, 'Fallen Log (Lamav palk)', 'deadfall');
+    tag(this.hazelStemMesh, 'Hazel Bush (Sarapuu)', 'hazel');
+    tag(this.hazelLeafMesh, 'Hazel Bush Foliage', 'hazel');
+    tag(this.juniperMesh, 'Juniper (Kadakas)', 'juniper');
+    tag(this.fernMesh, 'Forest Fern (Sõnajalg)', 'fern');
+    tag(this.shrubMesh, 'Bilberry Shrub (Mustikas)', 'shrub');
+    tag(this.mossHummockMesh, 'Moss Hummock', 'moss');
+    tag(this.reedMesh, 'Bog Reeds (Pilliroog)', 'reed');
+    tag(this.boulderMesh, 'Glacial Boulder (Rändrahn)', 'boulder');
+    tag(this.boulderOutcropMesh, 'Granite Outcrop', 'boulder');
+    this.inspectableMeshes.push(this.dynamicPropsGroup);
+  }
+
+  private getOrCloneDynamicMaterial(key: string, src: THREE.Material): THREE.Material {
+    const existing = this.dynamicPropMaterials.get(key);
+    if (existing) return existing;
+    let mat: THREE.Material;
+    if (src instanceof THREE.MeshStandardMaterial) {
+      mat = new THREE.MeshStandardMaterial({
+        map: src.map,
+        normalMap: src.normalMap,
+        normalScale: src.normalScale.clone(),
+        roughness: src.roughness,
+        metalness: src.metalness,
+        envMapIntensity: src.envMapIntensity,
+        vertexColors: src.vertexColors,
+        alphaTest: src.alphaTest,
+        side: src.side,
+      });
+    } else if (src instanceof THREE.MeshLambertMaterial) {
+      mat = new THREE.MeshLambertMaterial({
+        map: src.map,
+        alphaTest: src.alphaTest,
+        vertexColors: src.vertexColors,
+        side: src.side,
+      });
+    } else {
+      mat = src.clone();
+    }
+    this.dynamicPropMaterials.set(key, mat);
+    this.disposables.push(mat);
+    return mat;
+  }
+
+  spawnDynamicProp(
+    kind: DynamicFloraKind,
+    x: number,
+    z: number,
+    scale?: number,
+    rotY?: number
+  ): { id: string; kind: DynamicFloraKind; x: number; y: number; z: number; radius: number } {
+    const id = `dyn_${kind}_${++this.dynamicPropCounter}`;
+    const y = getTerrainHeight(x, z) - (kind === 'boulder' ? 0.05 : 0.08);
+    const yaw = rotY ?? Math.random() * Math.PI * 2;
+    const grp = new THREE.Group();
+    grp.position.set(x, y, z);
+    grp.rotation.y = yaw;
+    const shadows = !this.isSoftwareGl;
+
+    let propScale = scale ?? 1;
+    let radius = 0.3;
+    let label: string = kind;
+
+    if (kind === 'boulder') {
+      propScale = scale ?? 0.95;
+      radius = propScale * 0.78;
+      label = 'Glacial Boulder (Spawned)';
+      const mat = this.getOrCloneDynamicMaterial('boulder', this.boulderMesh.material as THREE.Material);
+      const mesh = new THREE.Mesh(this.boulderMesh.geometry, mat);
+      mesh.castShadow = shadows;
+      mesh.receiveShadow = true;
+      grp.add(mesh);
+    } else {
+      let trunkSrc: THREE.InstancedMesh = this.spruceTrunk0;
+      let crownSrc: THREE.InstancedMesh = this.spruceCrown0;
+      if (kind === 'spruce') {
+        propScale = scale ?? 1.0;
+        radius = 0.34 * propScale;
+        label = 'Norway Spruce (Spawned)';
+        trunkSrc = this.spruceTrunk0;
+        crownSrc = this.spruceCrown0;
+      } else if (kind === 'lone_spruce') {
+        propScale = scale ?? 1.0;
+        radius = 0.38 * propScale;
+        label = 'Lone Norway Spruce (Spawned)';
+        trunkSrc = this.loneSpruceTrunk0;
+        crownSrc = this.loneSpruceCrown0;
+      } else if (kind === 'spruce_sapling') {
+        propScale = scale ?? 1.0;
+        radius = 0.25 * propScale;
+        label = 'Spruce Sapling (Spawned)';
+        trunkSrc = this.saplingTrunkMesh;
+        crownSrc = this.saplingLeafMesh;
+      } else if (kind === 'pine') {
+        propScale = scale ?? 1.0;
+        radius = 0.34 * propScale;
+        label = 'Scots Pine (Spawned)';
+        trunkSrc = this.pineTrunk0;
+        crownSrc = this.pineCrown0;
+      } else if (kind === 'birch') {
+        propScale = scale ?? 1.0;
+        radius = 0.3 * propScale;
+        label = 'Silver Birch (Spawned)';
+        trunkSrc = this.birchTrunk0;
+        crownSrc = this.birchCrown0;
+      } else if (kind === 'bog_pine') {
+        propScale = scale ?? 1.0;
+        radius = 0.24 * propScale;
+        label = 'Bog Pine (Spawned)';
+        trunkSrc = this.bogPineTrunk;
+        crownSrc = this.bogPineCrown;
+      }
+      const trunkMat = this.getOrCloneDynamicMaterial(`${kind}_trunk`, trunkSrc.material as THREE.Material);
+      const crownMat = this.getOrCloneDynamicMaterial(`${kind}_crown`, crownSrc.material as THREE.Material);
+      const trunkMesh = new THREE.Mesh(trunkSrc.geometry, trunkMat);
+      trunkMesh.castShadow = shadows;
+      trunkMesh.receiveShadow = true;
+      const crownMesh = new THREE.Mesh(crownSrc.geometry, crownMat);
+      crownMesh.castShadow = false;
+      crownMesh.receiveShadow = true;
+      grp.add(trunkMesh, crownMesh);
+    }
+
+    grp.scale.setScalar(propScale);
+    const meta = { id, kind, scale: Math.round(propScale * 100) / 100, spawned: true };
+    grp.userData.debugLayer = 'foliage';
+    grp.userData.debugName = label;
+    grp.userData.debugMeta = meta;
+    grp.traverse((child) => {
+      child.userData.debugLayer = 'foliage';
+      child.userData.debugName = label;
+      child.userData.debugMeta = meta;
+    });
+    this.dynamicPropsGroup.add(grp);
+    this.indexChunkColliders([{ x, z, r: radius }]);
+    return { id, kind, x, y, z, radius };
   }
 
   private isInsideBuilding(x: number, z: number): boolean {

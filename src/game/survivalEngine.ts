@@ -60,6 +60,18 @@ export interface PlayerSurvivalState {
   deathFactors: string[];
 }
 
+export interface WeightTierThresholds {
+  moderateKg: number;
+  heavyKg: number;
+  overburdenedKg: number;
+}
+
+export const DEFAULT_WEIGHT_THRESHOLDS: WeightTierThresholds = {
+  moderateKg: 3.8,
+  heavyKg: 6.2,
+  overburdenedKg: 9.5,
+};
+
 export interface SurvivalEnvInput {
   locomotion: LocomotionState;
   jumpedThisFrame?: boolean;
@@ -70,6 +82,8 @@ export interface SurvivalEnvInput {
   shelter: ShelterQuality;
   nearLitCampfireFactor: number; // 0 (far) .. 1 (right beside lit campfire)
   flashlightActive: boolean;
+  godMode?: boolean;
+  weightThresholds?: Partial<WeightTierThresholds>;
 }
 
 export interface SurvivalTickEvents {
@@ -144,11 +158,19 @@ export function createInitialSurvivalState(backpackWeightKg = 2.5): PlayerSurviv
  */
 export function computeWeightBurden(
   backpackWeightKg: number,
-  waterStomachLoadL: number
+  waterStomachLoadL: number,
+  thresholds?: Partial<WeightTierThresholds>
 ): WeightBurdenMetrics {
   const waterLoadKg = Math.max(0, waterStomachLoadL) * 1.45;
   const effectiveWeightKg = Math.round((Math.max(0, backpackWeightKg) + waterLoadKg) * 100) / 100;
   const excessKg = Math.max(0, effectiveWeightKg - 3.0);
+
+  const moderateKg = Math.max(0.2, thresholds?.moderateKg ?? DEFAULT_WEIGHT_THRESHOLDS.moderateKg);
+  const heavyKg = Math.max(moderateKg + 0.2, thresholds?.heavyKg ?? DEFAULT_WEIGHT_THRESHOLDS.heavyKg);
+  const overburdenedKg = Math.max(
+    heavyKg + 0.2,
+    thresholds?.overburdenedKg ?? DEFAULT_WEIGHT_THRESHOLDS.overburdenedKg
+  );
 
   const tiringMultiplier = Math.round((1 + excessKg * 0.14 + Math.max(0, waterStomachLoadL - 0.35) * 0.45) * 100) / 100;
   const stomachDrainMultiplier = Math.round((1 + excessKg * 0.085) * 100) / 100;
@@ -159,9 +181,9 @@ export function computeWeightBurden(
   const moveSpeedMultiplier = clamp(1 - Math.max(0, effectiveWeightKg - 5.0) * 0.028, 0.72, 1.0);
 
   let loadTier: LoadTier = 'light';
-  if (effectiveWeightKg >= 9.5) loadTier = 'overburdened';
-  else if (effectiveWeightKg >= 6.2) loadTier = 'heavy';
-  else if (effectiveWeightKg >= 3.8) loadTier = 'moderate';
+  if (effectiveWeightKg >= overburdenedKg) loadTier = 'overburdened';
+  else if (effectiveWeightKg >= heavyKg) loadTier = 'heavy';
+  else if (effectiveWeightKg >= moderateKg) loadTier = 'moderate';
 
   return {
     effectiveWeightKg,
@@ -368,7 +390,12 @@ export function stepSurvivalTick(
   ev.flashlightDepleted = false;
   ev.toastMessage = null;
 
-  if (state.health <= 0 || dtSec <= 0) return ev;
+  const godMode = Boolean(env.godMode);
+  if (dtSec <= 0 || (state.health <= 0 && !godMode)) return ev;
+  if (godMode) {
+    state.deathCause = null;
+    state.deathFactors = [];
+  }
 
   const dtMin = dtSec / 60;
   const gHrs = Math.max(0, gameHoursDelta);
@@ -378,7 +405,11 @@ export function stepSurvivalTick(
   // 1. Pack weight & ingested water absorption
   state.waterStomachLoadL = Math.max(0, state.waterStomachLoadL - dtMin * 0.28);
   state.backpackWeightKg = computeInventoryWeightKg(inv);
-  const burden = computeWeightBurden(state.backpackWeightKg, state.waterStomachLoadL);
+  const burden = computeWeightBurden(
+    state.backpackWeightKg,
+    state.waterStomachLoadL,
+    env.weightThresholds
+  );
   state.totalEffectiveWeightKg = burden.effectiveWeightKg;
   state.loadTier = burden.loadTier;
   state.tiringMultiplier = burden.tiringMultiplier;
@@ -558,7 +589,7 @@ export function stepSurvivalTick(
     const pLabel = getPoisonLabel(p.kind);
     const dmg = p.damagePerHour * vuln * gHrs;
     state.health = clamp(state.health - dmg, 0, 100);
-    if (recordCollapseIfDead(state, t('death.fatalPoison', { label: pLabel }))) {
+    if (!godMode && recordCollapseIfDead(state, t('death.fatalPoison', { label: pLabel }))) {
       ev.died = true;
       return ev;
     }
@@ -574,7 +605,7 @@ export function stepSurvivalTick(
         state.health = clamp(state.health - 4.5 * vuln, 0, 100);
         ev.vomited = true;
         ev.vomitSource = pLabel;
-        if (recordCollapseIfDead(state, t('death.fatalPoison', { label: pLabel }))) {
+        if (!godMode && recordCollapseIfDead(state, t('death.fatalPoison', { label: pLabel }))) {
           ev.died = true;
           return ev;
         }
@@ -595,21 +626,21 @@ export function stepSurvivalTick(
   if (state.bodyTempC < 33.8) {
     const hypoIntensity = clamp((33.8 - state.bodyTempC) / 1.4, 0.25, 1.5);
     state.health = clamp(state.health - 24 * hypoIntensity * gHrs, 0, 100);
-    if (recordCollapseIfDead(state, t('death.hypothermia'))) {
+    if (!godMode && recordCollapseIfDead(state, t('death.hypothermia'))) {
       ev.died = true;
       return ev;
     }
   }
   if (state.hydration <= 0.1) {
     state.health = clamp(state.health - 12 * gHrs, 0, 100);
-    if (recordCollapseIfDead(state, t('death.dehydration'))) {
+    if (!godMode && recordCollapseIfDead(state, t('death.dehydration'))) {
       ev.died = true;
       return ev;
     }
   }
   if (state.stomachFullness <= 0.1) {
     state.health = clamp(state.health - 6.5 * gHrs, 0, 100);
-    if (recordCollapseIfDead(state, t('death.starvation'))) {
+    if (!godMode && recordCollapseIfDead(state, t('death.starvation'))) {
       ev.died = true;
       return ev;
     }
@@ -1128,6 +1159,11 @@ export class DiscoveryTracker {
 
   getDiscoveredPercent(): number {
     return Math.round((this.discoveredCount / this.cells.length) * 100);
+  }
+
+  revealAll(): void {
+    this.cells.fill(1);
+    this.discoveredCount = this.cells.length;
   }
 
   reset(): void {

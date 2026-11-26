@@ -27,6 +27,8 @@ export interface UpdateVoiceParams {
 export interface BackendVoiceHandle {
   instanceId: string;
   durationSec: number;
+  readonly isPendingLoad?: boolean;
+  setPaused?(paused: boolean): void;
   stop(fadeSec: number): void;
 }
 
@@ -76,6 +78,8 @@ export interface MockVoiceRecord {
   lowpassHistory: number[];
   pitchHistory: number[];
   stopped: boolean;
+  paused?: boolean;
+  pauseHistory?: boolean[];
   stopFadeSec: number | null;
   loop: boolean;
   offsetSec: number;
@@ -131,6 +135,8 @@ export class MockAudioBackend implements AudioBackend {
       lowpassHistory: [params.lowpassHz],
       pitchHistory: [params.pitch],
       stopped: false,
+      paused: false,
+      pauseHistory: [false],
       stopFadeSec: null,
       loop: params.loop,
       offsetSec: params.offsetSec,
@@ -140,6 +146,11 @@ export class MockAudioBackend implements AudioBackend {
     return {
       instanceId: params.instanceId,
       durationSec: params.asset.durationSec ?? 2.0,
+      isPendingLoad: false,
+      setPaused: (paused: boolean) => {
+        rec.paused = paused;
+        rec.pauseHistory?.push(paused);
+      },
       stop: (fadeSec: number) => {
         rec.stopped = true;
         rec.stopFadeSec = fadeSec;
@@ -187,8 +198,17 @@ interface WebVoiceRuntime {
   filterNode: BiquadFilterNode;
   pannerNode: PannerNode | null;
   bufferSource: AudioBufferSourceNode | null;
+  bufferRef: AudioBuffer | null;
+  loop: boolean;
   cleanup: () => void;
   stopped: boolean;
+  paused: boolean;
+  pendingLoad: boolean;
+  latestPitch: number;
+  latestGain: number;
+  bufferStartedCtxTime: number;
+  bufferStartOffsetSec: number;
+  pausedOffsetSec: number;
 }
 
 function scheduleAudioParam(
@@ -218,6 +238,7 @@ export class WebAudioHybridBackend implements AudioBackend {
   private limiter: DynamicsCompressorNode | null = null;
   private limiterEnabled = true;
 
+  private registeredAssets: readonly AssetDefinition[] = [];
   private decodedBuffers = new Map<string, AudioBuffer>();
   private loadingPromises = new Map<string, Promise<AudioBuffer | null>>();
   private failedAssets = new Set<string>();
@@ -267,9 +288,15 @@ export class WebAudioHybridBackend implements AudioBackend {
       pData[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
       b6 = white * 0.115926;
     }
+
+    // Replay preload queue if preloadAssets() was called before AudioContext was unlocked
+    if (this.registeredAssets.length > 0) {
+      this.preloadAssets(this.registeredAssets);
+    }
   }
 
   preloadAssets(assets: readonly AssetDefinition[]): void {
+    this.registeredAssets = [...assets];
     this.proceduralCount = assets.filter((a) => a.procedural).length;
     if (!this.ctx) return;
     for (const a of assets) {
@@ -341,11 +368,15 @@ export class WebAudioHybridBackend implements AudioBackend {
       return {
         instanceId: params.instanceId,
         durationSec: params.asset.durationSec ?? 2.0,
+        isPendingLoad: false,
         stop: () => {},
       };
     }
 
     const ctx = this.ctx;
+    if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+      void ctx.resume().catch(() => {});
+    }
     const now = ctx.currentTime;
 
     const filterNode = ctx.createBiquadFilter();
@@ -353,7 +384,8 @@ export class WebAudioHybridBackend implements AudioBackend {
     filterNode.frequency.setValueAtTime(Math.max(200, Math.min(20000, params.lowpassHz)), now);
 
     const gainNode = ctx.createGain();
-    gainNode.gain.setValueAtTime(Math.max(0.0001, params.gain), now);
+    const initialSafeGain = Number.isFinite(params.gain) ? Math.max(0.0001, Math.min(8.0, params.gain)) : 0.0001;
+    gainNode.gain.setValueAtTime(initialSafeGain, now);
 
     let pannerNode: PannerNode | null = null;
     if (
@@ -388,83 +420,150 @@ export class WebAudioHybridBackend implements AudioBackend {
     const cachedBuf = !params.asset.procedural ? this.decodedBuffers.get(params.asset.file) : null;
     const getDurationSec = () => this.decodedBuffers.get(params.asset.file)?.duration ?? params.asset.durationSec ?? 2.0;
 
+    const disconnectGraph = () => {
+      try {
+        filterNode.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+      try {
+        gainNode.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+      try {
+        pannerNode?.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+    };
+
     const rt: WebVoiceRuntime = {
       instanceId: params.instanceId,
       gainNode,
       filterNode,
       pannerNode,
       bufferSource: null,
-      cleanup: () => {},
+      bufferRef: cachedBuf ?? null,
+      loop: params.loop,
+      cleanup: disconnectGraph,
       stopped: false,
+      paused: false,
+      pendingLoad: false,
+      latestPitch: safePitch,
+      latestGain: Math.max(0.0001, params.gain),
+      bufferStartedCtxTime: now,
+      bufferStartOffsetSec: 0,
+      pausedOffsetSec: 0,
+    };
+
+    const startBufferPlayback = (buf: AudioBuffer, offsetSec: number) => {
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = rt.loop;
+      src.playbackRate.setValueAtTime(rt.latestPitch, ctx.currentTime);
+      src.connect(filterNode);
+      const safeDur = Math.max(0.1, buf.duration);
+      const safeOffset = Number.isFinite(offsetSec) ? Math.max(0, offsetSec) % safeDur : 0;
+      src.start(ctx.currentTime, safeOffset);
+      rt.bufferRef = buf;
+      rt.bufferSource = src;
+      rt.bufferStartedCtxTime = ctx.currentTime;
+      rt.bufferStartOffsetSec = safeOffset;
+      rt.cleanup = () => {
+        if (rt.bufferSource) {
+          try {
+            rt.bufferSource.stop();
+          } catch {
+            // Ignore already stopped
+          }
+          try {
+            rt.bufferSource.disconnect();
+          } catch {
+            // Ignore disconnect errors
+          }
+          rt.bufferSource = null;
+        }
+        disconnectGraph();
+      };
     };
 
     if (cachedBuf) {
-      const src = ctx.createBufferSource();
-      src.buffer = cachedBuf;
-      src.loop = params.loop;
-      src.playbackRate.setValueAtTime(safePitch, now);
-      src.connect(filterNode);
-      const offset = Number.isFinite(params.offsetSec)
-        ? Math.max(0, params.offsetSec) % Math.max(0.1, cachedBuf.duration)
-        : 0;
-      src.start(now, offset);
-      activeBufferSource = src;
-      cleanupFn = () => {
-        try {
-          src.stop();
-        } catch {
-          // Ignore already stopped
-        }
-        src.disconnect();
-        filterNode.disconnect();
-        gainNode.disconnect();
-        pannerNode?.disconnect();
-      };
+      startBufferPlayback(cachedBuf, params.offsetSec);
+      activeBufferSource = rt.bufferSource;
+      cleanupFn = rt.cleanup;
     } else if (!params.asset.procedural && !params.asset.placeholder) {
-      // Trigger lazy decode for next use and start subtle fallback if needed
+      // Wait for async fetch+decode so uncached one-shots (e.g. wolf_howl, owl, woodpecker)
+      // and loops play the real recording rather than discarding it for a fallback noise burst.
+      rt.pendingLoad = true;
+      cleanupFn = disconnectGraph;
       void this.ensureBufferLoaded(params.asset).then((buf) => {
-        if (buf && !stopped && this.voices.get(params.instanceId) === rt && params.loop) {
-          // Swap in decoded MP3 seamlessly for long loops once decoded
-          if (rt.stopped) return;
-          rt.cleanup();
-          const s = ctx.createBufferSource();
-          s.buffer = buf;
-          s.loop = params.loop;
-          s.playbackRate.setValueAtTime(safePitch, ctx.currentTime);
-          s.connect(filterNode);
-          if (pannerNode) filterNode.connect(gainNode).connect(pannerNode).connect(this.masterGain!);
-          else filterNode.connect(gainNode).connect(this.masterGain!);
-          const swapOffset = Number.isFinite(params.offsetSec)
-            ? Math.max(0, params.offsetSec) % Math.max(0.1, buf.duration)
-            : 0;
-          s.start(ctx.currentTime, swapOffset);
-          rt.bufferSource = s;
-          rt.cleanup = () => {
-            try { s.stop(); } catch {}
-            s.disconnect();
-            filterNode.disconnect();
-            gainNode.disconnect();
-            pannerNode?.disconnect();
-          };
+        rt.pendingLoad = false;
+        if (stopped || rt.stopped || this.voices.get(params.instanceId) !== rt) {
+          disconnectGraph();
+          return;
+        }
+        if (buf) {
+          rt.bufferRef = buf;
+          if (rt.paused) {
+            const safeDur = Math.max(0.1, buf.duration);
+            rt.pausedOffsetSec = Number.isFinite(params.offsetSec)
+              ? Math.max(0, params.offsetSec) % safeDur
+              : 0;
+            return;
+          }
+          startBufferPlayback(buf, params.offsetSec);
+        } else {
+          // Asset failed to fetch/decode -> fall back to procedural synth
+          rt.cleanup = this.startProceduralSynth(ctx, params, filterNode);
         }
       });
-      // Lightweight fallback synth when MP3 hasn't decoded on first trigger
-      cleanupFn = this.startProceduralSynth(ctx, params, filterNode);
     } else {
       cleanupFn = this.startProceduralSynth(ctx, params, filterNode);
     }
 
     rt.bufferSource = activeBufferSource;
-    rt.cleanup = cleanupFn;
+    if (cleanupFn !== rt.cleanup) rt.cleanup = cleanupFn;
     this.voices.set(params.instanceId, rt);
 
     return {
       instanceId: params.instanceId,
       get durationSec() { return getDurationSec(); },
+      get isPendingLoad() { return rt.pendingLoad; },
+      setPaused: (paused: boolean) => {
+        if (stopped || rt.stopped || rt.paused === paused) return;
+        rt.paused = paused;
+        const t = ctx.currentTime;
+        if (paused) {
+          scheduleAudioParam(rt.gainNode.gain, 0.0001, t, 0.015);
+          if (rt.bufferSource && rt.bufferRef) {
+            const elapsed = Math.max(0, t - rt.bufferStartedCtxTime) * rt.latestPitch;
+            const safeDur = Math.max(0.1, rt.bufferRef.duration);
+            rt.pausedOffsetSec = (rt.bufferStartOffsetSec + elapsed) % safeDur;
+            try {
+              rt.bufferSource.stop();
+            } catch {
+              // Ignore already stopped
+            }
+            try {
+              rt.bufferSource.disconnect();
+            } catch {
+              // Ignore disconnect errors
+            }
+            rt.bufferSource = null;
+          }
+        } else {
+          scheduleAudioParam(rt.gainNode.gain, rt.latestGain, t, 0.02);
+          if (rt.bufferRef && !rt.bufferSource) {
+            startBufferPlayback(rt.bufferRef, rt.pausedOffsetSec);
+          }
+        }
+      },
       stop: (fadeSec: number) => {
         if (stopped) return;
         stopped = true;
         rt.stopped = true;
+        rt.pendingLoad = false;
         const t = ctx.currentTime;
         const f = Math.max(0.015, fadeSec);
         scheduleAudioParam(rt.gainNode.gain, 0.0001, t, f * 0.35);
@@ -767,22 +866,98 @@ export class WebAudioHybridBackend implements AudioBackend {
         brush.stop(now + 0.26);
         nodes.push(brush, bp, bg);
       }
-    } else if (kind.includes('water_trickling') || kind.includes('river') || kind.includes('campfire')) {
-      connectNoise(false, kind.includes('campfire') ? 1400 : 2400, 1.8, 0.1, params.loop, params.loop ? undefined : 0.8);
+    } else if (kind.includes('campfire')) {
+      // Warm low fire rumble + subtle high ember crackle
+      if (this.pinkNoiseBuf) {
+        const bed = ctx.createBufferSource();
+        bed.buffer = this.pinkNoiseBuf;
+        bed.loop = params.loop;
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.setValueAtTime(320, now);
+        const bg = ctx.createGain();
+        bg.gain.setValueAtTime(0.22, now);
+        bed.connect(lp).connect(bg).connect(outFilter);
+        bed.start(now);
+        if (!params.loop) bed.stop(now + 1.5);
+        nodes.push(bed, lp, bg);
+      }
+      if (this.whiteNoiseBuf) {
+        const crackle = ctx.createBufferSource();
+        crackle.buffer = this.whiteNoiseBuf;
+        crackle.loop = params.loop;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(2600, now);
+        bp.Q.setValueAtTime(1.8, now);
+        const cg = ctx.createGain();
+        cg.gain.setValueAtTime(0.14, now);
+        const lfo = ctx.createOscillator();
+        lfo.type = 'triangle';
+        lfo.frequency.setValueAtTime(9.5, now);
+        const lg = ctx.createGain();
+        lg.gain.setValueAtTime(0.11, now);
+        lfo.connect(lg).connect(cg.gain);
+        crackle.connect(bp).connect(cg).connect(outFilter);
+        crackle.start(now);
+        lfo.start(now);
+        if (!params.loop) {
+          crackle.stop(now + 1.5);
+          lfo.stop(now + 1.5);
+        }
+        nodes.push(crackle, bp, cg, lfo, lg);
+      }
+    } else if (kind.includes('water_trickling') || kind.includes('river')) {
+      connectNoise(false, 2400, 1.5, 0.14, params.loop, params.loop ? undefined : 0.9);
     } else if (kind.includes('breathing')) {
-      connectNoise(true, kind.includes('exhausted') ? 760 : 540, 1.3, 0.09, true);
+      connectNoise(true, kind.includes('exhausted') ? 760 : 540, 1.2, 0.16, true);
+    } else if (kind.includes('stone_impact')) {
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      const clack = ctx.createOscillator();
+      clack.type = 'triangle';
+      clack.frequency.setValueAtTime(320 * safePitch, now);
+      clack.frequency.exponentialRampToValueAtTime(95, now + 0.08);
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.28, now);
+      cg.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+      clack.connect(cg).connect(outFilter);
+      clack.start(now);
+      clack.stop(now + 0.14);
+      nodes.push(clack, cg);
+      connectNoise(false, 2400 * safePitch, 1.0, 0.24, false, 0.18);
+    } else if (kind.includes('metal_impact')) {
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      for (const [freq, amp, decay] of [
+        [620, 0.2, 0.36],
+        [1290, 0.14, 0.28],
+        [2040, 0.09, 0.22],
+      ]) {
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq * safePitch, now);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(amp, now);
+        g.gain.exponentialRampToValueAtTime(0.001, now + decay);
+        osc.connect(g).connect(outFilter);
+        osc.start(now);
+        osc.stop(now + decay + 0.02);
+        nodes.push(osc, g);
+      }
     } else if (kind.includes('wooden_floor') || kind.includes('wood_impact') || kind.includes('hollow_crate')) {
       const osc = ctx.createOscillator();
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(kind.includes('hollow') ? 195 : 132, now);
-      osc.frequency.exponentialRampToValueAtTime(48, now + 0.11);
+      osc.frequency.exponentialRampToValueAtTime(48, now + 0.14);
       const g = ctx.createGain();
-      g.gain.setValueAtTime(0.24, now);
-      g.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+      g.gain.setValueAtTime(0.3, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
       osc.connect(g).connect(outFilter);
       osc.start(now);
-      osc.stop(now + 0.16);
+      osc.stop(now + 0.2);
       nodes.push(osc, g);
+      if (kind.includes('hollow')) {
+        connectNoise(true, 560, 1.6, 0.18, false, 0.16);
+      }
     } else if (kind.includes('creak') || kind.includes('door')) {
       const osc = ctx.createOscillator();
       osc.type = 'sawtooth';
@@ -794,7 +969,7 @@ export class WebAudioHybridBackend implements AudioBackend {
       flt.frequency.value = 620;
       flt.Q.value = 2.8;
       const g = ctx.createGain();
-      g.gain.setValueAtTime(0.08, now);
+      g.gain.setValueAtTime(0.14, now);
       g.gain.exponentialRampToValueAtTime(0.001, now + 0.48);
       osc.connect(flt).connect(g).connect(outFilter);
       osc.start(now);
@@ -803,28 +978,86 @@ export class WebAudioHybridBackend implements AudioBackend {
     } else if (kind.includes('gunshot') || kind.includes('thunder')) {
       connectNoise(false, kind.includes('thunder') ? 160 : 950, 0.6, 0.55, false, kind.includes('thunder') ? 1.8 : 0.45);
     } else if (kind.includes('cricket')) {
+      // Rhythmic high cricket chirp pulses
       const osc = ctx.createOscillator();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(4380, now);
+      osc.frequency.setValueAtTime(4250, now);
       const g = ctx.createGain();
-      g.gain.setValueAtTime(0.04, now);
-      g.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+      g.gain.setValueAtTime(0.001, now);
+      for (let p = 0; p < 3; p++) {
+        const t0 = now + p * 0.18;
+        g.gain.setValueAtTime(0.001, t0);
+        g.gain.linearRampToValueAtTime(0.14, t0 + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
+      }
       osc.connect(g).connect(outFilter);
       osc.start(now);
-      osc.stop(now + 0.24);
+      osc.stop(now + 0.62);
+      nodes.push(osc, g);
+    } else if (kind.includes('insect')) {
+      // Bog mosquito hum: FM-warbled 520Hz triangle buzz + high wing shimmer
+      const carrier = ctx.createOscillator();
+      carrier.type = 'sawtooth';
+      carrier.frequency.setValueAtTime(510, now);
+      carrier.frequency.linearRampToValueAtTime(590, now + 0.45);
+      carrier.frequency.linearRampToValueAtTime(475, now + 1.0);
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.setValueAtTime(24, now);
+      const lg = ctx.createGain();
+      lg.gain.setValueAtTime(32, now);
+      lfo.connect(lg).connect(carrier.frequency);
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(1100, now);
+      bp.Q.setValueAtTime(1.4, now);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(0.14, now + 0.12);
+      g.gain.setValueAtTime(0.14, now + 0.85);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+      carrier.connect(bp).connect(g).connect(outFilter);
+      carrier.start(now);
+      lfo.start(now);
+      carrier.stop(now + 1.22);
+      lfo.stop(now + 1.22);
+      nodes.push(carrier, lfo, lg, bp, g);
+    } else if (kind.includes('rustle')) {
+      connectNoise(true, 1650, 0.85, 0.22, false, 0.26);
+    } else if (kind === 'ui' || kind.includes('ui_click')) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(920, now);
+      osc.frequency.exponentialRampToValueAtTime(460, now + 0.045);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.24, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+      osc.connect(g).connect(outFilter);
+      osc.start(now);
+      osc.stop(now + 0.07);
       nodes.push(osc, g);
     } else if (kind.includes('music')) {
-      const osc = ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(110, now);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.06, now);
-      osc.connect(g).connect(outFilter);
-      osc.start(now);
-      nodes.push(osc, g);
+      // Soft Nordic minor fifth ambient pad (D3 + A3 + F4)
+      for (const [freq, amp] of [
+        [146.83, 0.11],
+        [220.0, 0.08],
+        [349.23, 0.05],
+      ]) {
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now);
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.setValueAtTime(900, now);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(amp, now);
+        osc.connect(lp).connect(g).connect(outFilter);
+        osc.start(now);
+        nodes.push(osc, lp, g);
+      }
     } else {
       // Crisp natural transient fallback (step, splash, rustle, chirp)
-      connectNoise(false, 980, 1.0, 0.14, false, 0.14);
+      connectNoise(false, 980, 1.0, 0.18, false, 0.18);
     }
 
     return () => {
@@ -851,13 +1084,17 @@ export class WebAudioHybridBackend implements AudioBackend {
     const rt = this.voices.get(handle.instanceId);
     if (!rt || rt.stopped) return;
     const now = this.ctx.currentTime;
-    const safeGain = Number.isFinite(params.gain) ? Math.max(0.0001, Math.min(4.0, params.gain)) : 0.0001;
+    const safeGain = Number.isFinite(params.gain) ? Math.max(0.0001, Math.min(8.0, params.gain)) : 0.0001;
     const safeLowpass = Number.isFinite(params.lowpassHz) ? Math.max(200, Math.min(20000, params.lowpassHz)) : 18000;
-    scheduleAudioParam(rt.gainNode.gain, safeGain, now, 0.05);
+    rt.latestGain = safeGain;
+    scheduleAudioParam(rt.gainNode.gain, rt.paused ? 0.0001 : safeGain, now, 0.05);
     scheduleAudioParam(rt.filterNode.frequency, safeLowpass, now, 0.08);
-    if (rt.bufferSource && Number.isFinite(params.pitch)) {
+    if (Number.isFinite(params.pitch)) {
       const safePitch = Math.max(0.25, Math.min(2.5, params.pitch));
-      scheduleAudioParam(rt.bufferSource.playbackRate, safePitch, now, 0.06);
+      rt.latestPitch = safePitch;
+      if (rt.bufferSource) {
+        scheduleAudioParam(rt.bufferSource.playbackRate, safePitch, now, 0.06);
+      }
     }
     if (rt.pannerNode && params.position) {
       if (rt.pannerNode.positionX && typeof rt.pannerNode.positionX.setValueAtTime === 'function') {

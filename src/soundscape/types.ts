@@ -112,6 +112,7 @@ export interface AssetDefinition {
   embeddedThunder?: boolean;
   placeholder?: boolean;
   durationSec?: number;
+  gainScale?: number;
   loopable?: boolean;
   tags?: string[];
 }
@@ -569,6 +570,7 @@ export type InstanceLifecycleState =
   | 'paused'
   | 'virtualised'
   | 'stopping'
+  | 'stopped'
   | 'completed';
 
 export interface ActiveVoiceSnapshot {
@@ -588,6 +590,9 @@ export interface ActiveVoiceSnapshot {
   elapsedSec: number;
   durationSec: number;
   reason: string;
+  isAudition?: boolean;
+  userPaused?: boolean;
+  stoppedAtRealMs?: number;
 }
 
 export interface RuleDiagnosticsRow {
@@ -638,6 +643,7 @@ export interface DiagnosticsSnapshot {
   };
   biomeMix: Array<{ biome: BiomeId; weight: number }>;
   voices: ActiveVoiceSnapshot[];
+  stoppedVoices?: ActiveVoiceSnapshot[];
   virtualCount: number;
   activeCount: number;
   queuedCount: number;

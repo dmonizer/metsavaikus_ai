@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { X, Volume2, VolumeX, Play, RefreshCw, Zap } from 'lucide-react';
+import { X, Volume2, VolumeX, Play, Pause, Square, RefreshCw, Zap, RotateCcw } from 'lucide-react';
 import type { DiagnosticsSnapshot, ValidationIssue } from '../soundscape/types';
 import { formatGameHour } from '../game/survivalEngine';
 
@@ -10,6 +10,11 @@ export interface SoundscapeDiagnosticsOverlayProps {
   onClose: () => void;
   onTriggerEvent: (type: string, intensity?: number) => void;
   onAuditionSound: (soundId: string) => boolean;
+  onStopAudition: () => number;
+  onPauseVoice?: (instanceId: string) => boolean;
+  onResumeVoice?: (instanceId: string) => boolean;
+  onStopVoice?: (instanceId: string) => boolean;
+  onClearQuotas: () => void;
   onSetBusVolume: (busId: string, volume: number) => void;
   onSetBusMuted: (busId: string, muted: boolean) => void;
   onSetMusicEnabled: (enabled: boolean) => void;
@@ -42,6 +47,11 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
   onClose,
   onTriggerEvent,
   onAuditionSound,
+  onStopAudition,
+  onPauseVoice,
+  onResumeVoice,
+  onStopVoice,
+  onClearQuotas,
   onSetBusVolume,
   onSetBusMuted,
   onSetMusicEnabled,
@@ -55,6 +65,7 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
     availableSoundIds[0] ?? 'forest_wind_loop'
   );
   const [auditionFeedback, setAuditionFeedback] = useState<string | null>(null);
+  const [quotaFeedback, setQuotaFeedback] = useState<string | null>(null);
   const [configText, setConfigText] = useState<string>('');
   const [reloadStatus, setReloadStatus] = useState<{
     ok: boolean;
@@ -102,13 +113,31 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
     }
   };
 
+  const activeAuditionVoices = (snapshot?.voices ?? []).filter(
+    (v) => v.isAudition && v.state !== 'completed'
+  );
+
   const handleAudition = () => {
+    onStopAudition();
     const ok = onAuditionSound(selectedSoundId);
     setAuditionFeedback(
       ok
         ? `Auditioning "${selectedSoundId}"`
         : `Unable to audition "${selectedSoundId}"`
     );
+  };
+
+  const handleStopAudition = () => {
+    const count = onStopAudition();
+    setAuditionFeedback(
+      count > 0 ? 'Audition stopped' : 'No active audition voice'
+    );
+  };
+
+  const handleClearQuotas = () => {
+    onClearQuotas();
+    setQuotaFeedback('Saved quotas & cooldowns cleared');
+    window.setTimeout(() => setQuotaFeedback(null), 2500);
   };
 
   return (
@@ -243,70 +272,153 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
               </div>
             </div>
 
-            {/* Active & virtualised voices table */}
+            {/* Active, paused, virtualised & recently stopped voices table */}
             <div className="rounded bg-[#111914] border border-white/10 overflow-hidden">
-              <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between">
+              <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between gap-2">
                 <span className="text-[10px] uppercase tracking-wider text-[#95ab94]">
-                  Active & Virtualised Voices ({snapshot.voices.length})
+                  Voices ({snapshot.voices.length}
+                  {(snapshot.stoppedVoices?.length ?? 0) > 0
+                    ? ` + ${snapshot.stoppedVoices!.length} stopped`
+                    : ''}
+                  )
                 </span>
                 <span className="font-mono text-[10px] text-[#9eb29d]">
-                  Loaded {snapshot.assetStatus.loaded} · Procedural {snapshot.assetStatus.procedural}
+                  Loaded {snapshot.assetStatus.loaded}
+                  {snapshot.assetStatus.pending > 0 ? ` · Pending ${snapshot.assetStatus.pending}` : ''}
+                  {' · '}Procedural {snapshot.assetStatus.procedural}
+                  {snapshot.assetStatus.failed.length > 0 ? ` · Failed ${snapshot.assetStatus.failed.length}` : ''}
                 </span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full table-fixed text-left border-collapse font-mono text-[10.5px]">
                   <thead>
                     <tr className="border-b border-white/10 text-[#8fa58e] bg-[#0e1510]">
-                      <th className="py-1.5 px-1.5 w-[34%]">Sound</th>
-                      <th className="py-1.5 px-1.5 w-[25%]">Bus</th>
+                      <th className="py-1.5 px-1.5 w-[29%]">Sound</th>
+                      <th className="py-1.5 px-1.5 w-[22%]">Bus</th>
                       <th className="py-1.5 px-1.5 w-[13%]">State</th>
-                      <th className="py-1.5 px-1.5 w-[9%] text-right">Dist</th>
-                      <th className="py-1.5 px-1.5 w-[8%] text-right">Gain</th>
-                      <th className="py-1.5 px-1.5 w-[11%] text-right">LPF</th>
+                      <th className="py-1.5 px-1.5 w-[8%] text-right">Dist</th>
+                      <th className="py-1.5 px-1.5 w-[7%] text-right">Gain</th>
+                      <th className="py-1.5 px-1.5 w-[9%] text-right">LPF</th>
+                      <th className="py-1.5 px-1.5 w-[12%] text-right">Ctrl</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {snapshot.voices.length === 0 ? (
+                    {snapshot.voices.length === 0 && (snapshot.stoppedVoices?.length ?? 0) === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-3 px-2 text-center text-[#7c907b]">
+                        <td colSpan={7} className="py-3 px-2 text-center text-[#7c907b]">
                           No active sound instances
                         </td>
                       </tr>
                     ) : (
-                      snapshot.voices.map((v) => (
-                        <tr
-                          key={v.instanceId}
-                          className="border-b border-white/5 hover:bg-white/3"
-                        >
-                          <td className="py-1.5 px-1.5 text-[#e7f0e5] truncate">
-                            <div className="truncate" title={v.soundId}>{v.soundId}</div>
-                            <div className="text-[9.5px] text-[#839782] truncate" title={v.reason}>{v.reason}</div>
-                          </td>
-                          <td className="py-1.5 px-1.5 text-[#a8bca7] truncate" title={v.bus}>{v.bus}</td>
-                          <td className="py-1.5 px-1.5 truncate">
-                            <span
-                              className={
-                                v.state === 'virtualised'
-                                  ? 'text-[#dfb86c]'
-                                  : v.state === 'playing'
-                                    ? 'text-[#89cb91]'
-                                    : 'text-[#a5b9a4]'
-                              }
-                            >
-                              {v.state}
-                            </span>
-                          </td>
-                          <td className="py-1.5 px-2 text-right tabular-nums text-[#bfd2bd]">
-                            {v.distanceM !== null ? `${v.distanceM.toFixed(1)}m` : '2D'}
-                          </td>
-                          <td className="py-1.5 px-2 text-right tabular-nums text-[#d6e4d4]">
-                            {v.effectiveGain.toFixed(2)}
-                          </td>
-                          <td className="py-1.5 px-2 text-right tabular-nums text-[#a6baa5]">
-                            {Math.round(v.lowpassHz)}Hz
-                          </td>
-                        </tr>
-                      ))
+                      [...snapshot.voices, ...(snapshot.stoppedVoices ?? [])].map((v) => {
+                        const isStopped = v.state === 'stopped';
+                        const isPaused = v.state === 'paused';
+                        const canPauseOrResume =
+                          !isStopped &&
+                          (v.state === 'playing' || v.state === 'starting' || v.state === 'stopping' || isPaused);
+                        const stoppedRemainSec =
+                          isStopped && v.stoppedAtRealMs !== undefined
+                            ? Math.max(0, 5 - (snapshot.realTimeMs - v.stoppedAtRealMs) / 1000)
+                            : 0;
+                        return (
+                          <tr
+                            key={`${v.instanceId}-${isStopped ? 'stopped' : 'live'}`}
+                            data-testid={`voice-row-${v.instanceId}`}
+                            data-voice-state={v.state}
+                            className={`border-b border-white/5 ${
+                              isStopped ? 'bg-[#2a1212]/55' : 'hover:bg-white/3'
+                            }`}
+                          >
+                            <td className="py-1.5 px-1.5 truncate">
+                              <div
+                                className={`truncate ${isStopped ? 'text-[#f29b9b]' : 'text-[#e7f0e5]'}`}
+                                title={v.soundId}
+                              >
+                                {v.soundId}
+                              </div>
+                              <div className="text-[9.5px] text-[#839782] truncate" title={v.reason}>
+                                {v.reason}
+                              </div>
+                            </td>
+                            <td className="py-1.5 px-1.5 text-[#a8bca7] truncate" title={v.bus}>
+                              {v.bus}
+                            </td>
+                            <td className="py-1.5 px-1.5 truncate">
+                              <span
+                                className={
+                                  isStopped
+                                    ? 'text-[#f26b6b] font-semibold'
+                                    : v.state === 'virtualised'
+                                      ? 'text-[#dfb86c]'
+                                      : isPaused
+                                        ? 'text-[#e3b568] font-medium'
+                                        : v.state === 'playing'
+                                          ? 'text-[#89cb91]'
+                                          : 'text-[#a5b9a4]'
+                                }
+                              >
+                                {v.state}
+                              </span>
+                            </td>
+                            <td className="py-1.5 px-1.5 text-right tabular-nums text-[#bfd2bd]">
+                              {v.distanceM !== null ? `${v.distanceM.toFixed(1)}m` : '2D'}
+                            </td>
+                            <td className="py-1.5 px-1.5 text-right tabular-nums text-[#d6e4d4]">
+                              {v.effectiveGain.toFixed(2)}
+                            </td>
+                            <td className="py-1.5 px-1.5 text-right tabular-nums text-[#a6baa5]">
+                              {Math.round(v.lowpassHz)}Hz
+                            </td>
+                            <td className="py-1.5 px-1.5 text-right">
+                              {isStopped ? (
+                                <span
+                                  data-testid={`voice-stopped-ttl-${v.instanceId}`}
+                                  className="tabular-nums text-[10px] text-[#f27b7b]"
+                                >
+                                  {stoppedRemainSec.toFixed(1)}s
+                                </span>
+                              ) : (
+                                <div className="inline-flex items-center justify-end gap-1">
+                                  {canPauseOrResume && (
+                                    <button
+                                      type="button"
+                                      data-testid={`voice-pause-btn-${v.instanceId}`}
+                                      onClick={() =>
+                                        isPaused
+                                          ? onResumeVoice?.(v.instanceId)
+                                          : onPauseVoice?.(v.instanceId)
+                                      }
+                                      aria-label={isPaused ? `Resume ${v.soundId}` : `Pause ${v.soundId}`}
+                                      title={isPaused ? 'Resume voice' : 'Pause voice'}
+                                      className={`w-5 h-5 inline-flex items-center justify-center rounded border cursor-pointer ${
+                                        isPaused
+                                          ? 'bg-[#2a4530] border-[#6d9a77]/65 text-[#eaf5eb] hover:bg-[#36593e]'
+                                          : 'bg-[#17231c] border-white/15 text-[#cfe0cd] hover:bg-[#24342a]'
+                                      }`}
+                                    >
+                                      {isPaused ? (
+                                        <Play className="w-2.5 h-2.5" />
+                                      ) : (
+                                        <Pause className="w-2.5 h-2.5" />
+                                      )}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    data-testid={`voice-stop-btn-${v.instanceId}`}
+                                    onClick={() => onStopVoice?.(v.instanceId)}
+                                    aria-label={`Stop ${v.soundId}`}
+                                    title="Stop voice"
+                                    className="w-5 h-5 inline-flex items-center justify-center rounded bg-[#2c1918] hover:bg-[#442422] border border-[#8e534d]/50 text-[#f0b4ae] cursor-pointer"
+                                  >
+                                    <Square className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -329,7 +441,24 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
               <span className="font-mono text-[11px] text-[#9eb29d] tabular-nums">
                 {filteredRules.length} rules
               </span>
+              <button
+                type="button"
+                data-testid="diag-clear-quotas-btn"
+                onClick={handleClearQuotas}
+                className="px-2.5 py-1.5 rounded bg-[#2a1f1a] hover:bg-[#3b2b23] border border-[#9e7762]/50 text-[11px] font-medium text-[#f2dfd3] flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Clear Quotas
+              </button>
             </div>
+            {quotaFeedback && (
+              <div
+                data-testid="diag-clear-quotas-status"
+                className="font-mono text-[11px] text-[#a7d4aa]"
+              >
+                {quotaFeedback}
+              </div>
+            )}
 
             <div className="rounded bg-[#111914] border border-white/10 overflow-hidden">
               <table className="w-full text-left border-collapse font-mono text-[11px]">
@@ -356,6 +485,11 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
                         {r.cooldownRemainingSimSec > 0 && (
                           <div className="text-[10px] text-[#dfb86c]">
                             cd {r.cooldownRemainingSimSec.toFixed(0)}s
+                          </div>
+                        )}
+                        {r.nextScheduledSimSec !== null && r.eligible && (
+                          <div className="text-[10px] text-[#8dc2a8]">
+                            next {Math.round(r.nextScheduledSimSec)}s sim
                           </div>
                         )}
                       </td>
@@ -517,13 +651,28 @@ export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlay
                   <Play className="w-3.5 h-3.5" />
                   Audition
                 </button>
+                <button
+                  type="button"
+                  data-testid="diag-audition-stop-btn"
+                  onClick={handleStopAudition}
+                  className={`px-3 py-1.5 rounded border text-xs font-medium flex items-center gap-1.5 cursor-pointer ${
+                    activeAuditionVoices.length > 0
+                      ? 'bg-[#4d2624] hover:bg-[#66312e] border-[#c26e68]/70 text-[#fdeeed]'
+                      : 'bg-[#1b241f] hover:bg-[#243129] border-white/15 text-[#9fb29e]'
+                  }`}
+                >
+                  <Square className="w-3 h-3" />
+                  Stop
+                </button>
               </div>
-              {auditionFeedback && (
+              {(activeAuditionVoices.length > 0 || auditionFeedback) && (
                 <div
                   data-testid="diag-audition-status"
                   className="font-mono text-[11px] text-[#a7d4aa]"
                 >
-                  {auditionFeedback}
+                  {activeAuditionVoices.length > 0
+                    ? `Playing preview: ${activeAuditionVoices.map((v) => v.soundId).join(', ')}`
+                    : auditionFeedback}
                 </div>
               )}
 

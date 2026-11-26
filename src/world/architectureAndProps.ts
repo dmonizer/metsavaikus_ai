@@ -19,13 +19,13 @@ import { SkyFrameState, WeatherId } from './weatherAndSky';
 import { createReflectiveBogWater } from './waterSurface';
 import { sphereIntersectsFrustum } from './forestFrustumCuller';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
-import { ItemId } from '../game/itemCatalog';
+import { ITEM_CATALOG, ItemId, MUSHROOM_TO_ITEM_ID } from '../game/itemCatalog';
 import { ShelterQuality } from '../game/survivalEngine';
 import { BoxCollider } from './spatialPhysics';
 export type { BoxCollider } from './spatialPhysics';
 import { ShelterGeometry, containsFootprint } from './shelterGeometry';
 import { buildPantry } from './pantry';
-import { getMushroomCopy, t } from '../i18n/i18n';
+import { getItemName, getMushroomCopy, t } from '../i18n/i18n';
 
 export interface CircleCollider {
   x: number;
@@ -230,6 +230,25 @@ export interface WorldPropsContext {
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera
   ) => void;
+  spawnMushroomAt: (
+    x: number,
+    z: number,
+    species: MushroomSpecies
+  ) => { x: number; y: number; z: number; species: MushroomSpecies };
+  spawnHutAt: (
+    x: number,
+    z: number,
+    rotY?: number,
+    decayState?: HutDecayState,
+    name?: string
+  ) => { x: number; y: number; z: number; decayState: HutDecayState };
+  spawnCampfireAt: (x: number, z: number, lit?: boolean) => CampfireInfo;
+  spawnPickupItemAt: (
+    x: number,
+    z: number,
+    itemId: ItemId
+  ) => { x: number; y: number; z: number; itemId: ItemId };
+  getInspectableMeshes: () => THREE.Object3D[];
   dispose: () => void;
 }
 
@@ -469,6 +488,9 @@ export function buildArchitectureAndProps(
     isLowPowerGpu
   );
   const swampWater = bogWater.mesh;
+  swampWater.userData.debugLayer = 'water';
+  swampWater.userData.debugName = 'Rabajärv (Bog Lake Water)';
+  swampWater.userData.debugMeta = { waterY: SWAMP_WATER_Y, radius: waterRadius };
   scene.add(swampWater);
   disposables.push(bogWater);
 
@@ -738,6 +760,9 @@ export function buildArchitectureAndProps(
     const group = new THREE.Group();
     group.position.set(x, y, z);
     group.rotation.y = rotY;
+    group.userData.debugLayer = 'structure';
+    group.userData.debugName = name;
+    group.userData.debugMeta = { buildingId, decay, abandoned, roofStyle };
     scene.add(group);
     structureNodes.push({ obj: group, x, z, maxDistSq: 255 * 255 });
 
@@ -1091,6 +1116,9 @@ export function buildArchitectureAndProps(
       doorCollider.active = !doorOpen;
 
       const doorId = `door_${buildingId}`;
+      doorMesh.userData.debugLayer = 'door';
+      doorMesh.userData.debugName = abandoned ? 'Old Cabin Door' : `${name} Door`;
+      doorMesh.userData.debugMeta = { doorId, buildingId, abandoned };
       registerInteractive(doorMesh, {
         name: abandoned ? t('prop.oldCabinDoor') : t('prop.namedDoor', { name }),
         desc: abandoned ? t('prop.doorDescAbandoned') : t('prop.doorDescIntact'),
@@ -1314,6 +1342,9 @@ export function buildArchitectureAndProps(
     const wy = getTerrainHeight(wx, wz);
     const wellGroup = new THREE.Group();
     wellGroup.position.set(wx, wy, wz);
+    wellGroup.userData.debugLayer = 'well';
+    wellGroup.userData.debugName = stale ? `Decrepit Well (${label})` : `Spring Well (${label})`;
+    wellGroup.userData.debugMeta = { stale, label };
 
     const wellShadowGeo = new THREE.PlaneGeometry(3.2, 3.2);
     wellShadowGeo.rotateX(-Math.PI / 2);
@@ -1483,6 +1514,9 @@ export function buildArchitectureAndProps(
     const fy = getTerrainHeight(fx, fz);
     const pit = new THREE.Group();
     pit.position.set(fx, fy, fz);
+    pit.userData.debugLayer = 'campfire';
+    pit.userData.debugName = `Campfire (${label})`;
+    pit.userData.debugMeta = { id, initiallyLit };
     const stoneParts: THREE.BufferGeometry[] = [];
     for (let i = 0; i < 9; i++) {
       const a = (i / 9) * Math.PI * 2;
@@ -1762,6 +1796,10 @@ export function buildArchitectureAndProps(
       const sleeperGeo = new THREE.BoxGeometry(1.55, 0.09, 0.16);
       const plankInst = new THREE.InstancedMesh(twinPlankGeo, plankMat, allSegs.length);
       const sleeperInst = new THREE.InstancedMesh(sleeperGeo, sleeperMat, allSegs.length);
+      plankInst.userData.debugLayer = 'boardwalk';
+      plankInst.userData.debugName = 'Swamp Boardwalk Planks';
+      sleeperInst.userData.debugLayer = 'boardwalk';
+      sleeperInst.userData.debugName = 'Swamp Boardwalk Sleepers';
       plankInst.receiveShadow = true;
       plankInst.castShadow = shadows;
       sleeperInst.receiveShadow = true;
@@ -1782,6 +1820,7 @@ export function buildArchitectureAndProps(
       plankInst.instanceMatrix.needsUpdate = true;
       sleeperInst.instanceMatrix.needsUpdate = true;
       scene.add(plankInst, sleeperInst);
+      structureNodes.push({ obj: plankInst, x: bp.bogCenterX, z: bp.bogCenterZ, maxDistSq: 450 * 450 });
       disposables.push(twinPlankGeo, sleeperGeo, plankMat, sleeperMat);
     }
   }
@@ -2919,7 +2958,90 @@ export function buildArchitectureAndProps(
         showToast(`${copy.name}: ${copy.note}`);
       },
     });
+    g.userData.debugLayer = 'mushroom';
+    g.userData.debugName = MUSHROOM_SPECIES_INFO[species].estonian;
+    g.userData.debugMeta = { species, edibility: MUSHROOM_SPECIES_INFO[species].edibility };
     mushroomNodes.push({ mesh: g, x, z, entry });
+  }
+
+  function spawnPickupItemAt(
+    x: number,
+    z: number,
+    itemId: ItemId
+  ): { x: number; y: number; z: number; itemId: ItemId } {
+    for (const [sp, mItemId] of Object.entries(MUSHROOM_TO_ITEM_ID) as Array<[MushroomSpecies, ItemId]>) {
+      if (mItemId === itemId) {
+        spawnMushroom(x, z, sp);
+        return { x, y: getTerrainHeight(x, z), z, itemId };
+      }
+    }
+    if (itemId === 'firewood') {
+      spawnFirewoodLog(x, z);
+      return { x, y: getTerrainHeight(x, z) + 0.12, z, itemId };
+    }
+
+    const def = ITEM_CATALOG[itemId];
+    const y = getTerrainHeight(x, z) + 0.16;
+    const itemGroup = new THREE.Group();
+    itemGroup.position.set(x, y, z);
+    itemGroup.rotation.y = rand() * Math.PI * 2;
+    itemGroup.userData.debugLayer = 'pickup';
+    itemGroup.userData.debugName = def.name;
+    itemGroup.userData.debugMeta = { itemId, category: def.category, weightKg: def.weightKg };
+
+    const catColor =
+      def.category === 'water'
+        ? 0x3b7699
+        : def.category === 'food'
+          ? 0x9c6538
+          : def.category === 'clothing'
+            ? 0x3c5942
+            : def.category === 'camp'
+              ? 0x5c6d45
+              : def.category === 'navigation'
+                ? 0xb58d46
+                : 0x4f565d;
+    const mat = new THREE.MeshStandardMaterial({
+      color: catColor,
+      roughness: def.category === 'water' ? 0.35 : 0.78,
+      metalness: def.category === 'water' || def.category === 'gear' ? 0.25 : 0.04,
+    });
+    const bodyGeo =
+      def.category === 'water'
+        ? new THREE.CylinderGeometry(0.085, 0.085, 0.28, 12)
+        : def.category === 'camp'
+          ? new THREE.CylinderGeometry(0.14, 0.14, 0.42, 10)
+          : new THREE.BoxGeometry(0.28, 0.16, 0.22);
+    if (def.category === 'camp') {
+      bodyGeo.rotateZ(Math.PI / 2);
+    }
+    const bodyMesh = new THREE.Mesh(bodyGeo, mat);
+    bodyMesh.castShadow = shadows;
+    bodyMesh.receiveShadow = true;
+    const hitProxy = new THREE.Mesh(woodHitProxyGeo, woodHitProxyMat);
+    itemGroup.add(bodyMesh, hitProxy);
+    scene.add(itemGroup);
+    disposables.push(mat, bodyGeo);
+
+    const entry = registerInteractive(itemGroup, {
+      name: getItemName(itemId),
+      desc: def.description,
+      getName: () => getItemName(itemId),
+      getDesc: () => def.description,
+      pickupItemId: itemId,
+      pickupLabel: getItemName(itemId),
+      getPickupLabel: () => getItemName(itemId),
+      carryable: false,
+      kickable: true,
+      isDynamic: true,
+      radius: 0.2,
+      mass: Math.max(0.3, def.weightKg),
+      onGroundYOffset: 0.14,
+    });
+    entry.resting = true;
+    pickupItems.push({ x, z, entry });
+    lightShadowsDirty = true;
+    return { x, y, z, itemId };
   }
 
   const allSpecies: MushroomSpecies[] = [
@@ -3734,6 +3856,66 @@ export function buildArchitectureAndProps(
     }),
     renderWaterReflection: (renderer, renderScene, cam) => {
       bogWater.renderReflection(renderer, renderScene, cam);
+    },
+    spawnMushroomAt: (x: number, z: number, species: MushroomSpecies) => {
+      spawnMushroom(x, z, species);
+      lightShadowsDirty = true;
+      return { x, y: getTerrainHeight(x, z), z, species };
+    },
+    spawnHutAt: (
+      x: number,
+      z: number,
+      rotY = 0,
+      decayState: HutDecayState = 'intact',
+      name?: string
+    ) => {
+      buildEstonianLogHouse(x, z, rotY, {
+        w: 6.4,
+        d: 4.8,
+        h: 2.55,
+        roofStyle: decayState === 'intact' ? 'shingle' : 'thatch',
+        warmWood: decayState === 'intact',
+        abandoned: decayState !== 'intact',
+        decayState,
+        porch: decayState === 'intact',
+        name: name ?? `Debug Hut (${decayState})`,
+      });
+      lightShadowsDirty = true;
+      return { x, y: getTerrainHeight(x, z), z, decayState };
+    },
+    spawnCampfireAt: (x: number, z: number, lit = true) => {
+      const id = `fire_debug_${campfires.length + 1}`;
+      const created = buildCampfirePit(id, 'Debug', x, z, lit);
+      lightShadowsDirty = true;
+      return {
+        id: created.id,
+        label: created.label,
+        x: created.x,
+        y: created.y,
+        z: created.z,
+        lit: created.lit,
+      };
+    },
+    spawnPickupItemAt,
+    getInspectableMeshes: () => {
+      const out: THREE.Object3D[] = [swampWater];
+      const seen = new Set<THREE.Object3D>(out);
+      for (let i = 0; i < structureNodes.length; i++) {
+        const obj = structureNodes[i].obj;
+        if (obj.visible && !seen.has(obj)) {
+          seen.add(obj);
+          out.push(obj);
+        }
+      }
+      for (let i = 0; i < interactiveObjects.length; i++) {
+        const entry = interactiveObjects[i];
+        if (entry.gathered || !entry.mesh.visible) continue;
+        if (!seen.has(entry.mesh)) {
+          seen.add(entry.mesh);
+          out.push(entry.mesh);
+        }
+      }
+      return out;
     },
     dispose: () => {
       shelters.dispose();

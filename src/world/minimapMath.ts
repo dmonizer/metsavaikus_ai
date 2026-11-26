@@ -291,6 +291,12 @@ export class FogOfWarMap {
     return clamp(Math.max(1, Math.round(raw)), 0, 100);
   }
 
+  revealAll(): void {
+    this.cells.fill(255);
+    this.revealedWeightSum = this.cells.length * 255;
+    this._version++;
+  }
+
   reset(): void {
     this.cells.fill(0);
     this.revealedWeightSum = 0;

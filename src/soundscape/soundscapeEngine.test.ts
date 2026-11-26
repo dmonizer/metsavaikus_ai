@@ -1370,4 +1370,338 @@ test('player.fall triggers distinct surface sounds, selects heavy splash on high
   engine.dispose();
 });
 
+test('wolf_howl resolves distinct per-night quotas across consecutive nights and resetQuotasAndCooldowns clears limits', () => {
+  const { engine, realClock, backend } = createTestEngine({ seed: 2026 });
+
+  // Night 1 (Day 0): 23:05 -> 03:55
+  let simMs = 23.08 * 3600_000;
+  for (let i = 0; i < 95; i++) {
+    realClock.advanceMs(3000);
+    simMs += 180_000; // 3m steps
+    const hr = (simMs / 3600_000) % 24;
+    engine.step(0.1, makeWorld({ simMs, hour: hr, biome: 'forest' }));
+  }
+  const night1Plays = backend.records.filter((r) => r.soundId === 'wolf_howl').length;
+  assert.ok(
+    night1Plays >= 1 && night1Plays <= 2,
+    `Expected 1..2 wolf howls on Night 1, got ${night1Plays}`
+  );
+
+  // Advance to Night 2 (24h later): must NOT be stuck in all_time quota!
+  simMs = 24 * 3600_000 + 23.08 * 3600_000;
+  for (let i = 0; i < 95; i++) {
+    realClock.advanceMs(3000);
+    simMs += 180_000;
+    const hr = (simMs / 3600_000) % 24;
+    engine.step(0.1, makeWorld({ simMs, day: 2, hour: hr, biome: 'forest' }));
+  }
+  const totalAfterNight2 = backend.records.filter((r) => r.soundId === 'wolf_howl').length;
+  assert.ok(
+    totalAfterNight2 > night1Plays,
+    `Expected wolf_howl to trigger again on Night 2 (night1=${night1Plays}, totalAfterNight2=${totalAfterNight2})`
+  );
+
+  // Clearing quotas resets window counters and cooldowns cleanly
+  engine.resetQuotasAndCooldowns();
+  const wolfRule = engine.getDiagnosticsSnapshot().rules.find((r) => r.soundId === 'wolf_howl');
+  assert.equal(wolfRule?.quotaUsed, 0);
+  assert.equal(wolfRule?.cooldownRemainingSimSec, 0);
+
+  engine.dispose();
+});
+
+test('F9 auditionSound plays unobstructed near-listener previews across loops/features/indoors and stopAuditionSounds halts only auditions', () => {
+  const { engine, realClock, backend } = createTestEngine({ seed: 101 });
+
+  // Closed wooden house + gunshot disturbance + daytime forest + missing water feature
+  const simMs = 12 * 3600_000;
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs,
+      hour: 12,
+      biome: 'forest',
+      windSpeed: 0.7,
+      structure: {
+        id: 'house_1',
+        quality: 'warm_house',
+        profileId: 'wooden_house',
+        enclosure: 0.92,
+        roofCoverage: 1,
+        hasRoof: true,
+        portalOpenness: 0.05,
+      },
+    })
+  );
+
+  // Trigger gunshot disturbance near listener
+  engine.emitEvent({
+    type: 'player.weapon.fire',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: 1.7, z: 0 },
+    intensity: 1,
+    payload: {},
+  });
+  realClock.advanceMs(300);
+  engine.step(
+    0.1,
+    makeWorld({
+      simMs: simMs + 300,
+      hour: 12,
+      biome: 'forest',
+      structure: {
+        id: 'house_1',
+        quality: 'warm_house',
+        profileId: 'wooden_house',
+        enclosure: 0.92,
+        roofCoverage: 1,
+        hasRoof: true,
+        portalOpenness: 0.05,
+      },
+    })
+  );
+
+  // Audition:
+  // 1) distant spatial nocturnal sound (wolf_howl)
+  // 2) feature-bound sound with no spatialQuery water point (occasional_waterside_splash)
+  // 3) continuous ambient loop (wind_open) even though live wind_open is already active
+  // 4) movement gait loop (forest_floor_walk) while idle indoors
+  assert.equal(engine.auditionSound('wolf_howl'), true);
+  assert.equal(engine.auditionSound('occasional_waterside_splash'), true);
+  assert.equal(engine.auditionSound('wind_open'), true);
+  assert.equal(engine.auditionSound('forest_floor_walk'), true);
+
+  const diag = engine.getDiagnosticsSnapshot();
+  const auditions = diag.voices.filter((v) => v.isAudition);
+  assert.equal(auditions.length, 4);
+  for (const v of auditions) {
+    assert.equal(v.spatialMode, 'non_spatial', `${v.soundId} audition must be non_spatial`);
+    assert.equal(v.distanceM, null, `${v.soundId} audition must be near-listener`);
+    assert.equal(v.lowpassHz, 20000, `${v.soundId} audition must bypass indoor muffling`);
+    assert.ok(v.effectiveGain >= 0.35, `${v.soundId} audition gain too low: ${v.effectiveGain}`);
+  }
+
+  // Subsequent gameplay steps (even switching to night & idle) must NOT stop active loop auditions!
+  realClock.advanceMs(200);
+  engine.step(0.2, makeWorld({ simMs: simMs + 500, hour: 23, biome: 'swamp', activity: 'idle' }));
+  const afterStepAuditions = engine.getDiagnosticsSnapshot().voices.filter((v) => v.isAudition);
+  assert.ok(afterStepAuditions.some((v) => v.soundId === 'wind_open'));
+  assert.ok(afterStepAuditions.some((v) => v.soundId === 'forest_floor_walk'));
+
+  // Paused F9 stepping advances finite audition clips without affecting non-audition voices
+  for (let i = 0; i < 45; i++) {
+    realClock.advanceMs(200);
+    engine.stepAuditionVoices(0.2);
+  }
+  const postPauseAuditions = engine.getDiagnosticsSnapshot().voices.filter((v) => v.isAudition);
+  assert.equal(
+    postPauseAuditions.some((v) => v.soundId === 'wolf_howl'),
+    false,
+    'Finite wolf_howl audition should complete during paused stepAuditionVoices'
+  );
+  assert.equal(
+    postPauseAuditions.some((v) => v.soundId === 'wind_open'),
+    true,
+    'Infinite loop wind_open audition should keep playing until stopped'
+  );
+
+  // Explicit Stop halts remaining audition previews while preserving live ambience
+  const stoppedCount = engine.stopAuditionSounds();
+  assert.ok(stoppedCount >= 2);
+  assert.equal(
+    engine.getDiagnosticsSnapshot().voices.filter((v) => v.isAudition).length,
+    0
+  );
+  const liveWind = backend.records.find(
+    (r) => r.soundId === 'wind_open' && !r.stopped
+  );
+  assert.ok(liveWind, 'Live gameplay wind_open must stay running after stopAuditionSounds');
+
+  engine.dispose();
+});
+
+test('Voice pause/resume locks out autoResume while paused and stopped voices stay visible for 5 seconds', () => {
+  const realClock = new ManualClock(50_000);
+  const backend = new MockAudioBackend();
+  const engine = new SoundscapeEngine({
+    config: DEFAULT_SOUNDSCAPE_CONFIG,
+    backend,
+    realClock,
+    rng: new SeededRng(42),
+  });
+
+  let simMs = 2000;
+  engine.step(0.25, makeWorld({ simMs, hour: 10, biome: 'forest', windSpeed: 0.45 }));
+
+  const diag1 = engine.getDiagnosticsSnapshot();
+  const windVoice = diag1.voices.find((v) => v.soundId === 'wind_open');
+  assert.ok(windVoice, 'Expected active wind_open voice');
+
+  // Pause the voice manually
+  assert.equal(engine.pauseVoice(windVoice.instanceId), true);
+  const afterPause = engine.getDiagnosticsSnapshot();
+  const pausedWind = afterPause.voices.find((v) => v.instanceId === windVoice.instanceId);
+  assert.ok(pausedWind);
+  assert.equal(pausedWind.state, 'paused');
+  assert.equal(pausedWind.userPaused, true);
+  const backendWind = backend.records.find((r) => r.instanceId === windVoice.instanceId);
+  assert.equal(backendWind?.paused, true);
+
+  // Subsequent simulation ticks must NOT auto-resume a userPaused voice
+  simMs += 400;
+  realClock.advanceMs(400);
+  engine.step(0.4, makeWorld({ simMs, hour: 10, biome: 'forest', windSpeed: 0.6 }));
+  const stillPaused = engine
+    .getDiagnosticsSnapshot()
+    .voices.find((v) => v.instanceId === windVoice.instanceId);
+  assert.equal(stillPaused?.state, 'paused');
+  assert.equal(stillPaused?.userPaused, true);
+
+  // Explicit resume restores active pre-pause state ('starting' or 'playing')
+  assert.equal(engine.resumeVoice(windVoice.instanceId), true);
+  const resumed = engine
+    .getDiagnosticsSnapshot()
+    .voices.find((v) => v.instanceId === windVoice.instanceId);
+  assert.ok(resumed?.state === 'starting' || resumed?.state === 'playing');
+  assert.equal(resumed?.userPaused, false);
+  assert.equal(backendWind?.paused, false);
+
+  // Stopping a voice removes it from active voices and moves it to stoppedVoices for 5 seconds
+  assert.equal(engine.stopVoice(windVoice.instanceId), true);
+  const afterStop = engine.getDiagnosticsSnapshot();
+  assert.equal(
+    afterStop.voices.some((v) => v.instanceId === windVoice.instanceId),
+    false
+  );
+  const stoppedEntry = (afterStop.stoppedVoices ?? []).find(
+    (v) => v.instanceId === windVoice.instanceId
+  );
+  assert.ok(stoppedEntry, 'Stopped voice must appear in stoppedVoices');
+  assert.equal(stoppedEntry.state, 'stopped');
+
+  // Still visible at +4500ms (< 5000ms retention window)
+  realClock.advanceMs(4500);
+  const beforeExpiry = engine.getDiagnosticsSnapshot();
+  assert.ok(
+    (beforeExpiry.stoppedVoices ?? []).some((v) => v.instanceId === windVoice.instanceId),
+    'Stopped voice should still be retained before 5000ms elapses'
+  );
+
+  // Pruned once >= 5000ms have elapsed
+  realClock.advanceMs(600);
+  const afterExpiry = engine.getDiagnosticsSnapshot();
+  assert.equal(
+    (afterExpiry.stoppedVoices ?? []).some((v) => v.instanceId === windVoice.instanceId),
+    false,
+    'Stopped voice should expire from stoppedVoices after 5 seconds'
+  );
+
+  engine.dispose();
+});
+
+test('wildlife.call triggers wolf_howl at spatial distance, enforces night conditions/quotas/cooldowns, and supports gainScale calibration', () => {
+  const { engine, realClock, backend } = createTestEngine({ seed: 777 });
+
+  // Verify wildlife assets are preloaded and quiet recordings carry gainScale normalization
+  const wolfAsset = DEFAULT_SOUNDSCAPE_CONFIG.assets.find((a) => a.id === 'wolf_howl_mp3');
+  const owlAsset = DEFAULT_SOUNDSCAPE_CONFIG.assets.find((a) => a.id === 'tawny_owl_mp3');
+  assert.equal(wolfAsset?.preload, true);
+  assert.equal(owlAsset?.preload, true);
+  assert.ok((wolfAsset?.gainScale ?? 1) > 1);
+  assert.ok((owlAsset?.gainScale ?? 1) > 1);
+
+  // Daytime (14:00): normal wildlife.call respects conditions and does not fire wolf_howl
+  let simMs = 14 * 3600_000;
+  engine.step(0.1, makeWorld({ simMs, hour: 14, biome: 'forest', weather: 'clear' }));
+  engine.emitEvent({
+    type: 'wildlife.call',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: 2.2, z: 0 },
+    intensity: 0.9,
+    payload: { species: 'wolf_howl' },
+  });
+  assert.equal(
+    backend.records.filter((r) => r.soundId === 'wolf_howl').length,
+    0,
+    'wolf_howl should not play on non-forced wildlife.call during daytime'
+  );
+
+  // Nighttime (01:55): wildlife.call { species: 'wolf_howl' } plays spatially at distance & updates quota
+  simMs = (24 + 1 + 55 / 60) * 3600_000;
+  realClock.advanceMs(500);
+  engine.step(0.1, makeWorld({ simMs, day: 2, hour: 1 + 55 / 60, biome: 'forest', weather: 'clear' }));
+  engine.emitEvent({
+    type: 'wildlife.call',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: 2.2, z: 0 },
+    intensity: 0.9,
+    payload: { species: 'wolf_howl' },
+  });
+
+  const wolfRecs = backend.records.filter((r) => r.soundId === 'wolf_howl');
+  assert.equal(wolfRecs.length, 1, 'Expected wildlife.call to play wolf_howl at 01:55');
+  assert.ok(wolfRecs[0].initialPosition, 'wolf_howl should use generated_point spatial position');
+  const distFromListener = Math.hypot(
+    wolfRecs[0].initialPosition!.x,
+    wolfRecs[0].initialPosition!.z
+  );
+  assert.ok(
+    distFromListener >= 100 && distFromListener <= 300,
+    `Expected wolf_howl to spawn at distant forest range (110..280m), got ${distFromListener.toFixed(1)}m`
+  );
+  // Advance fade-in past 120ms and verify calibrated gain & updated rule quota
+  realClock.advanceMs(200);
+  engine.step(0.2, makeWorld({ simMs: simMs + 200, day: 2, hour: 1 + 55 / 60, biome: 'forest', weather: 'clear' }));
+  const ruleAfterFirst = engine.getDiagnosticsSnapshot().rules.find((r) => r.soundId === 'wolf_howl');
+  assert.equal(ruleAfterFirst?.quotaUsed, 1);
+  assert.ok(
+    (wolfRecs[0].gainHistory.at(-1) ?? 0) >= 0.65,
+    `Expected calibrated wolf_howl gain >= 0.65, got ${wolfRecs[0].gainHistory.at(-1)}`
+  );
+
+  // Immediate repeat emit within 1h minInterval cooldown must be suppressed
+  engine.emitEvent({
+    type: 'wildlife.call',
+    origin: 'player',
+    simulationTimestamp: simMs + 200,
+    position: { x: 0, y: 2.2, z: 0 },
+    intensity: 0.9,
+    payload: { species: 'wolf_howl' },
+  });
+  assert.equal(
+    backend.records.filter((r) => r.soundId === 'wolf_howl').length,
+    1,
+    'Immediate repeat wildlife.call should respect minInterval cooldown'
+  );
+
+  // Wait past finite clip completion + clear quotas -> wildlife.call immediately plays again
+  for (let i = 0; i < 45; i++) {
+    realClock.advanceMs(200);
+    simMs += 200;
+    engine.step(0.2, makeWorld({ simMs, day: 2, hour: 1 + 55 / 60, biome: 'forest', weather: 'clear' }));
+  }
+  engine.resetQuotasAndCooldowns();
+  engine.emitEvent({
+    type: 'wildlife.call',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: 2.2, z: 0 },
+    intensity: 0.9,
+    payload: { species: 'wolf_howl' },
+  });
+  assert.equal(
+    backend.records.filter((r) => r.soundId === 'wolf_howl').length,
+    2,
+    'wildlife.call should play wolf_howl again after resetQuotasAndCooldowns()'
+  );
+
+  engine.dispose();
+});
+
+
+
+
 

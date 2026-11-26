@@ -42,6 +42,9 @@ import { CollapseOverlay } from './components/CollapseOverlay';
 import { FullMapModal } from './components/FullMapModal';
 import { LanguageSwitcher } from './components/LanguageSwitcher';
 import { SoundscapeDiagnosticsOverlay } from './components/SoundscapeDiagnosticsOverlay';
+import { DebugConsoleOverlay } from './components/DebugConsoleOverlay';
+import { DebugOverlayHud } from './components/DebugOverlayHud';
+import type { DebugSnapshot } from './game/debugTypes';
 import { SOUNDSCAPE_SOUNDS } from './config/soundscape/sounds';
 import type { DiagnosticsSnapshot } from './soundscape/types';
 import { t as translate, TranslationKey, useLanguage } from './i18n/i18n';
@@ -146,6 +149,9 @@ export default function App() {
   const [activeCampfire, setActiveCampfire] = useState<CampfireInfo | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState<boolean>(false);
   const [diagSnapshot, setDiagSnapshot] = useState<DiagnosticsSnapshot | null>(null);
+  const [debugPanelOpen, setDebugPanelOpen] = useState<boolean>(false);
+  const [debugOverlayActive, setDebugOverlayActive] = useState<boolean>(false);
+  const [debugSnapshot, setDebugSnapshot] = useState<DebugSnapshot | null>(null);
 
   const availableSoundIds = useMemo(() => SOUNDSCAPE_SOUNDS.map((s) => s.id), []);
 
@@ -214,6 +220,23 @@ export default function App() {
   }, [diagnosticsOpen]);
 
   useEffect(() => {
+    actionsRef.current?.setDebugPanelOpen(debugPanelOpen);
+    if ((!debugPanelOpen && !debugOverlayActive) || (phase !== 'playing' && phase !== 'paused')) {
+      return;
+    }
+    const pullSnapshot = () => {
+      const next = actionsRef.current?.getDebugSnapshot() ?? null;
+      setDebugSnapshot(next);
+      if (next) {
+        setDebugOverlayActive(next.overlayEnabled);
+      }
+    };
+    pullSnapshot();
+    const timer = window.setInterval(pullSnapshot, 120);
+    return () => window.clearInterval(timer);
+  }, [debugPanelOpen, debugOverlayActive, phase]);
+
+  useEffect(() => {
     if (phase !== 'playing') {
       setBackpackOpen(false);
       setFullMapOpen(false);
@@ -221,6 +244,9 @@ export default function App() {
       setActiveCampfire(null);
       if (phase !== 'paused') {
         setDiagnosticsOpen(false);
+        setDebugPanelOpen(false);
+        setDebugOverlayActive(false);
+        setDebugSnapshot(null);
       }
     }
   }, [phase]);
@@ -243,12 +269,15 @@ export default function App() {
         } else if (diagnosticsOpen) {
           e.preventDefault();
           setDiagnosticsOpen(false);
+        } else if (debugPanelOpen) {
+          e.preventDefault();
+          setDebugPanelOpen(false);
         }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [anyGameplayModalOpen, diagnosticsOpen]);
+  }, [anyGameplayModalOpen, diagnosticsOpen, debugPanelOpen]);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -324,6 +353,9 @@ export default function App() {
       },
       onToggleDiagnostics: () => {
         setDiagnosticsOpen((prev) => !prev);
+      },
+      onToggleDebugPanel: () => {
+        setDebugPanelOpen((prev) => !prev);
       },
     }),
     [showToast]
@@ -1167,6 +1199,7 @@ export default function App() {
           }}
           onDropItem={(itemId: ItemId) => actionsRef.current?.dropItem(itemId)}
           onDropBottle={(uid) => actionsRef.current?.dropBottleByUid(uid)}
+          onDropBallast={() => actionsRef.current?.dropBallast()}
         />
       )}
 
@@ -1614,6 +1647,30 @@ export default function App() {
             setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
             return ok;
           }}
+          onStopAudition={() => {
+            const count = actionsRef.current?.stopSoundscapeAudition() ?? 0;
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+            return count;
+          }}
+          onClearQuotas={() => {
+            actionsRef.current?.resetSoundscapeQuotas();
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+          }}
+          onPauseVoice={(instanceId) => {
+            const ok = actionsRef.current?.pauseSoundscapeVoice(instanceId) ?? false;
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+            return ok;
+          }}
+          onResumeVoice={(instanceId) => {
+            const ok = actionsRef.current?.resumeSoundscapeVoice(instanceId) ?? false;
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+            return ok;
+          }}
+          onStopVoice={(instanceId) => {
+            const ok = actionsRef.current?.stopSoundscapeVoice(instanceId) ?? false;
+            setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
+            return ok;
+          }}
           onSetBusVolume={(busId, vol) => {
             actionsRef.current?.setSoundscapeBusVolume(busId, vol);
             setDiagSnapshot(actionsRef.current?.getSoundscapeDiagnostics() ?? null);
@@ -1648,6 +1705,23 @@ export default function App() {
             return res;
           }}
         />
+      )}
+
+      {/* F8 Fixed-Corner Debug Inspector HUD & Console Overlay */}
+      {(phase === 'playing' || phase === 'paused') && (
+        <>
+          <DebugOverlayHud
+            open={debugSnapshot?.overlayEnabled ?? false}
+            consoleOpen={debugPanelOpen}
+            snapshot={debugSnapshot}
+          />
+          <DebugConsoleOverlay
+            open={debugPanelOpen}
+            snapshot={debugSnapshot}
+            actions={actionsRef.current?.getDebugActions() ?? null}
+            onClose={() => setDebugPanelOpen(false)}
+          />
+        </>
       )}
     </div>
   );

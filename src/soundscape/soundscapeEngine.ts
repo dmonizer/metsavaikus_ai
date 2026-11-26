@@ -146,6 +146,7 @@ export class SoundscapeEngine {
 
   // Validation history for diagnostics
   private lastValidationIssues: ValidationIssue[] = [];
+  private readonly eventObservers = new Set<(event: SimulationEvent) => void>();
 
   constructor(opts: SoundscapeEngineOptions) {
     this.normalized = normalizeAndValidateConfig(opts.config);
@@ -215,12 +216,26 @@ export class SoundscapeEngine {
     this.mixer.setBusMuted(busId, muted);
   }
 
+  subscribeEvents(cb: (event: SimulationEvent) => void): () => void {
+    this.eventObservers.add(cb);
+    return () => {
+      this.eventObservers.delete(cb);
+    };
+  }
+
   emitEvent<T = Record<string, unknown>>(input: EmitEventInput<T>): SimulationEvent<T> | null {
     const res = this.eventBus.emit(input);
     return res.event;
   }
 
   private handleEventDispatched(event: SimulationEvent): void {
+    for (const obs of this.eventObservers) {
+      try {
+        obs(event);
+      } catch {
+        // Ignore observer errors
+      }
+    }
     const world = this.lastWorld;
     if (!world) return;
 
@@ -258,10 +273,15 @@ export class SoundscapeEngine {
       });
     }
 
-    // 3. Handle material-profile sound selection for footsteps, impacts, breaks, doors
+    // 3. Handle wildlife.call events (resolves species / soundId such as wolf_howl, tawny_owl_hooting, red_fox_screech)
+    if (event.type === 'wildlife.call') {
+      this.handleWildlifeCallEvent(event, world, nowSimMs, nowRealMs);
+    }
+
+    // 4. Handle material-profile sound selection for footsteps, impacts, breaks, doors
     this.handleMaterialEventSounds(event, world, nowSimMs, nowRealMs);
 
-    // 4. Schedule declarative event reactions (with chain depth / cap / atomic quota reservation)
+    // 5. Schedule declarative event reactions (with chain depth / cap / atomic quota reservation)
     this.scheduler.scheduleReactionsForEvent({
       event,
       reactions: this.normalized.resolved.reactions,
@@ -277,6 +297,132 @@ export class SoundscapeEngine {
       maxEventsPerChain: this.normalized.resolved.engine.maxEventsPerChain,
       maxPendingEvents: this.normalized.resolved.engine.maxPendingEvents,
       onExecuteReaction: (rx, srcEvt) => this.executeReaction(rx, srcEvt),
+    });
+
+    this.refreshRuleDiagnosticsSnapshot(world, nowSimMs, nowRealMs);
+  }
+
+  private resolveWildlifeCallSound(rawSpeciesOrId: string): SoundDefinition | undefined {
+    const direct = this.normalized.soundMap.get(rawSpeciesOrId);
+    if (direct) return direct;
+
+    const token = rawSpeciesOrId.toLowerCase().trim();
+    if (!token) return undefined;
+
+    return this.normalized.resolved.sounds.find(
+      (s) =>
+        s.bus.startsWith('environment.wildlife') &&
+        (s.id.toLowerCase().includes(token) ||
+          s.tags?.some((tag) => tag.toLowerCase() === token))
+    );
+  }
+
+  private handleWildlifeCallEvent(
+    event: SimulationEvent,
+    world: WorldContext,
+    nowSimMs: number,
+    nowRealMs: number
+  ): void {
+    const p = event.payload as Record<string, unknown>;
+    const rawKey =
+      typeof p.soundId === 'string'
+        ? p.soundId
+        : typeof p.species === 'string'
+          ? p.species
+          : typeof p.call === 'string'
+            ? p.call
+            : '';
+    if (!rawKey) return;
+
+    const sound = this.resolveWildlifeCallSound(rawKey);
+    if (!sound) return;
+
+    const force = p.force === true;
+    if (!force) {
+      const check = this.scheduler.canTriggerSound({
+        sound,
+        world,
+        evaluator: this.evaluator,
+        disturbances: this.disturbances,
+        mixer: this.mixer,
+        rng: this.rng,
+        nowSimMs,
+        nowRealMs,
+        event,
+      });
+      if (!check.eligible) return;
+    }
+
+    let explicitPosition: Vector3 | undefined;
+    const payloadPos = p.position as Partial<Vector3> | undefined;
+    if (
+      payloadPos &&
+      typeof payloadPos.x === 'number' &&
+      typeof payloadPos.y === 'number' &&
+      typeof payloadPos.z === 'number'
+    ) {
+      explicitPosition = { x: payloadPos.x, y: payloadPos.y, z: payloadPos.z };
+    } else if (event.origin !== 'player' && event.position) {
+      explicitPosition = event.position;
+    }
+
+    const volumeScale =
+      event.intensity !== undefined ? Math.max(0.45, Math.min(1.4, event.intensity)) : 1;
+
+    this.playSoundDefinition(sound, {
+      world,
+      originEvent: event,
+      explicitPosition,
+      reason: `wildlife.call:${rawKey}`,
+      exemptFromDisturbance: force,
+      skipQuotaRecord: p.skipQuotaRecord === true,
+      volumeScale,
+    });
+  }
+
+  private refreshRuleDiagnosticsSnapshot(
+    world: WorldContext,
+    nowSimMs: number,
+    nowRealMs: number
+  ): void {
+    if (this.lastRuleRows.length === 0) return;
+    this.lastRuleRows = this.lastRuleRows.map((row) => {
+      const sound = this.normalized.soundMap.get(row.soundId);
+      if (!sound || sound.trigger.type === 'continuous' || sound.trigger.type === 'state_driven') {
+        return row;
+      }
+      const elig = this.scheduler.canTriggerSound({
+        sound,
+        world,
+        evaluator: this.evaluator,
+        disturbances: this.disturbances,
+        mixer: this.mixer,
+        rng: this.rng,
+        nowSimMs,
+        nowRealMs,
+      });
+      const minIntMs = Math.max(
+        parseDurationMs(sound.limits?.minInterval, 0),
+        parseDurationMs(sound.schedule?.minInterval, 0),
+        parseDurationMs(sound.limits?.cooldown, 0)
+      );
+      const cdMatch = elig.reasons.find((r) => r.startsWith('cooldown active ('));
+      let cdSec = 0;
+      if (cdMatch) {
+        const parsed = Number.parseFloat(cdMatch.replace(/[^0-9.]/g, ''));
+        if (Number.isFinite(parsed)) cdSec = parsed;
+      } else if (minIntMs > 0 && elig.reasons.some((r) => r.includes('cooldown'))) {
+        cdSec = Math.round(minIntMs / 1000);
+      }
+      return {
+        ...row,
+        eligible: elig.eligible,
+        reasons: elig.reasons,
+        quotaUsed: elig.currentUsed,
+        quotaTarget: elig.sampledTarget,
+        quotaMax: elig.maxAllowed,
+        cooldownRemainingSimSec: cdSec,
+      };
     });
   }
 
@@ -523,6 +669,7 @@ export class SoundscapeEngine {
       volumeScale?: number;
       pitchScale?: number;
       skipQuotaRecord?: boolean;
+      isAudition?: boolean;
     }
   ): ActiveSoundInstance | null {
     const nowRealMs = this.realClock.nowMs();
@@ -544,6 +691,7 @@ export class SoundscapeEngine {
       exemptFromDisturbance: opts.exemptFromDisturbance,
       volumeScale: opts.volumeScale,
       pitchScale: opts.pitchScale,
+      isAudition: opts.isAudition,
     });
 
     // Record accepted occurrences consistently (including virtualised starts; excluding rejected/queued drops)
@@ -760,7 +908,9 @@ export class SoundscapeEngine {
             skipQuotaRecord: true,
           });
         } else if (active.state === 'paused') {
-          this.instances.resumePaused(active, this.backend, this.mixer);
+          if (!active.userPaused) {
+            this.instances.resumePaused(active, this.backend, this.mixer);
+          }
         } else {
           // Modulate live target gain cleanly on active continuous layer
           const nominal = typeof sound.playback.volume === 'number'
@@ -768,7 +918,7 @@ export class SoundscapeEngine {
             : Array.isArray(sound.playback.volume)
               ? (sound.playback.volume[0] + sound.playback.volume[1]) * 0.5
               : 0.7;
-          active.baseVolume = nominal * scale;
+          active.baseVolume = nominal * scale * (active.asset.gainScale ?? 1);
         }
       } else if (active) {
         this.instances.requestConditionStop(active, this.backend, nowRealMs);
@@ -863,7 +1013,9 @@ export class SoundscapeEngine {
         existing.position = { ...world.listener.position };
         existing.sourceStructureId = world.structure.id;
         existing.sourceInsideSameStructure = world.structure.quality !== 'outdoor';
-        this.instances.resumePaused(existing, this.backend, this.mixer);
+        if (!existing.userPaused) {
+          this.instances.resumePaused(existing, this.backend, this.mixer);
+        }
       } else {
         // Scale pitch/volume subtly with speed
         existing.pitch = speedNorm;
@@ -933,7 +1085,9 @@ export class SoundscapeEngine {
           });
         } else if (curBreath.state === 'paused') {
           curBreath.position = { ...world.listener.position };
-          this.instances.resumePaused(curBreath, this.backend, this.mixer);
+          if (!curBreath.userPaused) {
+            this.instances.resumePaused(curBreath, this.backend, this.mixer);
+          }
         }
         this.activeBreathingSoundId = desiredBreathId;
       } else if (curBreath) {
@@ -1104,8 +1258,84 @@ export class SoundscapeEngine {
       reason: 'diagnostics:audition',
       exemptFromDisturbance: true,
       skipQuotaRecord: true,
+      isAudition: true,
     });
     return Boolean(spawned);
+  }
+
+  stopAuditionSounds(): number {
+    return this.instances.stopAuditionInstances(this.backend);
+  }
+
+  pauseVoice(instanceId: string): boolean {
+    return this.instances.pauseInstanceById(instanceId, this.backend);
+  }
+
+  resumeVoice(instanceId: string): boolean {
+    return this.instances.resumeInstanceById(instanceId, this.backend, this.mixer);
+  }
+
+  stopVoice(instanceId: string): boolean {
+    return this.instances.stopInstanceById(instanceId, this.backend);
+  }
+
+  stepAuditionVoices(dtRealSec: number): void {
+    const clampedRealDt = Math.max(0, Math.min(0.25, dtRealSec));
+    this.instances.stepAuditionOnly({
+      dtRealSec: clampedRealDt,
+      nowRealMs: this.realClock.nowMs(),
+      backend: this.backend,
+      mixer: this.mixer,
+      assetsMap: this.normalized.assetMap,
+      rng: this.rng,
+    });
+  }
+
+  resetQuotasAndCooldowns(): void {
+    this.scheduler.resetQuotasAndCooldowns();
+    const world = this.lastWorld;
+    if (world) {
+      const nowSimMs = world.simulationTimeMs;
+      const nowRealMs = this.realClock.nowMs();
+      this.lastRuleRows = this.lastRuleRows.map((row) => {
+        const sound = this.normalized.soundMap.get(row.soundId);
+        if (!sound) {
+          return {
+            ...row,
+            quotaUsed: 0,
+            cooldownRemainingSimSec: 0,
+            nextScheduledSimSec: null,
+          };
+        }
+        if (sound.trigger.type === 'continuous' || sound.trigger.type === 'state_driven') {
+          return {
+            ...row,
+            cooldownRemainingSimSec: 0,
+            nextScheduledSimSec: null,
+          };
+        }
+        const elig = this.scheduler.canTriggerSound({
+          sound,
+          world,
+          evaluator: this.evaluator,
+          disturbances: this.disturbances,
+          mixer: this.mixer,
+          rng: this.rng,
+          nowSimMs,
+          nowRealMs,
+        });
+        return {
+          ...row,
+          eligible: elig.eligible,
+          reasons: elig.reasons,
+          quotaUsed: elig.currentUsed,
+          quotaTarget: elig.sampledTarget,
+          quotaMax: elig.maxAllowed,
+          cooldownRemainingSimSec: 0,
+          nextScheduledSimSec: null,
+        };
+      });
+    }
   }
 
   exportSnapshot(): PersistedSoundscapeState {
@@ -1159,6 +1389,7 @@ export class SoundscapeEngine {
     const listenerPos = world?.listener.position ?? { x: 0, y: 0, z: 0 };
     const nowSimMs = world?.simulationTimeMs ?? 0;
 
+    const nowRealMs = this.realClock.nowMs();
     const voices = this.instances.getSnapshots(
       listenerPos,
       this.mixer,
@@ -1166,6 +1397,7 @@ export class SoundscapeEngine {
       this.disturbances,
       nowSimMs
     );
+    const stoppedVoices = this.instances.getStoppedSnapshots(nowRealMs);
     const virtualCount = voices.filter((v) => v.state === 'virtualised').length;
     const activeCount = voices.filter(
       (v) => v.state === 'starting' || v.state === 'playing' || v.state === 'stopping'
@@ -1184,13 +1416,14 @@ export class SoundscapeEngine {
     return {
       simulationTimeMs: nowSimMs,
       timeOfDayHours: world?.timeOfDayHours ?? 0,
-      realTimeMs: this.realClock.nowMs(),
+      realTimeMs: nowRealMs,
       timeAcceleration: world?.timeAcceleration ?? 1,
       backendKind: this.backend.kind,
       unsupportedBackendFeatures: [...this.backend.unsupportedFeatures],
       acoustics: this.acoustics.getEvaluation(),
       biomeMix,
       voices,
+      stoppedVoices,
       virtualCount,
       activeCount,
       queuedCount: this.instances.getQueuedCount(),
