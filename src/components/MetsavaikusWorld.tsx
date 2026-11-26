@@ -1734,18 +1734,18 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return propsCtx ? propsCtx.getCampfireInfo(campfireId) : null;
       },
       throwFirewoodIntoCampfire: (campfireId: string) => {
-        if (!propsCtx) return null;
+        const props = propsCtx;
+        if (!props) return null;
         if ((inventory.stacks.firewood ?? 0) <= 0) {
           callbacksRef.current.onToast(t('toast.noFirewoodToThrow'));
-          return propsCtx.getCampfireInfo(campfireId);
+          return props.getCampfireInfo(campfireId);
         }
         if (removeStackItem(inventory, 'firewood', 1)) {
-          recomputeBurden();
-          propsCtx.feedCampfireWithLog(campfireId);
-          syncVitalHudDom();
-          pushSurvivalSnapshot();
+          finishInventoryChange(() => {
+            props.feedCampfireWithLog(campfireId);
+          });
         }
-        return propsCtx.getCampfireInfo(campfireId);
+        return props.getCampfireInfo(campfireId);
       },
       placeCampfireFromWood: () => {
         if (!propsCtx || rejectIfSwimming()) return null;
@@ -4904,7 +4904,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               return;
             }
             if (!removeStackItem(inventory, 'firewood', 1)) return;
-            recomputeBurden();
             _euler.set(player.pitch, player.yaw, 0, 'YXZ');
             _lookDir.set(0, 0, -1).applyEuler(_euler);
             const sx = camera.position.x + _lookDir.x * 0.55;
@@ -4914,6 +4913,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             sound.playImpact(0.32);
             lastPromptKey = '';
             pushDebugEvent('game', 'campfire.throw_log', `Threw firewood toward ${campfire.label}`);
+            finishInventoryChange();
           },
           onCampfireLogImpact: (campfire, lit, x, y, z) => {
             soundscape.engine.emitEvent({
