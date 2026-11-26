@@ -6,9 +6,11 @@ import {
   buildBogPineGeometries,
   buildButtressedTrunk,
   buildErraticBoulderGeo,
+  buildLoneSpruceGeometries,
   buildPineGeometries,
   buildSpruceGeometries,
   buildSpruceSaplingGeometries,
+  classifySpruceGrowthForm,
   makeArchedSprigCard,
   measureGeometryBounds,
 } from './botanicalGeometry';
@@ -117,8 +119,49 @@ test('Norway Spruce has strong root buttresses, dense bare dead lower snags, and
   assert.ok(snagReach > 0.75, `Expected bare dead lower spruce snags reaching >0.75m, got ${snagReach}`);
   assert.ok(cb.maxY >= 14.0, `Expected sharp Norway spruce spire apex >= 14.0m, got ${cb.maxY}`);
   assert.equal(countAtlasQuadrantsUsed(spruce.crownLod0), 4, 'Spruce LOD0 crown should use all 4 atlas variants');
+  assert.ok(
+    spruce.crownLod0.attributes.position.count >= 1100,
+    `Expected dense woodland spruce crown (>=1100 vertices), got ${spruce.crownLod0.attributes.position.count}`
+  );
 
   for (const g of Object.values(spruce)) g.dispose();
+});
+
+test('Lone-standing Norway Spruce has ground-skirting dense pyramid, wider lower boughs than woodland spruce, and open-growth classifier', () => {
+  const woodland = buildSpruceGeometries();
+  const lone = buildLoneSpruceGeometries();
+  const ltb = measureGeometryBounds(lone.trunkLod0);
+  const lcb = measureGeometryBounds(lone.crownLod0);
+
+  assert.equal(ltb.hasNaN, false);
+  assert.equal(lcb.hasNaN, false);
+  assert.ok(ltb.minY <= -0.36, 'Lone spruce roots should embed below ground');
+  assert.ok(lcb.minY <= 0.65, `Expected lone spruce skirt draping near ground <= 0.65m, got ${lcb.minY}`);
+  assert.ok(lcb.maxY >= 14.3, `Expected full lone spruce apex >= 14.3m, got ${lcb.maxY}`);
+  assert.equal(countAtlasQuadrantsUsed(lone.crownLod0), 4, 'Lone spruce LOD0 crown should sample all 4 atlas variants');
+
+  // Lone spruce must carry significantly thicker foliage and broader lower skirt than woodland spruce
+  assert.ok(
+    lone.crownLod0.attributes.position.count > woodland.crownLod0.attributes.position.count * 1.35,
+    `Expected lone spruce crown (${lone.crownLod0.attributes.position.count} verts) much denser than woodland spruce (${woodland.crownLod0.attributes.position.count} verts)`
+  );
+  const loneLowR = maxRadiusInYBand(lone.crownLod0, 0.5, 4.0);
+  const woodLowR = maxRadiusInYBand(woodland.crownLod0, 0.5, 4.0);
+  assert.ok(
+    loneLowR > woodLowR * 1.18,
+    `Expected broader lone spruce lower skirt (${loneLowR.toFixed(2)}m) > woodland (${woodLowR.toFixed(2)}m)`
+  );
+
+  // Growth-form classifier: isolated or open-edge spruces -> lone; crowded woods / thickets -> woodland
+  assert.equal(classifySpruceGrowthForm(0.85, 1, 0.1), 'lone');
+  assert.equal(classifySpruceGrowthForm(0.65, 2, 0.2), 'lone');
+  assert.equal(classifySpruceGrowthForm(0.05, 0, 0.2), 'lone');
+  assert.equal(classifySpruceGrowthForm(0.05, 3, 0.25), 'woodland');
+  assert.equal(classifySpruceGrowthForm(0.10, 4, 0.4), 'woodland');
+  assert.equal(classifySpruceGrowthForm(0.70, 0, 0.65), 'woodland');
+
+  for (const g of Object.values(woodland)) g.dispose();
+  for (const g of Object.values(lone)) g.dispose();
 });
 
 test('Young Norway Spruce sapling has woody stem, low conical whorls, and tall spiky leader spire', () => {

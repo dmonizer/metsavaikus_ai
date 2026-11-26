@@ -944,10 +944,30 @@ export function buildBogPineGeometries() {
 }
 
 // ============================================================================
-// 3. Norway Spruce (Picea abies) — Prominent 5-root flared mossy buttress stump,
-//    reddish-mahogany scaly trunk, dense bare dead lower branch snags (kuusiku-alune.jpg),
-//    layered horizontal/sweeping boughs with hanging comb curtains & sharp spire (lone-spruce.jpg)
+// 3. Norway Spruce (Picea abies) — Two ecologically realistic growth forms:
+//    a) Woodland Spruce (buildSpruceGeometries): shaded lower trunk with dead snags
+//       (kuusiku-alune.jpg) + thick, heavily layered 3D drooping evergreen crown
+//    b) Lone-Standing Open-Grown Spruce (buildLoneSpruceGeometries): lush, broad,
+//       ground-skirting evergreen pyramid hiding almost the entire trunk (lone-spruce.jpg)
 // ============================================================================
+export type SpruceGrowthForm = 'lone' | 'woodland';
+
+/**
+ * Determines whether a Norway spruce grows as a full, broad, ground-skirting lone-standing
+ * spruce (lone-spruce.jpg) or as a taller, self-pruned woodland spruce (kuusiku-alune.jpg)
+ * based on local openness, nearby competing tall trees, and forest thicket density.
+ */
+export function classifySpruceGrowthForm(
+  openness: number,
+  nearbyTallTrees: number,
+  thicketFactor: number
+): SpruceGrowthForm {
+  if (thicketFactor >= 0.56) return 'woodland';
+  if (nearbyTallTrees <= 1) return 'lone';
+  if (openness >= 0.32 && nearbyTallTrees <= 2) return 'lone';
+  return 'woodland';
+}
+
 export function buildSpruceGeometries() {
   const spine = [
     new THREE.Vector3(0, -0.42, 0),
@@ -979,9 +999,9 @@ export function buildSpruceGeometries() {
   const deadTipCol = new THREE.Color(0x524c47);
   for (let i = 0; i < 18; i++) {
     const t = i / 17;
-    const h = 1.12 + t * 2.85 + (deadRand() - 0.5) * 0.18;
+    const h = 1.12 + t * 2.15 + (deadRand() - 0.5) * 0.16;
     const a = i * 2.39996 + (deadRand() - 0.5) * 0.45;
-    const trunkR = lerp(0.22, 0.18, t);
+    const trunkR = lerp(0.22, 0.185, t);
     const start = new THREE.Vector3(Math.cos(a) * (trunkR * 0.65), h, Math.sin(a) * (trunkR * 0.65));
     const len = 0.48 + (0.4 + 0.6 * t) * (0.42 + deadRand() * 0.58);
     const droop = -0.08 - deadRand() * 0.28;
@@ -1023,15 +1043,15 @@ export function buildSpruceGeometries() {
     );
   }
 
-  // 10 visible woody live branch ribs under the lower/mid spruce boughs
+  // 10 woody live branch ribs supporting the lower/mid spruce boughs
   const liveRibCol = new THREE.Color(0x88766a);
   for (let i = 0; i < 10; i++) {
     const t = i / 9;
-    const h = 3.9 + t * 4.9;
+    const h = 3.2 + t * 5.2;
     const a = i * 2.39996 + 0.8;
-    const len = lerp(2.1, 1.05, t);
+    const len = lerp(2.0, 1.0, t);
     const start = new THREE.Vector3(0, h, 0);
-    const end = new THREE.Vector3(Math.cos(a) * len, h - 0.42 + t * 0.32, Math.sin(a) * len);
+    const end = new THREE.Vector3(Math.cos(a) * len, h - 0.44 + t * 0.30, Math.sin(a) * len);
     trunkParts.push(
       buildConnectedTube({
         start,
@@ -1047,42 +1067,59 @@ export function buildSpruceGeometries() {
   }
   const trunkLod0 = mergeGeometries(trunkParts)!;
 
-  // 42 layered sweeping feathery Norway Spruce boughs across 7 distinct whorls + sharp spire (lone-spruce.jpg!)
+  // Dense, heavily layered Woodland Norway Spruce crown: 11 closely spaced whorls + 3D hanging curtains + core fill
   const boughParts: THREE.BufferGeometry[] = [];
   const rand = seededRand(33);
-  const spInner = new THREE.Color(0x94ae82);
-  const spMid = new THREE.Color(0xb8d29a);
-  const spTip = new THREE.Color(0xdff0b4);
+  const spCore = new THREE.Color(0x5c754a);
+  const spInner = new THREE.Color(0x7d9868);
+  const spMid = new THREE.Color(0x9fb980);
+  const spTip = new THREE.Color(0xcde09e);
 
-  const tiers: Array<{ y: number; r: number; w: number; l: number; count: number; pitch: number; quad: AtlasQuad }> = [
-    { y: 3.35, r: 0.30, w: 2.45, l: 2.85, count: 6, pitch: 1.48, quad: 0 },
-    { y: 4.82, r: 0.26, w: 2.22, l: 2.55, count: 6, pitch: 1.42, quad: 0 },
-    { y: 6.32, r: 0.22, w: 1.96, l: 2.28, count: 6, pitch: 1.36, quad: 1 },
-    { y: 7.78, r: 0.18, w: 1.72, l: 1.96, count: 6, pitch: 1.28, quad: 1 },
-    { y: 9.22, r: 0.15, w: 1.42, l: 1.64, count: 5, pitch: 1.18, quad: 1 },
-    { y: 10.58, r: 0.11, w: 1.08, l: 1.32, count: 5, pitch: 1.02, quad: 2 },
-    { y: 11.82, r: 0.07, w: 0.82, l: 1.08, count: 4, pitch: 0.84, quad: 2 },
+  const tiers: Array<{
+    y: number;
+    r: number;
+    w: number;
+    l: number;
+    count: number;
+    pitch: number;
+    arch: number;
+    quad: AtlasQuad;
+    drapes: number;
+  }> = [
+    { y: 2.85, r: 0.24, w: 2.35, l: 2.75, count: 7, pitch: 1.72, arch: 0.42, quad: 0, drapes: 4 },
+    { y: 3.78, r: 0.22, w: 2.28, l: 2.68, count: 8, pitch: 1.70, arch: 0.42, quad: 0, drapes: 4 },
+    { y: 4.72, r: 0.20, w: 2.18, l: 2.55, count: 8, pitch: 1.66, arch: 0.40, quad: 0, drapes: 4 },
+    { y: 5.66, r: 0.18, w: 2.04, l: 2.38, count: 7, pitch: 1.60, arch: 0.38, quad: 1, drapes: 4 },
+    { y: 6.60, r: 0.16, w: 1.90, l: 2.22, count: 7, pitch: 1.54, arch: 0.36, quad: 1, drapes: 3 },
+    { y: 7.54, r: 0.14, w: 1.74, l: 2.04, count: 7, pitch: 1.46, arch: 0.34, quad: 1, drapes: 3 },
+    { y: 8.48, r: 0.12, w: 1.58, l: 1.84, count: 6, pitch: 1.38, arch: 0.30, quad: 1, drapes: 3 },
+    { y: 9.42, r: 0.10, w: 1.40, l: 1.62, count: 6, pitch: 1.28, arch: 0.26, quad: 2, drapes: 2 },
+    { y: 10.34, r: 0.08, w: 1.20, l: 1.42, count: 5, pitch: 1.16, arch: 0.22, quad: 2, drapes: 2 },
+    { y: 11.22, r: 0.06, w: 0.98, l: 1.22, count: 5, pitch: 1.00, arch: 0.18, quad: 2, drapes: 0 },
+    { y: 12.04, r: 0.04, w: 0.80, l: 1.06, count: 4, pitch: 0.80, arch: 0.12, quad: 2, drapes: 0 },
   ];
 
   for (let t = 0; t < tiers.length; t++) {
     const tier = tiers[t];
     for (let i = 0; i < tier.count; i++) {
-      const a = (i / tier.count) * Math.PI * 2 + t * 0.68 + (rand() - 0.5) * 0.24;
+      const a = (i / tier.count) * Math.PI * 2 + t * 0.72 + (rand() - 0.5) * 0.22;
       const q: AtlasQuad =
         tier.quad === 0 ? (i % 3 === 0 ? 1 : 0) : tier.quad === 1 ? (i % 3 === 0 ? 0 : 1) : 2;
-      const wScale = 0.84 + rand() * 0.32;
-      const lScale = 0.84 + rand() * 0.32;
+      const wScale = 0.88 + rand() * 0.28;
+      const lScale = 0.88 + rand() * 0.28;
+      const py = tier.y + (rand() - 0.5) * 0.22;
+      // Primary sweeping drooping bough
       boughParts.push(
         makeArchedSprigCard(
           tier.w * wScale,
           tier.l * lScale,
-          0.26,
+          tier.arch,
           Math.sin(a) * tier.r,
-          tier.y + (rand() - 0.5) * 0.26,
+          py,
           Math.cos(a) * tier.r,
-          tier.pitch + (rand() - 0.5) * 0.2,
+          tier.pitch + (rand() - 0.5) * 0.18,
           a,
-          (rand() - 0.5) * 0.24,
+          (rand() - 0.5) * 0.32,
           i % 2 === 0 ? spInner : spMid,
           spTip,
           7.8,
@@ -1090,17 +1127,41 @@ export function buildSpruceGeometries() {
         )
       );
     }
+
+    // Angled 3D hanging-curtain & inner trunk-cloaking drapes -> thick side-view silhouette!
+    for (let d = 0; d < tier.drapes; d++) {
+      const a = ((d + 0.5) / tier.drapes) * Math.PI * 2 + t * 1.15 + (rand() - 0.5) * 0.25;
+      const rollSign = d % 2 === 0 ? 1 : -1;
+      boughParts.push(
+        makeArchedSprigCard(
+          tier.w * 0.74,
+          tier.l * 0.78,
+          tier.arch * 0.55,
+          Math.sin(a) * (tier.r * 0.45),
+          tier.y + 0.18 + (rand() - 0.5) * 0.16,
+          Math.cos(a) * (tier.r * 0.45),
+          Math.min(2.12, tier.pitch + 0.34 + (rand() - 0.5) * 0.14),
+          a,
+          rollSign * (0.58 + rand() * 0.26),
+          spCore,
+          spMid,
+          7.6,
+          t < 5 ? 0 : 1
+        )
+      );
+    }
   }
-  // Sharp spiky Norway Spruce conical spire apex (using Q3 vertical leader!)
-  for (let k = 0; k < 3; k++) {
-    const a = (k / 3) * Math.PI;
+
+  // Lush bushy conical Norway Spruce spire apex (Q3 vertical leader + crossing collar tufts!)
+  for (let k = 0; k < 5; k++) {
+    const a = (k / 5) * Math.PI + 0.15;
     boughParts.push(
-      makeArchedSprigCard(0.84, 2.05, 0.06, 0, 12.5, 0, 0.12, a, 0, spMid, spTip, 13.4, 3)
+      makeArchedSprigCard(1.08, 2.35, 0.08, 0, 12.18, 0, 0.14, a, (k % 2 === 0 ? 0.08 : -0.08), spMid, spTip, 13.5, 3)
     );
   }
   const crownLod0 = mergeGeometries(boughParts)!;
 
-  // LOD1: Proportioned 13.8m flared trunk + 13 multi-quadrant tiered boughs + spire
+  // LOD1: Dense 13.8m woodland silhouette (7 overlapped draped whorls + bushy spire)
   const trunkLod1 = buildButtressedTrunk(
     [
       new THREE.Vector3(0, -0.35, 0),
@@ -1113,27 +1174,31 @@ export function buildSpruceGeometries() {
   );
   const c1Parts: THREE.BufferGeometry[] = [];
   const lod1Tiers: Array<{ y: number; w: number; l: number; count: number; pitch: number; quad: AtlasQuad }> = [
-    { y: 3.5, w: 2.95, l: 2.95, count: 4, pitch: 1.38, quad: 0 },
-    { y: 6.4, w: 2.35, l: 2.45, count: 4, pitch: 1.3, quad: 1 },
-    { y: 9.2, w: 1.75, l: 1.88, count: 3, pitch: 1.18, quad: 2 },
-    { y: 11.4, w: 1.15, l: 1.45, count: 2, pitch: 0.9, quad: 2 },
+    { y: 3.0, w: 2.85, l: 2.95, count: 5, pitch: 1.70, quad: 0 },
+    { y: 4.55, w: 2.65, l: 2.75, count: 5, pitch: 1.64, quad: 0 },
+    { y: 6.1, w: 2.40, l: 2.50, count: 5, pitch: 1.56, quad: 1 },
+    { y: 7.65, w: 2.08, l: 2.20, count: 4, pitch: 1.46, quad: 1 },
+    { y: 9.2, w: 1.72, l: 1.86, count: 4, pitch: 1.32, quad: 2 },
+    { y: 10.65, w: 1.32, l: 1.50, count: 4, pitch: 1.10, quad: 2 },
+    { y: 11.85, w: 0.96, l: 1.24, count: 3, pitch: 0.82, quad: 2 },
   ];
   for (let t = 0; t < lod1Tiers.length; t++) {
     const tier = lod1Tiers[t];
     for (let i = 0; i < tier.count; i++) {
       const a = (i / tier.count) * Math.PI * 2 + t * 0.75;
       c1Parts.push(
-        makeArchedSprigCard(tier.w, tier.l, 0.3, 0, tier.y, 0, tier.pitch, a, 0, spInner, spTip, 7.6, tier.quad)
+        makeArchedSprigCard(tier.w, tier.l, 0.42, 0, tier.y, 0, tier.pitch, a, (i % 2 === 0 ? 0.26 : -0.26), spInner, spTip, 7.6, tier.quad)
       );
     }
   }
-  c1Parts.push(
-    makeArchedSprigCard(0.88, 2.0, 0.08, 0, 12.3, 0, 0.14, 0.3, 0, spMid, spTip, 13.3, 3),
-    makeArchedSprigCard(0.88, 2.0, 0.08, 0, 12.3, 0, 0.14, 1.87, 0, spMid, spTip, 13.3, 3)
-  );
+  for (let k = 0; k < 3; k++) {
+    c1Parts.push(
+      makeArchedSprigCard(1.06, 2.35, 0.08, 0, 12.15, 0, 0.14, (k / 3) * Math.PI + 0.25, 0, spMid, spTip, 13.4, 3)
+    );
+  }
   const crownLod1 = mergeGeometries(c1Parts)!;
 
-  // LOD2: Distant 13.8m conical silhouette
+  // LOD2: Distant 13.8m full conical woodland spruce silhouette
   const trunkLod2 = buildConnectedTube({
     start: new THREE.Vector3(0, -0.25, 0),
     end: new THREE.Vector3(0, 12.6, 0),
@@ -1144,8 +1209,217 @@ export function buildSpruceGeometries() {
   const c2Parts: THREE.BufferGeometry[] = [];
   for (let i = 0; i < 3; i++) {
     const a = (i / 3) * Math.PI;
-    c2Parts.push(makeArchedSprigCard(4.8, 6.2, 0.24, 0, 2.9, 0, 0.32, a, 0, spInner, spMid, 7.6, 0));
-    c2Parts.push(makeArchedSprigCard(3.2, 6.0, 0.18, 0, 7.6, 0, 0.22, a + 0.52, 0, spMid, spTip, 10.6, 3));
+    c2Parts.push(makeArchedSprigCard(4.6, 5.4, 0.26, 0, 2.7, 0, 0.28, a, 0, spCore, spMid, 7.2, 0));
+    c2Parts.push(makeArchedSprigCard(3.8, 5.2, 0.24, 0, 6.2, 0, 0.24, a + 0.52, 0, spInner, spMid, 9.2, 1));
+    c2Parts.push(makeArchedSprigCard(2.6, 4.8, 0.16, 0, 9.5, 0, 0.16, a + 0.26, 0, spMid, spTip, 12.0, 3));
+  }
+  const crownLod2 = mergeGeometries(c2Parts)!;
+
+  return { trunkLod0, crownLod0, trunkLod1, crownLod1, trunkLod2, crownLod2 };
+}
+
+/**
+ * 3b. Lone-Standing Open-Grown Norway Spruce (matching sample-images/lone-spruce.jpg!):
+ *     Broad, plush, opaque dark-green pyramid whose heavy sweeping boughs drape almost all
+ *     the way to the meadow grass (y ~ 0.2m), cloaking the trunk in 14 densely overlapped
+ *     tiers of sweeping plumes, hanging comb curtains, and a full bushy spire apex.
+ */
+export function buildLoneSpruceGeometries() {
+  const spine = [
+    new THREE.Vector3(0, -0.44, 0),
+    new THREE.Vector3(0, 0.0, 0),
+    new THREE.Vector3(0, 0.8, 0),
+    new THREE.Vector3(0.01, 3.0, 0.01),
+    new THREE.Vector3(0.02, 6.0, -0.01),
+    new THREE.Vector3(0.01, 9.2, 0.01),
+    new THREE.Vector3(0, 12.0, 0),
+    new THREE.Vector3(0, 14.1, 0),
+  ];
+  const radii = [0.38, 0.30, 0.245, 0.215, 0.175, 0.125, 0.068, 0.016];
+  const trunkParts: THREE.BufferGeometry[] = [
+    buildButtressedTrunk(spine, radii, {
+      radialSegs: 9,
+      rootCount: 5,
+      rootFlare: 1.45,
+      flareHeight: 1.2,
+      rootPhase: 0.35,
+      uvYScale: 0.3,
+      colRoot: new THREE.Color(0x5e6e48),
+      colTrunk: new THREE.Color(0xd8cfc6),
+    }),
+  ];
+
+  // Low structural bough ribs tucked deeply inside the lower evergreen skirt
+  const ribCol = new THREE.Color(0x6d5c50);
+  const tipCol = new THREE.Color(0x4b423c);
+  for (let i = 0; i < 8; i++) {
+    const t = i / 7;
+    const h = 1.1 + t * 5.8;
+    const a = i * 2.39996 + 0.4;
+    const len = lerp(2.55, 1.35, t);
+    trunkParts.push(
+      buildConnectedTube({
+        start: new THREE.Vector3(0, h, 0),
+        end: new THREE.Vector3(Math.cos(a) * len, h - 0.52 + t * 0.26, Math.sin(a) * len),
+        rBot: lerp(0.052, 0.026, t),
+        rTop: 0.012,
+        radialSegs: 4,
+        overlapStart: 0.06,
+        colorStart: ribCol,
+        colorEnd: tipCol,
+      })
+    );
+  }
+  const trunkLod0 = mergeGeometries(trunkParts)!;
+
+  const boughParts: THREE.BufferGeometry[] = [];
+  const rand = seededRand(77);
+  const spDeepCore = new THREE.Color(0x4a633b);
+  const spInner = new THREE.Color(0x6d8958);
+  const spMid = new THREE.Color(0x90ad72);
+  const spTip = new THREE.Color(0xc4db94);
+
+  // 14 tightly overlapped ground-to-spire whorls creating the lush, full lone-spruce.jpg silhouette!
+  const tiers: Array<{
+    y: number;
+    r: number;
+    w: number;
+    l: number;
+    count: number;
+    pitch: number;
+    arch: number;
+    quad: AtlasQuad;
+    drapes: number;
+  }> = [
+    { y: 1.05, r: 0.24, w: 3.15, l: 3.72, count: 9, pitch: 1.84, arch: 0.54, quad: 0, drapes: 5 },
+    { y: 1.88, r: 0.23, w: 3.05, l: 3.60, count: 9, pitch: 1.80, arch: 0.52, quad: 0, drapes: 5 },
+    { y: 2.74, r: 0.22, w: 2.94, l: 3.44, count: 9, pitch: 1.76, arch: 0.50, quad: 0, drapes: 5 },
+    { y: 3.60, r: 0.20, w: 2.82, l: 3.28, count: 9, pitch: 1.72, arch: 0.48, quad: 0, drapes: 5 },
+    { y: 4.48, r: 0.19, w: 2.68, l: 3.10, count: 8, pitch: 1.68, arch: 0.46, quad: 0, drapes: 4 },
+    { y: 5.38, r: 0.18, w: 2.52, l: 2.92, count: 8, pitch: 1.64, arch: 0.44, quad: 1, drapes: 4 },
+    { y: 6.28, r: 0.16, w: 2.36, l: 2.72, count: 8, pitch: 1.58, arch: 0.42, quad: 1, drapes: 4 },
+    { y: 7.20, r: 0.15, w: 2.18, l: 2.50, count: 8, pitch: 1.52, arch: 0.38, quad: 1, drapes: 4 },
+    { y: 8.12, r: 0.13, w: 1.98, l: 2.28, count: 7, pitch: 1.44, arch: 0.34, quad: 1, drapes: 3 },
+    { y: 9.04, r: 0.11, w: 1.76, l: 2.04, count: 7, pitch: 1.36, arch: 0.30, quad: 1, drapes: 3 },
+    { y: 9.96, r: 0.10, w: 1.54, l: 1.78, count: 6, pitch: 1.24, arch: 0.26, quad: 2, drapes: 3 },
+    { y: 10.86, r: 0.08, w: 1.30, l: 1.52, count: 6, pitch: 1.12, arch: 0.22, quad: 2, drapes: 2 },
+    { y: 11.72, r: 0.06, w: 1.06, l: 1.30, count: 5, pitch: 0.96, arch: 0.16, quad: 2, drapes: 0 },
+    { y: 12.50, r: 0.04, w: 0.86, l: 1.12, count: 5, pitch: 0.76, arch: 0.12, quad: 2, drapes: 0 },
+  ];
+
+  for (let t = 0; t < tiers.length; t++) {
+    const tier = tiers[t];
+    for (let i = 0; i < tier.count; i++) {
+      const a = (i / tier.count) * Math.PI * 2 + t * 0.69 + (rand() - 0.5) * 0.20;
+      const q: AtlasQuad =
+        tier.quad === 0 ? (i % 3 === 0 ? 1 : 0) : tier.quad === 1 ? (i % 3 === 0 ? 0 : 1) : 2;
+      const wScale = 0.88 + rand() * 0.28;
+      const lScale = 0.86 + rand() * 0.30; // organic irregular outer bough lengths (lone-spruce.jpg!)
+      const py = tier.y + (rand() - 0.5) * 0.20;
+      boughParts.push(
+        makeArchedSprigCard(
+          tier.w * wScale,
+          tier.l * lScale,
+          tier.arch,
+          Math.sin(a) * tier.r,
+          py,
+          Math.cos(a) * tier.r,
+          tier.pitch + (rand() - 0.5) * 0.16,
+          a,
+          (rand() - 0.5) * 0.34,
+          i % 2 === 0 ? spInner : spMid,
+          spTip,
+          6.8,
+          q
+        )
+      );
+    }
+
+    // Thick hanging dihedral curtains + deep inner core volume so the trunk is completely cloaked!
+    for (let d = 0; d < tier.drapes; d++) {
+      const a = ((d + 0.45) / tier.drapes) * Math.PI * 2 + t * 1.08 + (rand() - 0.5) * 0.24;
+      const rollSign = d % 2 === 0 ? 1 : -1;
+      boughParts.push(
+        makeArchedSprigCard(
+          tier.w * 0.78,
+          tier.l * 0.82,
+          tier.arch * 0.55,
+          Math.sin(a) * (tier.r * 0.42),
+          tier.y + 0.22 + (rand() - 0.5) * 0.16,
+          Math.cos(a) * (tier.r * 0.42),
+          Math.min(2.18, tier.pitch + 0.32 + (rand() - 0.5) * 0.14),
+          a,
+          rollSign * (0.62 + rand() * 0.26),
+          spDeepCore,
+          spInner,
+          6.6,
+          t < 6 ? 0 : 1
+        )
+      );
+    }
+  }
+
+  // Lush bushy conical top spire matching the rounded-yet-spiky peak of lone-spruce.jpg
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI + 0.1;
+    boughParts.push(
+      makeArchedSprigCard(1.24, 2.55, 0.08, 0, 12.42, 0, 0.14, a, (k % 2 === 0 ? 0.1 : -0.1), spMid, spTip, 13.8, 3)
+    );
+  }
+  const crownLod0 = mergeGeometries(boughParts)!;
+
+  // LOD1: Full ground-to-tip lone spruce pyramid (8 densely overlapped tiers + spire)
+  const trunkLod1 = buildButtressedTrunk(
+    [
+      new THREE.Vector3(0, -0.35, 0),
+      new THREE.Vector3(0, 0.8, 0),
+      new THREE.Vector3(0, 7.0, 0),
+      new THREE.Vector3(0, 13.8, 0),
+    ],
+    [0.32, 0.23, 0.15, 0.025],
+    { radialSegs: 5, rootCount: 5, rootFlare: 1.0, flareHeight: 1.0, uvYScale: 0.3 }
+  );
+  const c1Parts: THREE.BufferGeometry[] = [];
+  const lod1Tiers: Array<{ y: number; w: number; l: number; count: number; pitch: number; quad: AtlasQuad }> = [
+    { y: 1.1, w: 3.55, l: 3.85, count: 6, pitch: 1.82, quad: 0 },
+    { y: 2.75, w: 3.30, l: 3.55, count: 6, pitch: 1.76, quad: 0 },
+    { y: 4.45, w: 2.98, l: 3.22, count: 5, pitch: 1.68, quad: 0 },
+    { y: 6.15, w: 2.62, l: 2.86, count: 5, pitch: 1.60, quad: 1 },
+    { y: 7.85, w: 2.22, l: 2.46, count: 5, pitch: 1.48, quad: 1 },
+    { y: 9.5, w: 1.80, l: 2.02, count: 4, pitch: 1.32, quad: 2 },
+    { y: 11.0, w: 1.38, l: 1.62, count: 4, pitch: 1.08, quad: 2 },
+    { y: 12.25, w: 1.02, l: 1.32, count: 4, pitch: 0.80, quad: 2 },
+  ];
+  for (let t = 0; t < lod1Tiers.length; t++) {
+    const tier = lod1Tiers[t];
+    for (let i = 0; i < tier.count; i++) {
+      const a = (i / tier.count) * Math.PI * 2 + t * 0.72;
+      c1Parts.push(
+        makeArchedSprigCard(tier.w, tier.l, 0.48, 0, tier.y, 0, tier.pitch, a, (i % 2 === 0 ? 0.32 : -0.32), spInner, spTip, 6.8, tier.quad)
+      );
+    }
+  }
+  for (let k = 0; k < 4; k++) {
+    c1Parts.push(
+      makeArchedSprigCard(1.22, 2.52, 0.08, 0, 12.38, 0, 0.14, (k / 4) * Math.PI + 0.2, 0, spMid, spTip, 13.7, 3)
+    );
+  }
+  const crownLod1 = mergeGeometries(c1Parts)!;
+
+  // LOD2: Distant full ground-hugging lone spruce pyramid silhouette
+  const trunkLod2 = buildConnectedTube({
+    start: new THREE.Vector3(0, -0.25, 0),
+    end: new THREE.Vector3(0, 12.8, 0),
+    rBot: 0.24,
+    rTop: 0.035,
+    radialSegs: 4,
+  });
+  const c2Parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI;
+    c2Parts.push(makeArchedSprigCard(6.2, 5.8, 0.30, 0, 0.75, 0, 0.28, a, 0, spDeepCore, spInner, 5.2, 0));
+    c2Parts.push(makeArchedSprigCard(5.1, 5.6, 0.26, 0, 4.6, 0, 0.24, a + 0.52, 0, spInner, spMid, 8.2, 1));
+    c2Parts.push(makeArchedSprigCard(3.4, 5.4, 0.18, 0, 8.8, 0, 0.16, a + 0.26, 0, spMid, spTip, 11.8, 3));
   }
   const crownLod2 = mergeGeometries(c2Parts)!;
 
@@ -1192,35 +1466,36 @@ export function buildSpruceSaplingGeometries() {
   const trunk = mergeGeometries(trunkParts)!;
 
   const parts: THREE.BufferGeometry[] = [];
-  const spDark = new THREE.Color(0x88aa68);
-  const spMid = new THREE.Color(0xb2d282);
-  const spTip = new THREE.Color(0xe0f2aa);
+  const spDark = new THREE.Color(0x7a9a5c);
+  const spMid = new THREE.Color(0xa6c878);
+  const spTip = new THREE.Color(0xd8ec9e);
 
-  // 6 radiating finely-feathered horizontal/gently-upturned whorls extending to ground level (young-spruce.jpg!)
+  // 7 densely overlapping radiating whorls extending right down to ground level (young-spruce.jpg!)
   const whorls: Array<{ y: number; w: number; l: number; count: number; pitch: number; quad: AtlasQuad }> = [
-    { y: 0.16, w: 0.64, l: 0.96, count: 6, pitch: 1.38, quad: 1 },
-    { y: 0.48, w: 0.58, l: 0.88, count: 6, pitch: 1.28, quad: 2 },
-    { y: 0.80, w: 0.50, l: 0.78, count: 5, pitch: 1.18, quad: 2 },
-    { y: 1.12, w: 0.42, l: 0.66, count: 5, pitch: 1.04, quad: 2 },
-    { y: 1.44, w: 0.34, l: 0.54, count: 4, pitch: 0.88, quad: 3 },
-    { y: 1.72, w: 0.26, l: 0.42, count: 4, pitch: 0.68, quad: 3 },
+    { y: 0.14, w: 0.78, l: 1.08, count: 7, pitch: 1.54, quad: 0 },
+    { y: 0.42, w: 0.72, l: 1.00, count: 7, pitch: 1.44, quad: 1 },
+    { y: 0.70, w: 0.64, l: 0.90, count: 6, pitch: 1.34, quad: 1 },
+    { y: 0.98, w: 0.56, l: 0.80, count: 6, pitch: 1.22, quad: 2 },
+    { y: 1.26, w: 0.46, l: 0.68, count: 5, pitch: 1.08, quad: 2 },
+    { y: 1.52, w: 0.38, l: 0.56, count: 5, pitch: 0.92, quad: 2 },
+    { y: 1.76, w: 0.30, l: 0.44, count: 4, pitch: 0.70, quad: 3 },
   ];
   for (let t = 0; t < whorls.length; t++) {
     const wh = whorls[t];
     for (let i = 0; i < wh.count; i++) {
-      const a = (i / wh.count) * Math.PI * 2 + t * 0.78 + (rand() - 0.5) * 0.28;
+      const a = (i / wh.count) * Math.PI * 2 + t * 0.78 + (rand() - 0.5) * 0.24;
       parts.push(
         makeArchedSprigCard(
-          wh.w * (0.86 + rand() * 0.28),
-          wh.l * (0.86 + rand() * 0.28),
-          0.06,
+          wh.w * (0.88 + rand() * 0.26),
+          wh.l * (0.88 + rand() * 0.26),
+          0.10,
           Math.sin(a) * 0.03,
-          wh.y + (rand() - 0.5) * 0.06,
+          wh.y + (rand() - 0.5) * 0.05,
           Math.cos(a) * 0.03,
           wh.pitch + (rand() - 0.5) * 0.16,
           a,
-          (rand() - 0.5) * 0.22,
-          t < 2 ? spDark : spMid,
+          (rand() - 0.5) * 0.28,
+          t < 3 ? spDark : spMid,
           spTip,
           1.25,
           wh.quad
@@ -1229,9 +1504,9 @@ export function buildSpruceSaplingGeometries() {
     }
   }
   // Signature tall spiky vertical central leader spire protruding cleanly at the top (young-spruce.jpg!)
-  for (let k = 0; k < 3; k++) {
+  for (let k = 0; k < 4; k++) {
     parts.push(
-      makeArchedSprigCard(0.42, 0.98, 0.03, 0, 1.82, 0, 0.04, (k / 3) * Math.PI + 0.2, 0, spMid, spTip, 2.35, 3)
+      makeArchedSprigCard(0.48, 1.02, 0.03, 0, 1.80, 0, 0.05, (k / 4) * Math.PI + 0.15, 0, spMid, spTip, 2.35, 3)
     );
   }
   const foliage = mergeGeometries(parts)!;

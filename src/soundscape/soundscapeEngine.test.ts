@@ -1254,3 +1254,120 @@ test('stopMovementLoops immediately stops active walking, gravel, wading, and sw
   engine.dispose();
 });
 
+test('player.fall triggers distinct surface sounds, selects heavy splash on high drops, and supports custom distance/surface rules', () => {
+  const customConfig: SoundscapeConfig = {
+    ...DEFAULT_SOUNDSCAPE_CONFIG,
+    sounds: [
+      ...DEFAULT_SOUNDSCAPE_CONFIG.sounds,
+      {
+        id: 'custom_high_stone_drop',
+        bus: 'player.movement',
+        trigger: { type: 'event', event: 'player.fall' },
+        conditions: {
+          all: [
+            { 'event.surface': { eq: 'stone' } },
+            { 'event.distanceM': { gte: 1.2 } },
+          ],
+        },
+        assets: [{ assetId: 'proc_fall_land_stone' }],
+        playback: { volume: 0.9, maxInstances: 2, concurrencyPolicy: 'replace_oldest' },
+        spatial: { mode: 'non_spatial' },
+      },
+    ],
+  };
+
+  const { engine, realClock, backend } = createTestEngine({ config: customConfig });
+  let simMs = 5000;
+  engine.step(0.1, makeWorld({ simMs }));
+
+  // 1. Small bank drop-in into bog lake water (0.35m) -> player_fall_water
+  engine.emitEvent({
+    type: 'player.fall',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: -0.35, z: 0 },
+    intensity: 0.65,
+    payload: { distanceM: 0.35, surface: 'water', material: 'water', fromJump: false },
+  });
+  const smallWaterSplash = backend.records.find((r) => r.soundId === 'player_fall_water');
+  assert.ok(smallWaterSplash, 'Expected player_fall_water on small bog bank drop-in');
+  assert.equal(
+    backend.records.some((r) => r.soundId === 'player_fall_water_heavy'),
+    false,
+    'Small bank drop should not trigger heavy plunge splash'
+  );
+
+  // 2. High jump plunge into bog lake water (1.45m) -> player_fall_water_heavy
+  simMs += 400;
+  realClock.advanceMs(400);
+  engine.step(0.1, makeWorld({ simMs }));
+  engine.emitEvent({
+    type: 'player.fall',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 0, y: -0.35, z: 0 },
+    intensity: 1.1,
+    payload: { distanceM: 1.45, surface: 'water', material: 'water', fromJump: true },
+  });
+  assert.ok(
+    backend.records.some((r) => r.soundId === 'player_fall_water_heavy'),
+    'Expected player_fall_water_heavy on high jump plunge into water'
+  );
+
+  // 3. Stepping/jumping down onto different solid surfaces resolves distinct configured sounds
+  const surfaceExpectations: Array<{
+    surface: WorldContext['player']['surfaceMaterial'];
+    distanceM: number;
+    expectedSoundId: string;
+  }> = [
+    { surface: 'stone', distanceM: 0.6, expectedSoundId: 'player_fall_stone' },
+    { surface: 'gravel', distanceM: 0.7, expectedSoundId: 'player_fall_stone' },
+    { surface: 'wooden_boardwalk', distanceM: 0.65, expectedSoundId: 'player_fall_wood' },
+    { surface: 'mud', distanceM: 0.55, expectedSoundId: 'player_fall_mud' },
+    { surface: 'forest_floor', distanceM: 0.6, expectedSoundId: 'player_fall_forest' },
+  ];
+
+  for (const item of surfaceExpectations) {
+    simMs += 400;
+    realClock.advanceMs(400);
+    engine.step(0.1, makeWorld({ simMs }));
+    const before = backend.records.filter((r) => r.soundId === item.expectedSoundId).length;
+    engine.emitEvent({
+      type: 'player.fall',
+      origin: 'player',
+      simulationTimestamp: simMs,
+      position: { x: 2, y: 1, z: 2 },
+      payload: { distanceM: item.distanceM, surface: item.surface, material: item.surface },
+    });
+    const after = backend.records.filter((r) => r.soundId === item.expectedSoundId).length;
+    assert.ok(
+      after > before,
+      `Expected player.fall on ${item.surface} (${item.distanceM}m) to trigger ${item.expectedSoundId}`
+    );
+  }
+
+  // 4. Custom declarative rule filtering event.surface === 'stone' && event.distanceM >= 1.2
+  assert.equal(
+    backend.records.some((r) => r.soundId === 'custom_high_stone_drop'),
+    false,
+    '0.6m stone drop must not trigger custom >=1.2m rule'
+  );
+  simMs += 400;
+  realClock.advanceMs(400);
+  engine.step(0.1, makeWorld({ simMs }));
+  engine.emitEvent({
+    type: 'player.fall',
+    origin: 'player',
+    simulationTimestamp: simMs,
+    position: { x: 2, y: 1, z: 2 },
+    payload: { distanceM: 1.5, surface: 'stone', material: 'stone' },
+  });
+  assert.ok(
+    backend.records.some((r) => r.soundId === 'custom_high_stone_drop'),
+    'Expected custom declarative player.fall rule to fire on 1.5m stone drop'
+  );
+
+  engine.dispose();
+});
+
+

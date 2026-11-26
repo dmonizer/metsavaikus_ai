@@ -542,19 +542,29 @@ export class ComputeEngine {
           r = lerp(grR, 0.055, mix);
           g = lerp(grG, 0.118, mix);
           b = lerp(grB, 0.032, mix);
-        } else if (islandMask > 0.35) {
+        } else if (islandMask > 0.35 && y > SWAMP_WATER_Y + 0.16 && normals[pBase + 1] > 0.86) {
           // Dry mossy swamp island knoll: emerald moss, heather, sandy peat rims
           r = lerp(0.064, 0.105, nCol);
           g = lerp(0.112, 0.158, nCol);
           b = lerp(0.032, 0.042, nCol);
+        } else if (swamp > 0.22 && (y < SWAMP_WATER_Y + 0.14 || (y < SWAMP_WATER_Y + 0.46 && normals[pBase + 1] < 0.88))) {
+          // Steep cut-peat bog bank face & dark submerged peat ledge
+          const bankSlope = clamp((0.92 - normals[pBase + 1]) / 0.24, 0, 1);
+          const peatMix = y < SWAMP_WATER_Y + 0.14 ? 0.94 : Math.max(0.55, bankSlope * 0.92);
+          const rimR = lerp(0.072, 0.145, nCol);
+          const rimG = lerp(0.084, 0.098, nCol);
+          const rimB = lerp(0.030, 0.032, nCol);
+          r = lerp(rimR, 0.026, peatMix);
+          g = lerp(rimG, 0.016, peatMix);
+          b = lerp(rimB, 0.009, peatMix);
         } else if (swamp > 0.35) {
           const bogG_R = lerp(0.075, 0.165, nCol);
           const bogG_G = lerp(0.092, 0.108, nCol);
           const bogG_B = lerp(0.032, 0.034, nCol);
-          const peatMix = y < SWAMP_WATER_Y + 0.12 ? 0.86 : 0.14;
-          r = lerp(bogG_R, 0.032, peatMix);
-          g = lerp(bogG_G, 0.024, peatMix);
-          b = lerp(bogG_B, 0.017, peatMix);
+          const peatMix = y < SWAMP_WATER_Y + 0.16 ? 0.88 : 0.14;
+          r = lerp(bogG_R, 0.028, peatMix);
+          g = lerp(bogG_G, 0.018, peatMix);
+          b = lerp(bogG_B, 0.010, peatMix);
         } else {
           // Lush mossy/grassy forest floor everywhere
           r = lerp(0.052, 0.092, nCol);

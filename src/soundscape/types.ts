@@ -277,6 +277,8 @@ export interface MaterialProfile {
   creak?: MaterialActionRef;
   slide?: MaterialActionRef;
   splash?: MaterialActionRef;
+  fall?: MaterialActionRef;
+  fallHeavy?: MaterialActionRef;
   doorOpen?: MaterialActionRef;
   doorClose?: MaterialActionRef;
   additionalReactions?: MaterialReactionRule[];

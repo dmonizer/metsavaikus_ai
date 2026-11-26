@@ -597,6 +597,176 @@ export class WebAudioHybridBackend implements AudioBackend {
         subSrc.start(now);
         nodes.push(subSrc, lp, subGain);
       }
+    } else if (kind.includes('water_plunge_splash')) {
+      // Multi-layered bog-water plunge splash: cavity kerplunk + turbulent spray burst + droplet tail
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      const whiteBuf = this.whiteNoiseBuf;
+      const pinkBuf = this.pinkNoiseBuf;
+
+      // 1. Deep resonant water-cavity plunge thump ("kerplunk")
+      const cav = ctx.createOscillator();
+      cav.type = 'sine';
+      cav.frequency.setValueAtTime(165 * safePitch, now);
+      cav.frequency.exponentialRampToValueAtTime(52 * safePitch, now + 0.19);
+      const cavGain = ctx.createGain();
+      cavGain.gain.setValueAtTime(0.32, now);
+      cavGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+      cav.connect(cavGain).connect(outFilter);
+      cav.start(now);
+      cav.stop(now + 0.26);
+      nodes.push(cav, cavGain);
+
+      // 2. Main turbulent water splash surge
+      if (pinkBuf) {
+        const surge = ctx.createBufferSource();
+        surge.buffer = pinkBuf;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(1250 * safePitch, now);
+        bp.frequency.exponentialRampToValueAtTime(340, now + 0.65);
+        bp.Q.value = 0.75;
+        const sg = ctx.createGain();
+        sg.gain.setValueAtTime(0.01, now);
+        sg.gain.linearRampToValueAtTime(0.46, now + 0.035);
+        sg.gain.exponentialRampToValueAtTime(0.001, now + 0.85);
+        surge.connect(bp).connect(sg).connect(outFilter);
+        surge.start(now);
+        surge.stop(now + 0.88);
+        nodes.push(surge, bp, sg);
+      }
+
+      // 3. Crisp high-frequency foam spray & trailing splash droplets
+      if (whiteBuf) {
+        const spray = ctx.createBufferSource();
+        spray.buffer = whiteBuf;
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'bandpass';
+        hp.frequency.setValueAtTime(2900 * safePitch, now + 0.02);
+        hp.frequency.exponentialRampToValueAtTime(1150, now + 0.95);
+        hp.Q.value = 1.1;
+        const spg = ctx.createGain();
+        spg.gain.setValueAtTime(0.001, now);
+        spg.gain.linearRampToValueAtTime(0.24, now + 0.06);
+        spg.gain.exponentialRampToValueAtTime(0.001, now + 1.05);
+        spray.connect(hp).connect(spg).connect(outFilter);
+        spray.start(now + 0.015);
+        spray.stop(now + 1.08);
+        nodes.push(spray, hp, spg);
+      }
+    } else if (kind.includes('fall_land_mud')) {
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      const thud = ctx.createOscillator();
+      thud.type = 'sine';
+      thud.frequency.setValueAtTime(125 * safePitch, now);
+      thud.frequency.exponentialRampToValueAtTime(42, now + 0.16);
+      const tg = ctx.createGain();
+      tg.gain.setValueAtTime(0.28, now);
+      tg.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+      thud.connect(tg).connect(outFilter);
+      thud.start(now);
+      thud.stop(now + 0.24);
+      nodes.push(thud, tg);
+      if (this.pinkNoiseBuf) {
+        const squelch = ctx.createBufferSource();
+        squelch.buffer = this.pinkNoiseBuf;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(420 * safePitch, now);
+        bp.frequency.exponentialRampToValueAtTime(980 * safePitch, now + 0.11);
+        bp.frequency.exponentialRampToValueAtTime(240, now + 0.42);
+        bp.Q.value = 2.0;
+        const sg = ctx.createGain();
+        sg.gain.setValueAtTime(0.34, now);
+        sg.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+        squelch.connect(bp).connect(sg).connect(outFilter);
+        squelch.start(now);
+        squelch.stop(now + 0.48);
+        nodes.push(squelch, bp, sg);
+      }
+    } else if (kind.includes('fall_land_wood')) {
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      const plank = ctx.createOscillator();
+      plank.type = 'triangle';
+      plank.frequency.setValueAtTime(158 * safePitch, now);
+      plank.frequency.exponentialRampToValueAtTime(52, now + 0.15);
+      const pg = ctx.createGain();
+      pg.gain.setValueAtTime(0.36, now);
+      pg.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+      plank.connect(pg).connect(outFilter);
+      plank.start(now);
+      plank.stop(now + 0.26);
+      nodes.push(plank, pg);
+      if (this.pinkNoiseBuf) {
+        const rattle = ctx.createBufferSource();
+        rattle.buffer = this.pinkNoiseBuf;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(720 * safePitch, now);
+        bp.Q.value = 1.6;
+        const rg = ctx.createGain();
+        rg.gain.setValueAtTime(0.18, now);
+        rg.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        rattle.connect(bp).connect(rg).connect(outFilter);
+        rattle.start(now);
+        rattle.stop(now + 0.2);
+        nodes.push(rattle, bp, rg);
+      }
+    } else if (kind.includes('fall_land_stone')) {
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      const clack = ctx.createOscillator();
+      clack.type = 'triangle';
+      clack.frequency.setValueAtTime(240 * safePitch, now);
+      clack.frequency.exponentialRampToValueAtTime(78, now + 0.08);
+      const cg = ctx.createGain();
+      cg.gain.setValueAtTime(0.28, now);
+      cg.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+      clack.connect(cg).connect(outFilter);
+      clack.start(now);
+      clack.stop(now + 0.13);
+      nodes.push(clack, cg);
+      if (this.whiteNoiseBuf) {
+        const grit = ctx.createBufferSource();
+        grit.buffer = this.whiteNoiseBuf;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(2200 * safePitch, now);
+        bp.Q.value = 0.9;
+        const gg = ctx.createGain();
+        gg.gain.setValueAtTime(0.26, now);
+        gg.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+        grit.connect(bp).connect(gg).connect(outFilter);
+        grit.start(now);
+        grit.stop(now + 0.25);
+        nodes.push(grit, bp, gg);
+      }
+    } else if (kind.includes('fall_land_soft')) {
+      const safePitch = Number.isFinite(params.pitch) ? Math.max(0.6, Math.min(1.6, params.pitch)) : 1.0;
+      const thump = ctx.createOscillator();
+      thump.type = 'sine';
+      thump.frequency.setValueAtTime(112 * safePitch, now);
+      thump.frequency.exponentialRampToValueAtTime(44, now + 0.13);
+      const tg = ctx.createGain();
+      tg.gain.setValueAtTime(0.26, now);
+      tg.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+      thump.connect(tg).connect(outFilter);
+      thump.start(now);
+      thump.stop(now + 0.19);
+      nodes.push(thump, tg);
+      if (this.pinkNoiseBuf) {
+        const brush = ctx.createBufferSource();
+        brush.buffer = this.pinkNoiseBuf;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(1150 * safePitch, now);
+        bp.Q.value = 0.85;
+        const bg = ctx.createGain();
+        bg.gain.setValueAtTime(0.18, now);
+        bg.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+        brush.connect(bp).connect(bg).connect(outFilter);
+        brush.start(now);
+        brush.stop(now + 0.26);
+        nodes.push(brush, bp, bg);
+      }
     } else if (kind.includes('water_trickling') || kind.includes('river') || kind.includes('campfire')) {
       connectNoise(false, kind.includes('campfire') ? 1400 : 2400, 1.8, 0.1, params.loop, params.loop ? undefined : 0.8);
     } else if (kind.includes('breathing')) {

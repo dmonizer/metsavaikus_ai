@@ -133,15 +133,14 @@ function buildSmoothBogDepthTexture(
     }
   };
 
-  // Pass 1 & 2: smooth the basin contour into C2 curves
-  blurPass(raw, safeSmooth);
-  blurPass(safeSmooth, blurred);
+  // Single smooth pass preserves crisp steep bog-bank drop-offs while rounding contour kinks
+  blurPass(raw, blurred);
 
   // Convex-safe soft pull-in: on convex tips/spits where blurring pushed water slightly
   // over dry terrain, pull depth gently inward before one final rounding pass so water alpha
-  // feathers smoothly to 0 BEFORE raw terrain triangles ever poke above SWAMP_WATER_Y!
+  // feathers cleanly BEFORE raw terrain triangles poke above SWAMP_WATER_Y.
   for (let i = 0; i < count; i++) {
-    eroded[i] = Math.min(blurred[i], raw[i] - 0.022);
+    eroded[i] = Math.min(blurred[i], raw[i] - 0.014);
   }
   blurPass(eroded, safeSmooth);
 
@@ -318,10 +317,10 @@ export function createReflectiveBogWater(
 
         float effDepth = safeDepth + swashShift;
         float depth = max(bodyDepth + swashShift * 0.5, 0.0);
-        // Smoothly feathered shoreline alpha + radial disc rim taper eliminates hard polygonal edges
+        // Tight opacity ramp right off steep peat banks: humic bog water is nearly opaque (not see-through)
         float rimDist = length(p - uCenter);
         float rimMask = 1.0 - smoothstep(uRadius - 10.0, uRadius - 1.5, rimDist);
-        float edgeAlpha = smoothstep(-0.008, 0.095, effDepth) * rimMask;
+        float edgeAlpha = smoothstep(-0.005, 0.036, effDepth) * rimMask;
         if (edgeAlpha < 0.01) discard;
 
         float shoreCalm = smoothstep(0.0, 0.24, depth);
@@ -374,14 +373,18 @@ export function createReflectiveBogWater(
 
         vec3 nrm = normalize(vec3(-grad.x, 1.0, -grad.y));
 
-        // Physical Schlick Fresnel (F0 = 0.02..0.04 at nadir, rich mirror reflection across lake)
+        // Physical Schlick Fresnel:
+        // Looking steeply down into the bog lake from close range (ndv -> 1, f1 -> 0) stays low
+        // (~0.035..0.06) so the opaque dark humic peat-brown water is clearly visible; looking
+        // across the lake at mid-to-grazing angles ramps smoothly into crisp sky & forest mirroring.
         float ndv = clamp(dot(nrm, viewDir), 0.0, 1.0);
         float f1 = 1.0 - ndv;
         float f2 = f1 * f1;
         float f5 = f2 * f2 * f1;
-        // Stronger clear mirror reflectance when calm so sky, clouds, trees, huts & boardwalk reflect crisply
-        float calmBoost = (1.0 - smoothstep(0.0, 0.35, windNorm)) * 0.32;
-        float fresnel = clamp(0.10 + calmBoost * (0.55 + 0.45 * f1) + (0.86 - calmBoost * 0.30) * f5, 0.10, 0.96);
+        float grazingFactor = smoothstep(0.18, 0.78, f1);
+        float distMirrorBoost = smoothstep(4.5, 22.0, dist);
+        float calmBoost = (1.0 - smoothstep(0.0, 0.35, windNorm)) * 0.28 * grazingFactor * (0.45 + 0.55 * distMirrorBoost);
+        float fresnel = clamp(0.035 + calmBoost + (0.91 - calmBoost * 0.35) * f5 + 0.06 * f2 * distMirrorBoost, 0.035, 0.95);
 
         // Analytical sky fallback (only near viewport edges of reflection RT)
         vec3 reflDir = reflect(-viewDir, nrm);
@@ -414,12 +417,16 @@ export function createReflectiveBogWater(
           reflCol = mix(skyFallback, planarCol, validMask);
         }
 
-        // Authentic Estonian humic peat-bog water: warm tea-amber shallows -> deep dark peat black
-        vec3 peatShallow = vec3(0.095, 0.074, 0.044);
-        vec3 peatDeep = vec3(0.016, 0.028, 0.025);
-        float depthMix = smoothstep(0.04, 1.05, depth);
-        vec3 waterBody = mix(peatShallow, peatDeep, depthMix);
-        waterBody += uSkyHorizon * (0.032 * (1.0 - depthMix * 0.65));
+        // Authentic Estonian humic peat-bog (laugas) water: steeped dark tea-brown right at the
+        // steep peat bank rapidly darkening into rich, nearly opaque dark peat-brown (never green/clear)
+        vec3 peatRim = vec3(0.062, 0.031, 0.011);
+        vec3 peatMid = vec3(0.028, 0.014, 0.005);
+        vec3 peatDeep = vec3(0.013, 0.007, 0.003);
+        float shallowMix = smoothstep(0.015, 0.22, depth);
+        float deepMix = smoothstep(0.20, 0.95, depth);
+        vec3 waterBody = mix(peatRim, peatMid, shallowMix);
+        waterBody = mix(waterBody, peatDeep, deepMix);
+        waterBody += uSkyHorizon * (0.008 * (1.0 - deepMix * 0.72));
 
         // Trough shading vs wind-facing crest lift
         float troughShade = mix(1.0, 0.76 + 0.32 * waveCrest, clamp(windNorm, 0.0, 1.0));
@@ -436,15 +443,15 @@ export function createReflectiveBogWater(
           col += uSunColor * (spec + broadSpec);
         }
 
-        // Delicate luminous shoreline meniscus lip + wind-driven crest & shore foam
-        float meniscus = smoothstep(-0.005, 0.025, effDepth) * (1.0 - smoothstep(0.025, 0.095, effDepth));
-        float calmMeniscus = meniscus * (0.14 + 0.14 * activeWave);
+        // Subtle warm peat-tinted shoreline meniscus lip + wind-driven crest & shore foam
+        float meniscus = smoothstep(-0.004, 0.018, effDepth) * (1.0 - smoothstep(0.018, 0.068, effDepth));
+        float calmMeniscus = meniscus * (0.11 + 0.11 * activeWave);
         float foamNoise = sin(p.x * 4.8 + p.y * 3.1 - t * 2.2) * cos(p.x * 2.9 - p.y * 5.4 + t * 1.7);
         float crestFoam = smoothstep(0.56, 0.90, waveCrest + foamNoise * 0.18) * smoothstep(0.42, 1.15, windNorm) * 0.36;
         float shoreRipple = smoothstep(0.01, 0.15, depth) * (1.0 - smoothstep(0.15, 0.34, depth));
         float shoreFoam = shoreRipple * (0.45 + 0.55 * sin(dot(p, wd) * 5.0 - t * 2.8)) * smoothstep(0.22, 0.95, windNorm) * 0.24;
-        vec3 foamCol = mix(vec3(0.76, 0.80, 0.78), uSkyHorizon * 0.96, 0.52);
-        col = mix(col, foamCol, clamp(calmMeniscus + crestFoam + shoreFoam, 0.0, 0.46));
+        vec3 foamCol = mix(vec3(0.56, 0.46, 0.36), uSkyHorizon * 0.88, 0.38);
+        col = mix(col, foamCol, clamp(calmMeniscus + crestFoam + shoreFoam, 0.0, 0.42));
 
         // Exponential distance fog matching Three.js FogExp2
         float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);

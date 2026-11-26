@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  evaluateBogWaterFocusTarget,
   evaluatePlayerWaterState,
   SWIM_ENTER_DEPTH,
   SWIM_EXIT_DEPTH,
@@ -120,3 +121,176 @@ test('dry valleys outside the bog basin and elevated boardwalk planks never trig
   assert.equal(onPlanks.isSwampWading, false);
   assert.equal(onPlanks.canUseBackpack, true);
 });
+
+test('bog lake water prompt requires dot over water plus standing on shore next to water or shallow non-swimming water', () => {
+  // Simple straight bog shoreline: x <= 0 is raised peat shore (+0.32m), x > 0 is bog lake (-0.9m)
+  const shoreLakeTerrain = (x: number, _z: number) =>
+    x <= 0 ? SWAMP_WATER_Y + 0.32 : SWAMP_WATER_Y - 0.9;
+
+  const normalize = (x: number, y: number, z: number) => {
+    const len = Math.hypot(x, y, z);
+    return { dirX: x / len, dirY: y / len, dirZ: z / len };
+  };
+
+  const baseShore = {
+    playerX: -1.1,
+    playerZ: 0,
+    onGround: true,
+    onBoardwalk: false,
+    isSwimming: false,
+    waterDepth: 0,
+    rawGroundY: SWAMP_WATER_Y + 0.32,
+    camX: -1.1,
+    camY: SWAMP_WATER_Y + 0.32 + 1.68,
+    camZ: 0,
+    bogCenterX: 10,
+    bogCenterZ: 0,
+    waterRadius: 60,
+    getTerrainHeightAt: shoreLakeTerrain,
+    getSurfaceHeightAt: shoreLakeTerrain,
+  };
+
+  // 1. Standing on shore next to water, aiming down onto water surface -> TRUE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShore, ...normalize(3.5, -2.0, 0) }),
+    true,
+    'Should allow bog water action when standing on shore next to water with dot over water'
+  );
+
+  // 2. Standing on shore next to water, aiming up at the sky above the bog lake -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShore, ...normalize(3.5, 1.2, 0) }),
+    false,
+    'Must NOT show bog water action when dot is over the sky above bog lake'
+  );
+
+  // 3. Standing on shore next to water, aiming horizontally toward horizon above the bog lake -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShore, ...normalize(1, 0, 0) }),
+    false,
+    'Must NOT show bog water action when dot is horizontal over horizon/sky'
+  );
+
+  // 4. Standing on shore next to water, aiming at the shore bank in front of feet -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShore, ...normalize(0.4, -1.68, 0) }),
+    false,
+    'Must NOT show bog water action when dot is over the shore bank'
+  );
+
+  // 5. Standing on shore next to water, facing away from lake toward bog ground -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShore, ...normalize(-2.5, -1.5, 0) }),
+    false,
+    'Must NOT show bog water action when looking inland at bog shore'
+  );
+
+  // 6. Standing further inland on bog shore (not next to water), aiming toward lake -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({
+      ...baseShore,
+      playerX: -4.2,
+      camX: -4.2,
+      ...normalize(6.0, -2.0, 0),
+    }),
+    false,
+    'Must NOT show bog water action when standing inland away from the shoreline'
+  );
+
+  // 7. Standing in shallow non-swimming water (0.45m deep), aiming at water -> TRUE
+  const shallowTerrain = (x: number, _z: number) =>
+    x <= 0 ? SWAMP_WATER_Y + 0.3 : SWAMP_WATER_Y - 0.45;
+  const baseShallow = {
+    ...baseShore,
+    playerX: 2.0,
+    camX: 2.0,
+    waterDepth: 0.45,
+    rawGroundY: SWAMP_WATER_Y - 0.45,
+    camY: SWAMP_WATER_Y - 0.45 + 1.64,
+    getTerrainHeightAt: shallowTerrain,
+    getSurfaceHeightAt: shallowTerrain,
+  };
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShallow, ...normalize(2.5, -1.2, 0) }),
+    true,
+    'Should allow bog water action when standing in shallow water with dot over water'
+  );
+
+  // 8. Standing in shallow water, aiming up at the sky -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShallow, ...normalize(2.5, 0.8, 0) }),
+    false,
+    'Must NOT show bog water action while standing in shallow water looking at sky'
+  );
+
+  // 9. Standing in shallow water, aiming onto the shore bank -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({ ...baseShallow, ...normalize(-2.6, -0.89, 0) }),
+    false,
+    'Must NOT show bog water action while standing in shallow water looking at shore'
+  );
+
+  // 10. Swimming in deep water, aiming directly at water -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({
+      ...baseShallow,
+      isSwimming: true,
+      waterDepth: 1.5,
+      rawGroundY: SWAMP_WATER_Y - 1.5,
+      camY: SWAMP_WATER_Y + SWIM_EYE_ABOVE_WATER,
+      ...normalize(1.0, -0.5, 0),
+    }),
+    false,
+    'Must NOT show bog water action while swimming'
+  );
+
+  // 11. Standing on boardwalk or airborne, aiming at water -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({
+      ...baseShore,
+      onBoardwalk: true,
+      ...normalize(3.5, -2.0, 0),
+    }),
+    false,
+    'Must NOT show bog water action on boardwalk'
+  );
+  assert.equal(
+    evaluateBogWaterFocusTarget({
+      ...baseShore,
+      onGround: false,
+      ...normalize(3.5, -2.0, 0),
+    }),
+    false,
+    'Must NOT show bog water action while airborne'
+  );
+
+  // 12. Solid obstacle / wall blocks crosshair ray before water -> FALSE
+  assert.equal(
+    evaluateBogWaterFocusTarget({
+      ...baseShore,
+      ...normalize(3.5, -2.0, 0),
+      isSegmentBlocked: () => true,
+    }),
+    false,
+    'Must NOT show bog water action when a solid structure blocks the dot'
+  );
+
+  // 13. Standing next to water on the left (x < -2.2), aiming right across 5m of dry bog to another pool -> FALSE
+  const twoPoolsTerrain = (x: number, _z: number) =>
+    x < -2.2 || x > 4.5 ? SWAMP_WATER_Y - 0.7 : SWAMP_WATER_Y + 0.15;
+  assert.equal(
+    evaluateBogWaterFocusTarget({
+      ...baseShore,
+      playerX: -1.0,
+      camX: -1.0,
+      rawGroundY: SWAMP_WATER_Y + 0.15,
+      camY: SWAMP_WATER_Y + 0.15 + 1.68,
+      getTerrainHeightAt: twoPoolsTerrain,
+      getSurfaceHeightAt: twoPoolsTerrain,
+      ...normalize(6.6, -1.83, 0),
+    }),
+    false,
+    'Must NOT trigger when aiming across wide dry shore toward a separate distant pool'
+  );
+});
+

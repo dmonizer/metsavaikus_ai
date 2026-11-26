@@ -287,9 +287,61 @@ export class SoundscapeEngine {
     nowRealMs: number
   ): void {
     const p = event.payload as Record<string, unknown>;
-    const materialId = (p.material as SurfaceMaterial | string) ?? world.player.surfaceMaterial;
+    const materialId =
+      (p.surface as SurfaceMaterial | string) ??
+      (p.material as SurfaceMaterial | string) ??
+      world.player.surfaceMaterial;
     const mat = this.normalized.materialMap.get(materialId);
     if (!mat) return;
+
+    if (event.type === 'player.fall') {
+      const distanceM =
+        typeof p.distanceM === 'number' && Number.isFinite(p.distanceM)
+          ? Math.max(0, p.distanceM)
+          : typeof p.distance === 'number' && Number.isFinite(p.distance)
+            ? Math.max(0, p.distance)
+            : 0.4;
+      const ref = distanceM >= 0.95 && mat.fallHeavy ? mat.fallHeavy : mat.fall;
+      if (ref) {
+        const sDef = this.normalized.soundMap.get(ref.sound);
+        if (sDef) {
+          const distVolScale = Math.max(0.45, Math.min(1.4, 0.52 + distanceM * 0.44));
+          const distPitchScale = Math.max(0.84, Math.min(1.08, 1.05 - distanceM * 0.08));
+          const eventInt = event.intensity !== undefined ? Math.max(0.35, Math.min(1.4, event.intensity)) : 1;
+          this.playSoundDefinition(sDef, {
+            world,
+            originEvent: event,
+            explicitPosition: event.position ?? world.listener.position,
+            sourceStructureId: world.structure.id,
+            sourceInsideSameStructure: world.structure.quality !== 'outdoor',
+            reason: `fall:${materialId}:${distanceM.toFixed(2)}m`,
+            volumeScale: (ref.volumeScale ?? 1) * distVolScale * (0.75 + 0.25 * eventInt),
+            pitchScale: (ref.pitchScale ?? 1) * distPitchScale,
+          });
+        }
+      }
+
+      if (mat.additionalReactions) {
+        for (const r of mat.additionalReactions) {
+          if (r.event !== 'player.fall') continue;
+          if (r.minIntensity !== undefined && (event.intensity ?? 1) < r.minIntensity) continue;
+          if (this.rng.next() <= (r.probability ?? 1)) {
+            const sDef = this.normalized.soundMap.get(r.sound);
+            if (sDef) {
+              this.playSoundDefinition(sDef, {
+                world,
+                originEvent: event,
+                explicitPosition: event.position ?? world.listener.position,
+                sourceStructureId: world.structure.id,
+                sourceInsideSameStructure: world.structure.quality !== 'outdoor',
+                reason: `material_fall_reaction:${mat.id}`,
+              });
+            }
+          }
+        }
+      }
+      return;
+    }
 
     if (event.type === 'player.step') {
       const gait = ((p.gait as GaitType) ?? world.player.gait ?? 'walk') as GaitType;

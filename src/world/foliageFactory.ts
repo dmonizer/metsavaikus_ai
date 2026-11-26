@@ -48,9 +48,11 @@ import {
   buildBogPineGeometries,
   buildConnectedTube,
   buildErraticBoulderGeo,
+  buildLoneSpruceGeometries,
   buildPineGeometries,
   buildSpruceGeometries,
   buildSpruceSaplingGeometries,
+  classifySpruceGrowthForm,
   ConnectedTubeSegment,
   createBogPineSegments,
   makeArchedSprigCard,
@@ -1073,6 +1075,7 @@ interface SubCellBaked {
   pine: BakedSlab;
   bogPine: BakedSlab;
   spruce: BakedSlab;
+  loneSpruce: BakedSlab;
   sapling: BakedSlab;
   hazelBush: BakedSlab;
   juniperBush: BakedSlab;
@@ -1268,6 +1271,13 @@ export class WorldVegetationSystem {
   private spruceTrunk2!: THREE.InstancedMesh;
   private spruceCrown2!: THREE.InstancedMesh;
 
+  private loneSpruceTrunk0!: THREE.InstancedMesh;
+  private loneSpruceCrown0!: THREE.InstancedMesh;
+  private loneSpruceTrunk1!: THREE.InstancedMesh;
+  private loneSpruceCrown1!: THREE.InstancedMesh;
+  private loneSpruceTrunk2!: THREE.InstancedMesh;
+  private loneSpruceCrown2!: THREE.InstancedMesh;
+
   private saplingTrunkMesh!: THREE.InstancedMesh;
   private saplingLeafMesh!: THREE.InstancedMesh;
   private deadfallMesh!: THREE.InstancedMesh;
@@ -1393,6 +1403,12 @@ export class WorldVegetationSystem {
     const pine: InstanceRecord[] = [];
     const bogPine: InstanceRecord[] = [];
     const spruce: InstanceRecord[] = [];
+    const loneSpruce: InstanceRecord[] = [];
+    const spruceCandidates: Array<{
+      rec: InstanceRecord;
+      openness: number;
+      thicket: number;
+    }> = [];
     const sapling: InstanceRecord[] = [];
     const hazelBush: InstanceRecord[] = [];
     const juniperBush: InstanceRecord[] = [];
@@ -1482,7 +1498,18 @@ export class WorldVegetationSystem {
         pine.push(rec);
         colliders.push({ x: tx, z: tz, r: 0.26 * s });
       } else {
-        spruce.push(rec);
+        const roadInfo = distToRoadDetail(tx, tz);
+        const gladeNoise = smoothNoise(tx * 0.048 + 3.1, tz * 0.048 - 2.7);
+        const openness = computeOpennessFactor(
+          nearV.dist,
+          nearV.village ? nearV.village.clearingRadius : 0,
+          roadInfo.dist,
+          roadInfo.isTrail,
+          swamp,
+          onIsland ? isl.islandMask : 0,
+          gladeNoise
+        );
+        spruceCandidates.push({ rec, openness, thicket });
         colliders.push({ x: tx, z: tz, r: 0.28 * s });
       }
     }
@@ -1590,6 +1617,42 @@ export class WorldVegetationSystem {
           });
           colliders.push({ x: tx, z: tz, r: 0.74 * s });
         }
+      }
+    }
+
+    // Classify Norway spruce candidates into broad ground-skirting lone-standing spruces (lone-spruce.jpg)
+    // vs self-pruned dense woodland spruces (kuusiku-alune.jpg) using local tree crowding & canopy openness
+    const neighborRadiusSq = 9.0 * 9.0;
+    for (let i = 0; i < spruceCandidates.length; i++) {
+      const cand = spruceCandidates[i];
+      const cx = cand.rec.x;
+      const cz = cand.rec.z;
+      let nearbyTall = 0;
+      for (let j = 0; j < birch.length; j++) {
+        const dx = birch[j].x - cx;
+        const dz = birch[j].z - cz;
+        if (dx * dx + dz * dz < neighborRadiusSq) nearbyTall++;
+      }
+      for (let j = 0; j < pine.length; j++) {
+        const dx = pine[j].x - cx;
+        const dz = pine[j].z - cz;
+        if (dx * dx + dz * dz < neighborRadiusSq) nearbyTall++;
+      }
+      for (let j = 0; j < spruce.length; j++) {
+        const dx = spruce[j].x - cx;
+        const dz = spruce[j].z - cz;
+        if (dx * dx + dz * dz < neighborRadiusSq) nearbyTall++;
+      }
+      for (let j = 0; j < spruceCandidates.length; j++) {
+        if (i === j) continue;
+        const dx = spruceCandidates[j].rec.x - cx;
+        const dz = spruceCandidates[j].rec.z - cz;
+        if (dx * dx + dz * dz < neighborRadiusSq) nearbyTall++;
+      }
+      if (classifySpruceGrowthForm(cand.openness, nearbyTall, cand.thicket) === 'lone') {
+        loneSpruce.push(cand.rec);
+      } else {
+        spruce.push(cand.rec);
       }
     }
 
@@ -1741,6 +1804,7 @@ export class WorldVegetationSystem {
     const qPine = partitionByQuadrant(pine, centerX, centerZ);
     const qBogPine = partitionByQuadrant(bogPine, centerX, centerZ);
     const qSpruce = partitionByQuadrant(spruce, centerX, centerZ);
+    const qLoneSpruce = partitionByQuadrant(loneSpruce, centerX, centerZ);
     const qSapling = partitionByQuadrant(sapling, centerX, centerZ);
     const qHazel = partitionByQuadrant(hazelBush, centerX, centerZ);
     const qJuniper = partitionByQuadrant(juniperBush, centerX, centerZ);
@@ -1771,7 +1835,8 @@ export class WorldVegetationSystem {
       const sBirch = bakeRecords(qBirch[q], 6.6, 8.4);
       const sPine = bakeRecords(qPine[q], 8.0, 9.4);
       const sBogPine = bakeRecords(qBogPine[q], 1.6, 2.5);
-      const sSpruce = bakeRecords(qSpruce[q], 7.2, 8.6);
+      const sSpruce = bakeRecords(qSpruce[q], 7.2, 8.8);
+      const sLoneSpruce = bakeRecords(qLoneSpruce[q], 7.0, 9.4);
       const sSapling = bakeRecords(qSapling[q], 1.3, 2.0);
       const sHazel = bakeRecords(qHazel[q], 1.1, 1.9);
       const sJuniper = bakeRecords(qJuniper[q], 0.9, 1.6);
@@ -1788,6 +1853,7 @@ export class WorldVegetationSystem {
         sPine.count +
         sBogPine.count +
         sSpruce.count +
+        sLoneSpruce.count +
         sSapling.count +
         sHazel.count +
         sJuniper.count +
@@ -1823,7 +1889,7 @@ export class WorldVegetationSystem {
       const qx = minX + ((q & 1) ? quarter * 3 : quarter);
       const qz = minZ + ((q & 2) ? quarter * 3 : quarter);
       const baseH = getTerrainHeight(qx, qz);
-      const hasTallTrees = sBirch.count + sPine.count + sSpruce.count > 0;
+      const hasTallTrees = sBirch.count + sPine.count + sSpruce.count + sLoneSpruce.count > 0;
       const cy = baseH + (hasTallTrees ? 7.5 : 1.5);
       // Half-diagonal of 24x24m quadrant (~17m) + crown overhang
       const r = hasTallTrees ? 22.5 : 18.5;
@@ -1837,6 +1903,7 @@ export class WorldVegetationSystem {
         pine: sPine,
         bogPine: sBogPine,
         spruce: sSpruce,
+        loneSpruce: sLoneSpruce,
         sapling: sSapling,
         hazelBush: sHazel,
         juniperBush: sJuniper,
@@ -1939,6 +2006,7 @@ export class WorldVegetationSystem {
     const pine = buildPineGeometries();
     const bogPine = buildBogPineGeometries();
     const spruce = buildSpruceGeometries();
+    const loneSpruce = buildLoneSpruceGeometries();
     const sapling = buildSpruceSaplingGeometries();
     const hazel = buildHazelBushGeometries();
     const juniperGeo = buildJuniperBushGeo();
@@ -2151,7 +2219,7 @@ export class WorldVegetationSystem {
 
     const spruceLeaf0Mat = new THREE.MeshLambertMaterial({
       map: textures.spruceBoughCard,
-      alphaTest: 0.45,
+      alphaTest: 0.36,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
@@ -2167,7 +2235,7 @@ export class WorldVegetationSystem {
 
     const spruceLeaf1Mat = new THREE.MeshLambertMaterial({
       map: textures.spruceBoughCard,
-      alphaTest: 0.45,
+      alphaTest: 0.35,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
@@ -2184,7 +2252,7 @@ export class WorldVegetationSystem {
 
     const spruceLeaf2Mat = new THREE.MeshLambertMaterial({
       map: textures.spruceBoughCard,
-      alphaTest: 0.45,
+      alphaTest: 0.34,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
@@ -2218,7 +2286,7 @@ export class WorldVegetationSystem {
     });
     const saplingLeafMat = new THREE.MeshLambertMaterial({
       map: textures.spruceBoughCard,
-      alphaTest: 0.45,
+      alphaTest: 0.38,
       vertexColors: true,
       side: THREE.DoubleSide,
     });
@@ -2424,6 +2492,13 @@ export class WorldVegetationSystem {
     this.spruceCrown1 = this.createPairedFollower(this.spruceTrunk1, spruce.crownLod1, spruceLeaf1Mat, CAP_LOD1);
     this.spruceTrunk2 = this.createInstanced(spruce.trunkLod2, spruceBark2Mat, CAP_LOD2, false, false);
     this.spruceCrown2 = this.createPairedFollower(this.spruceTrunk2, spruce.crownLod2, spruceLeaf2Mat, CAP_LOD2);
+
+    this.loneSpruceTrunk0 = this.createInstanced(loneSpruce.trunkLod0, spruceBark0Mat, CAP_LOD0, shadows, true);
+    this.loneSpruceCrown0 = this.createPairedFollower(this.loneSpruceTrunk0, loneSpruce.crownLod0, spruceLeaf0Mat, CAP_LOD0);
+    this.loneSpruceTrunk1 = this.createInstanced(loneSpruce.trunkLod1, spruceBark1Mat, CAP_LOD1, false, false);
+    this.loneSpruceCrown1 = this.createPairedFollower(this.loneSpruceTrunk1, loneSpruce.crownLod1, spruceLeaf1Mat, CAP_LOD1);
+    this.loneSpruceTrunk2 = this.createInstanced(loneSpruce.trunkLod2, spruceBark2Mat, CAP_LOD2, false, false);
+    this.loneSpruceCrown2 = this.createPairedFollower(this.loneSpruceTrunk2, loneSpruce.crownLod2, spruceLeaf2Mat, CAP_LOD2);
 
     this.saplingTrunkMesh = this.createInstanced(sapling.trunk, saplingTrunkMat, CAP_SAPLING, false, true);
     this.saplingLeafMesh = this.createPairedFollower(this.saplingTrunkMesh, sapling.foliage, saplingLeafMat, CAP_SAPLING);
@@ -3539,16 +3614,19 @@ export class WorldVegetationSystem {
           renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.loneSpruce, this.loneSpruceTrunk0, CAP_LOD0, cellStatus, frustumPlanes);
         }
         if (dSq >= lod1MinSq && dSq <= lod1MaxSq) {
           renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.loneSpruce, this.loneSpruceTrunk1, CAP_LOD1, cellStatus, frustumPlanes);
         }
         if (dSq >= lod2MinSq) {
           renderedInstances += this.appendSlabSmart(cell.birch, this.birchTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.pine, this.pineTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
           renderedInstances += this.appendSlabSmart(cell.spruce, this.spruceTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
+          renderedInstances += this.appendSlabSmart(cell.loneSpruce, this.loneSpruceTrunk2, CAP_LOD2, cellStatus, frustumPlanes);
         }
 
         if (dSq < bogDistSq) {
@@ -3594,6 +3672,9 @@ export class WorldVegetationSystem {
       this.spruceTrunk0.count +
       this.spruceTrunk1.count +
       this.spruceTrunk2.count +
+      this.loneSpruceTrunk0.count +
+      this.loneSpruceTrunk1.count +
+      this.loneSpruceTrunk2.count +
       this.saplingTrunkMesh.count +
       this.hazelStemMesh.count +
       this.juniperMesh.count;

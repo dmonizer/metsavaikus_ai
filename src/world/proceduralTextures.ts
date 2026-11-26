@@ -1653,9 +1653,10 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
   );
 
   // Norway Spruce 2x2 Multi-Variant Botanical Atlas (1024x1024 — matching lone-spruce.jpg & young-spruce.jpg!)
-  // Deeply feathered, irregular spaced lateral branchlets with daylight gaps & crisp prickly comb needles
-  // Q0: Broad lower drooping bough with hanging fringed sub-shoots | Q1: Asymmetric feathery mid-crown bough
-  // Q2: Crisp radiating sapling / upper-crown shoot with bright spring tips | Q3: Spiky vertical leader spire
+  // Plush, deeply layered evergreen boughs with solid shadowed inner needle cushions, dense overlapping
+  // hanging comb fringes, and ragged spiky outer silhouettes (no skeletal fishbone gaps!)
+  // Q0: Heavy lower drooping bough with dense hanging fringed curtains | Q1: Full layered mid-crown bough
+  // Q2: Lush upper-crown / sapling shoot with olive-green sunlit tips | Q3: Bushy conical spire apex
   const spruceBoughCard = makeCanvasTex(
     1024,
     1024,
@@ -1672,7 +1673,8 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
         needleLen: number,
         twigW: number,
         tipBright: boolean,
-        hangFringe: boolean
+        hangFringe: boolean,
+        darkCore = false
       ) => {
         const dx = x1 - x0;
         const dy = y1 - y0;
@@ -1682,49 +1684,99 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
         const px = -uy;
         const py = ux;
 
-        // Woody mahogany sub-twig spine
-        ctx.strokeStyle = '#473021';
-        ctx.lineWidth = twigW;
+        // Soft shaded inner needle underlay along twig spine so overlapping shoots fuse into real evergreen mass
+        ctx.strokeStyle = darkCore ? 'rgba(18, 36, 16, 0.92)' : 'rgba(28, 52, 22, 0.88)';
+        ctx.lineWidth = Math.max(twigW * 2.2, needleLen * 0.72);
         ctx.beginPath();
         ctx.moveTo(x0, y0);
-        ctx.lineTo(x1, y1);
+        ctx.lineTo(x0 + dx * 0.88, y0 + dy * 0.88);
         ctx.stroke();
 
-        // Crisp prickly needles swept forward at ~48° along both sides of the sub-twig
-        const stepPx = 5.4;
-        const steps = Math.max(4, Math.floor(dist / stepPx));
+        // Woody dark mahogany inner twig spine (barely peeking through dense needles)
+        ctx.strokeStyle = '#3b2619';
+        ctx.lineWidth = twigW * 0.82;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x0 + dx * 0.82, y0 + dy * 0.82);
+        ctx.stroke();
+
+        // Dense prickly Norway spruce needles swept forward along both sides of the sub-twig
+        const stepPx = 3.9;
+        const steps = Math.max(5, Math.floor(dist / stepPx));
         for (let s = 1; s <= steps; s++) {
           const t = s / steps;
           const bx = x0 + dx * t;
           const by = y0 + dy * t;
-          const taper = 0.65 + 0.5 * Math.sin(t * Math.PI * 0.85);
-          const nL = needleLen * taper * (0.78 + rand() * 0.44);
+          const taper = 0.72 + 0.48 * Math.sin(t * Math.PI * 0.88);
+          const nL = needleLen * taper * (0.82 + rand() * 0.42);
           for (const side of [-1, 1]) {
-            const forward = 0.64 + rand() * 0.24;
-            const spread = 0.72 + rand() * 0.26;
+            const forward = 0.56 + rand() * 0.30;
+            const spread = 0.78 + rand() * 0.28;
             let nx = bx + (ux * forward + px * side * spread) * nL;
             let ny = by + (uy * forward + py * side * spread) * nL;
-            if (hangFringe && side === 1 && rand() < 0.48) {
-              // Characteristic hanging Norway spruce comb fringe
-              ny += nL * (0.45 + rand() * 0.45);
+            if (hangFringe && (side === 1 || rand() < 0.35)) {
+              // Characteristic heavy hanging Norway spruce comb curtains (lone-spruce.jpg!)
+              ny += nL * (0.48 + rand() * 0.56);
             }
             ctx.strokeStyle = spPat;
-            ctx.lineWidth = 2.6 + (1 - t) * 0.9;
+            ctx.lineWidth = 3.2 + (1 - t) * 1.15;
             ctx.beginPath();
             ctx.moveTo(bx, by);
             ctx.lineTo(nx, ny);
             ctx.stroke();
 
-            ctx.strokeStyle =
-              tipBright && t > 0.66
-                ? 'rgba(136,184,74,0.52)'
-                : t > 0.58
-                  ? 'rgba(98,148,54,0.42)'
-                  : t < 0.24
-                    ? 'rgba(18,38,18,0.44)'
-                    : 'rgba(42,78,34,0.30)';
-            ctx.lineWidth = 1.65;
+            ctx.strokeStyle = darkCore
+              ? 'rgba(16,34,15,0.58)'
+              : tipBright && t > 0.62
+                ? 'rgba(128,174,68,0.52)'
+                : t > 0.52
+                  ? 'rgba(84,132,46,0.44)'
+                  : t < 0.28
+                    ? 'rgba(18,38,16,0.54)'
+                    : 'rgba(38,72,28,0.38)';
+            ctx.lineWidth = 2.0;
             ctx.stroke();
+          }
+        }
+      };
+
+      const drawInnerCoreCushion = (
+        rand: () => number,
+        widthScale: number,
+        topY: number,
+        bottomY: number
+      ) => {
+        // Dense irregular core of overlapping spruce-needle tufts along the central 68% of the bough
+        // Eliminates skeletal see-through fishbone gaps while preserving irregular spiky perimeter!
+        const rows = 15;
+        for (let r = 0; r < rows; r++) {
+          const prog = r / (rows - 1);
+          const y = bottomY - prog * (bottomY - topY);
+          const halfSpan = (32 + Math.pow(Math.sin(Math.min(1, prog * 0.94 + 0.06) * Math.PI), 0.72) * 116) * widthScale;
+          const tuftCount = Math.max(3, Math.round(halfSpan / 22));
+          for (let k = 0; k < tuftCount; k++) {
+            const u = tuftCount === 1 ? 0 : (k / (tuftCount - 1)) * 2 - 1;
+            const cx = 256 + u * halfSpan * (0.72 + rand() * 0.35);
+            const cy = y + (rand() - 0.5) * 20;
+            const rx = (22 + rand() * 20) * widthScale * (1 - prog * 0.32);
+            const ry = 18 + rand() * 16;
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.rotate((rand() - 0.5) * 0.9);
+            ctx.fillStyle = spPat;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle =
+              Math.abs(u) < 0.45
+                ? 'rgba(15, 33, 14, 0.56)'
+                : prog > 0.65
+                  ? 'rgba(54, 92, 34, 0.34)'
+                  : 'rgba(26, 52, 20, 0.44)';
+            ctx.beginPath();
+            ctx.ellipse(0, 0, rx * 0.92, ry * 0.92, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
           }
         }
       };
@@ -1739,37 +1791,43 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
         ctx.lineCap = 'round';
 
         if (q === 3) {
-          // Q3: Spiky upright leader shoot & radiating ascending shoots (young-spruce.jpg spire!)
-          drawNeedleShoot(rand, 256, 496, 256, 20, 20, 6.4, true, false);
+          // Q3: Lush bushy conical spruce spire apex with dense overlapping ascending shoots (lone-spruce.jpg top!)
+          drawInnerCoreCushion(rand, 0.68, 76, 476);
+          drawNeedleShoot(rand, 256, 496, 256, 16, 23, 6.8, true, false);
 
           const whorls = [
-            { y: 432, len: 192, rise: 118 },
-            { y: 344, len: 162, rise: 112 },
-            { y: 256, len: 126, rise: 96 },
-            { y: 172, len: 88, rise: 78 },
-            { y: 98, len: 48, rise: 54 },
+            { y: 468, len: 212, rise: 108 },
+            { y: 416, len: 196, rise: 112 },
+            { y: 360, len: 174, rise: 108 },
+            { y: 304, len: 148, rise: 100 },
+            { y: 248, len: 122, rise: 92 },
+            { y: 194, len: 94, rise: 82 },
+            { y: 142, len: 68, rise: 68 },
+            { y: 92, len: 42, rise: 52 },
           ];
           for (const wh of whorls) {
             for (const side of [-1, 1]) {
               const jitterLen = wh.len * (0.86 + rand() * 0.24);
               const ex = 256 + side * jitterLen;
-              const ey = wh.y - wh.rise * (0.88 + rand() * 0.22);
-              drawNeedleShoot(rand, 256, wh.y, ex, ey, 16.5, 3.6, true, false);
-              // Fine sub-fork off larger lower shoots
-              if (wh.len > 110) {
-                const mx = 256 + side * jitterLen * 0.48;
-                const my = wh.y - wh.rise * 0.46;
-                drawNeedleShoot(
-                  rand,
-                  mx,
-                  my,
-                  mx + side * jitterLen * 0.42,
-                  my - wh.rise * 0.22 + 18,
-                  13.5,
-                  2.4,
-                  true,
-                  false
-                );
+              const ey = wh.y - wh.rise * (0.86 + rand() * 0.24);
+              drawNeedleShoot(rand, 256, wh.y, ex, ey, 19.5, 4.0, true, false);
+              if (wh.len > 75) {
+                for (let sub = 0; sub < 2; sub++) {
+                  const st = 0.34 + sub * 0.34;
+                  const mx = 256 + side * jitterLen * st;
+                  const my = wh.y - wh.rise * st;
+                  drawNeedleShoot(
+                    rand,
+                    mx,
+                    my,
+                    mx + side * jitterLen * (0.38 - sub * 0.08),
+                    my - wh.rise * (0.28 - sub * 0.06) + (sub === 0 ? 18 : -8),
+                    15.5,
+                    2.8,
+                    true,
+                    false
+                  );
+                }
               }
             }
           }
@@ -1777,48 +1835,84 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
           return;
         }
 
-        // Q0, Q1, Q2: Spaced, jagged, deeply-feathered Norway spruce boughs with clear sky-gaps between sub-shoots!
-        const widthScale = q === 0 ? 1.06 : q === 1 ? 0.94 : 0.82;
-        const hangFringe = q === 0;
+        // Q0, Q1, Q2: Plush, dense, heavily-needled Norway spruce boughs with shadowed core & spiky irregular fringes
+        const widthScale = q === 0 ? 1.14 : q === 1 ? 1.04 : 0.94;
+        const hangFringe = q === 0 || q === 1;
         const brightTips = q === 2 || q === 1;
 
-        // Central woody rachis with prickly tip needles
-        drawNeedleShoot(rand, 256, 496, 256, 28, 17, q === 0 ? 7.6 : 6.2, brightTips, false);
+        // Layer 1: Shadowed interior evergreen needle cushion
+        drawInnerCoreCushion(rand, widthScale * 0.92, 64, 476);
 
-        // 7 clearly spaced irregular lateral branch plumes (NOT dense 14px fused rows!)
-        const plumeYs =
-          q === 0
-            ? [448, 384, 322, 260, 200, 144, 92]
-            : q === 1
-              ? [442, 376, 308, 244, 184, 128, 82]
-              : [436, 368, 302, 236, 174, 118, 74];
+        // Layer 2: Deep background shadow shoots for rich 3D overlapping branch depth
+        const backYs = [466, 412, 358, 304, 250, 196, 144, 96];
+        for (let p = 0; p < backYs.length; p++) {
+          const y = backYs[p] + (rand() - 0.5) * 14;
+          const prog = (470 - y) / 410;
+          const profile = Math.pow(Math.sin(Math.min(1, prog * 0.93 + 0.07) * Math.PI), 0.68);
+          for (const side of [-1, 1]) {
+            const span = (56 + profile * 165) * widthScale * (0.82 + rand() * 0.34);
+            const rise = (q === 2 ? 58 : 34) * (0.6 + prog * 0.45) + rand() * 18;
+            const ex = Math.max(18, Math.min(494, 256 + side * span));
+            const ey = Math.max(20, y - rise);
+            drawNeedleShoot(rand, 256, y, ex, ey, 20, 4.4, false, hangFringe, true);
+          }
+        }
 
-        for (let p = 0; p < plumeYs.length; p++) {
-          const y = plumeYs[p] + (rand() - 0.5) * 14;
-          const prog = (460 - y) / 400;
-          // Irregular jagged outer silhouette (some shoots longer, some shorter like real spruce boughs!)
-          const profile = Math.pow(Math.sin(Math.min(1, prog * 0.92 + 0.08) * Math.PI), 0.72);
+        // Layer 3: Central rachis shoot
+        drawNeedleShoot(rand, 256, 496, 256, 22, 20.5, q === 0 ? 7.6 : 6.4, brightTips, false);
+
+        // Layer 4: 13 closely layered foreground lateral plumes with dense secondary & hanging comb sub-shoots!
+        const plumeCount = q === 0 ? 13 : q === 1 ? 12 : 11;
+        for (let p = 0; p < plumeCount; p++) {
+          const frac = p / (plumeCount - 1);
+          const y = 472 - frac * 408 + (rand() - 0.5) * 12;
+          const prog = (476 - y) / 416;
+          // Irregular jagged outer silhouette (some shoots longer, some shorter like real Norway spruce boughs!)
+          const profile = Math.pow(Math.sin(Math.min(1, prog * 0.92 + 0.08) * Math.PI), 0.66);
 
           for (const side of [-1, 1]) {
-            const asym = 0.76 + rand() * 0.44;
-            const span = (48 + profile * 172) * widthScale * asym;
-            const rise = (q === 2 ? 78 : q === 1 ? 64 : 46) * (0.65 + prog * 0.45) + rand() * 22;
-            const ex = Math.max(20, Math.min(492, 256 + side * span));
-            const ey = Math.max(22, y - rise);
+            const asym = 0.78 + rand() * 0.42;
+            const span = (58 + profile * 176) * widthScale * asym;
+            const rise = (q === 2 ? 72 : q === 1 ? 52 : 34) * (0.62 + prog * 0.45) + rand() * 22;
+            const ex = Math.max(16, Math.min(496, 256 + side * span));
+            const ey = Math.max(18, y - rise);
 
-            drawNeedleShoot(rand, 256, y, ex, ey, q === 2 ? 15.5 : 17.5, 3.8, brightTips, hangFringe);
+            drawNeedleShoot(
+              rand,
+              256,
+              y,
+              ex,
+              ey,
+              q === 2 ? 18.5 : 21.0,
+              4.2,
+              brightTips,
+              hangFringe
+            );
 
-            // 2 secondary lateral feathery sub-twigs branching off each main plume -> authentic lacy conifer silhouette!
-            if (span > 82) {
-              for (let sub = 0; sub < 2; sub++) {
-                const st = 0.36 + sub * 0.32;
+            // 3 secondary lateral & hanging feathery sub-shoots branching off each plume -> plush layered skirt!
+            if (span > 68) {
+              for (let sub = 0; sub < 3; sub++) {
+                const st = 0.28 + sub * 0.26;
                 const sx = 256 + (ex - 256) * st;
                 const sy = y + (ey - y) * st;
-                const subLen = span * (0.44 - sub * 0.1) * (0.82 + rand() * 0.34);
-                const subDir = sub === 0 ? 1 : -1;
-                const sEx = Math.max(18, Math.min(494, sx + side * subLen * 0.72));
-                const sEy = Math.max(20, Math.min(486, sy + (subDir > 0 ? (hangFringe ? 28 : 12) : -subLen * 0.68)));
-                drawNeedleShoot(rand, sx, sy, sEx, sEy, 13.5, 2.3, brightTips, hangFringe && sub === 0);
+                const subLen = span * (0.46 - sub * 0.08) * (0.8 + rand() * 0.36);
+                const isHanging = sub !== 1;
+                const sEx = Math.max(14, Math.min(498, sx + side * subLen * (isHanging ? 0.64 : 0.76)));
+                const sEy = Math.max(
+                  18,
+                  Math.min(492, sy + (isHanging ? (hangFringe ? 38 + rand() * 18 : 18) : -subLen * 0.64))
+                );
+                drawNeedleShoot(
+                  rand,
+                  sx,
+                  sy,
+                  sEx,
+                  sEy,
+                  16.0,
+                  2.8,
+                  brightTips || sub === 2,
+                  hangFringe && isHanging
+                );
               }
             }
           }
@@ -1831,7 +1925,7 @@ export async function createWorldTextures(maxAnisotropy: number): Promise<WorldT
       drawSpruceQuad(2, 0, 512);
       drawSpruceQuad(3, 512, 512);
     },
-    { clamp: true, anisotropy: aniso, bleedRgb: [46, 82, 36] }
+    { clamp: true, anisotropy: aniso, bleedRgb: [38, 68, 28] }
   );
 
   // Woodland Fern Frond Card (256x512 — delicate pinnate forest fern matching kukeseened_metsas.jpg)

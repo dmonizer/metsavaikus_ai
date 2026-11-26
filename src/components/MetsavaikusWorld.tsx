@@ -1,4 +1,4 @@
-import { moveSphere, pushCharacterOut } from '../world/spatialPhysics';
+import { moveSphere, pushCharacterOut, sweepSphere } from '../world/spatialPhysics';
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
@@ -107,7 +107,13 @@ import {
   tryIgniteCampfire,
 } from '../game/survivalEngine';
 import { FpsDropLogger, FramePerfSample } from '../game/perfLogger';
-import { evaluatePlayerWaterState, SWIM_EYE_ABOVE_WATER } from '../game/waterPhysics';
+import {
+  evaluateBogWaterFocusTarget,
+  evaluatePlayerWaterState,
+  SWIM_ENTER_DEPTH,
+  SWIM_EXIT_DEPTH,
+  SWIM_EYE_ABOVE_WATER,
+} from '../game/waterPhysics';
 import {
   buildArchitectureAndProps,
   CampfireInfo,
@@ -727,6 +733,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     let totalDistanceMoved = 0;
     let playerExertion = 0;
     let prevOnGround = true;
+    let fallPeakY = player.pos.y;
+    let fallFromJump = false;
+    let waterFallEmitted = false;
+    let prevInWater = false;
+    let climbingOutOfWater = false;
     let playerSpeedMps = 0;
     let lastIsMoving = false;
     let lastWantRun = false;
@@ -881,6 +892,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       lastIsSwampWading = false;
       playerSpeedMps = 0;
       lastLocomotion = 'idle';
+      fallPeakY = player.pos.y;
+      fallFromJump = false;
+      waterFallEmitted = false;
+      prevInWater = false;
+      climbingOutOfWater = false;
       soundscape.engine.stopMovementLoops(true);
       uiModalOpen = false;
       sleepSession = null;
@@ -917,6 +933,28 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (isPointOnBoardwalkZone(propsCtx.boardwalkZones[i], x, z)) return true;
       }
       return false;
+    }
+
+    function resolvePlayerSurfaceMaterial(
+      x: number,
+      z: number,
+      onBoardwalkNow: boolean,
+      inWaterNow: boolean,
+      swampWadingNow: boolean
+    ): SurfaceMaterial {
+      if (onBoardwalkNow) return 'wooden_boardwalk';
+      if (inWaterNow) return 'water';
+      if (propsCtx) {
+        const struct = propsCtx.getStructureAcousticsAt(x, z);
+        if (struct.id && struct.quality !== 'outdoor' && struct.quality !== 'tent') {
+          return struct.floorMaterial;
+        }
+      }
+      if (swampWadingNow) return 'mud';
+      const roadInfo = distToRoadDetail(x, z);
+      if (roadInfo.dist < 3.3 && !roadInfo.isTrail) return 'gravel';
+      if (getBiomeInfo(x, z).id === 'village') return 'grass';
+      return 'forest_floor';
     }
 
     function applyCirclePush(pos: THREE.Vector3, list: CircleCollider[], pR: number): void {
@@ -990,7 +1028,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         return;
       }
       if (!hoveredObj) {
-        if (canRefillBogWater) {
+        if (!hoveredDeadfall && canRefillBogWater && inventory.bottles.length > 0) {
           const res = refillBottlesFromSource(inventory, 'bog_lake');
           sound.playFootstep('water');
           survival.backpackWeightKg = computeInventoryWeightKg(inventory);
@@ -1269,6 +1307,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         lastMinimapFogVersion = -1;
         keysHeld.clear();
         keysJustPressed.clear();
+        prevOnGround = true;
+        fallPeakY = player.pos.y;
+        fallFromJump = false;
+        waterFallEmitted = false;
+        prevInWater = false;
+        climbingOutOfWater = false;
         callbacksRef.current.onPhaseChange('playing');
         syncVitalHudDom();
         pushSurvivalSnapshot();
@@ -1331,6 +1375,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         totalDistanceMoved = 0;
         playerExertion = 0;
         prevOnGround = true;
+        fallPeakY = player.pos.y;
+        fallFromJump = false;
+        waterFallEmitted = false;
+        prevInWater = false;
+        climbingOutOfWater = false;
         lastIsMoving = false;
         lastWantRun = false;
         lastCrouching = false;
@@ -2396,8 +2445,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const isSwimming = waterState.isSwimming;
       const isSwampWading = waterState.isSwampWading;
 
-      canRefillBogWater = waterState.canRefillBogWater;
-
       const burden = computeWeightBurden(survival.backpackWeightKg, survival.waterStomachLoadL);
       const tirednessSpeedMult =
         survival.physicalTiredness > 72
@@ -2466,20 +2513,39 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         player.vel.y = 6.4;
         player.onGround = false;
         jumped = true;
+        fallPeakY = player.pos.y;
+        fallFromJump = true;
+        waterFallEmitted = false;
+        climbingOutOfWater = false;
+        const jumpSurface = resolvePlayerSurfaceMaterial(
+          player.pos.x,
+          player.pos.z,
+          onBoardwalk,
+          waterState.isInWater,
+          isSwampWading
+        );
         soundscape.engine.emitEvent({
           type: 'player.jump',
           origin: 'player',
           simulationTimestamp: simClockMs,
           position: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
           intensity: 0.8,
-          payload: { surface: onBoardwalk ? 'wooden_boardwalk' : 'forest_floor' },
+          payload: { surface: jumpSurface, material: jumpSurface },
         });
       }
       keysJustPressed.clear();
 
+      if (player.onGround && !prevInWater && !climbingOutOfWater) {
+        fallPeakY = player.pos.y;
+      } else if (!player.onGround) {
+        fallPeakY = Math.max(fallPeakY, player.pos.y);
+      }
+
       const preLandVelY = player.vel.y;
-      player.vel.y -= 16.5 * dt;
-      player.pos.y += player.vel.y * dt;
+      if (!climbingOutOfWater) {
+        player.vel.y -= 16.5 * dt;
+        player.pos.y += player.vel.y * dt;
+      }
 
       const newOnBoardwalk = isOnBoardwalk(player.pos.x, player.pos.z);
       const newRawGroundY = getTerrainHeight(player.pos.x, player.pos.z);
@@ -2500,7 +2566,58 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       });
 
       const minFloorY = postWaterState.minFloorY;
-      if (player.pos.y <= minFloorY) {
+
+      // Detect stepping/running/jumping off a raised bank, boardwalk, or ledge into bog water
+      if (
+        postWaterState.isInWater &&
+        !waterFallEmitted &&
+        (player.pos.y <= SWAMP_WATER_Y + 0.08 || player.pos.y <= minFloorY)
+      ) {
+        const dropToWaterM = Math.max(0, fallPeakY - SWAMP_WATER_Y);
+        if (dropToWaterM >= 0.2 || (!prevInWater && preLandVelY < -1.6) || fallFromJump) {
+          const distanceM = Math.max(0.2, Math.round(dropToWaterM * 100) / 100);
+          const impactSpeed = Math.max(Math.abs(preLandVelY), Math.sqrt(2 * 16.5 * distanceM));
+          soundscape.engine.emitEvent({
+            type: 'player.fall',
+            origin: 'player',
+            simulationTimestamp: simClockMs,
+            position: { x: player.pos.x, y: SWAMP_WATER_Y, z: player.pos.z },
+            intensity: THREE.MathUtils.clamp(0.48 + distanceM * 0.45, 0.48, 1.35),
+            payload: {
+              distanceM,
+              surface: 'water',
+              material: 'water',
+              impactSpeed: Math.round(impactSpeed * 100) / 100,
+              fromJump: fallFromJump,
+              waterDepthM: Math.round(postWaterState.waterDepth * 100) / 100,
+            },
+          });
+          if (player.vel.y < 0) player.vel.y *= 0.42;
+          waterFallEmitted = true;
+          fallFromJump = false;
+        }
+      }
+
+      // Smoothly hoist player onto the raised bog-lake peat rim when climbing out of water
+      if (prevInWater && !postWaterState.isInWater && minFloorY - player.pos.y > 0.16) {
+        climbingOutOfWater = true;
+      }
+      if (postWaterState.isInWater) {
+        climbingOutOfWater = false;
+      }
+
+      if (climbingOutOfWater) {
+        player.pos.y = THREE.MathUtils.lerp(player.pos.y, minFloorY, Math.min(1, dt * 11.5));
+        if (Math.abs(minFloorY - player.pos.y) < 0.025) {
+          player.pos.y = minFloorY;
+          climbingOutOfWater = false;
+        }
+        player.vel.y = 0;
+        player.onGround = true;
+        fallPeakY = player.pos.y;
+        fallFromJump = false;
+        waterFallEmitted = false;
+      } else if (player.pos.y <= minFloorY) {
         if (postWaterState.isSwimming && player.pos.y < minFloorY - 0.01) {
           // Smooth buoyant rise when entering swimming water
           player.pos.y = THREE.MathUtils.lerp(player.pos.y, minFloorY, Math.min(1, dt * 8));
@@ -2509,29 +2626,60 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
         player.vel.y = 0;
         player.onGround = true;
-        if (!prevOnGround && preLandVelY < -2.4) {
-          soundscape.engine.emitEvent({
-            type: 'player.land',
-            origin: 'player',
-            simulationTimestamp: simClockMs,
-            position: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
-            intensity: Math.min(1.2, Math.abs(preLandVelY) / 8),
-            payload: {
-              impactSpeed: Math.abs(preLandVelY),
-              surface: newOnBoardwalk
-                ? 'wooden_boardwalk'
-                : postWaterState.isInWater
-                  ? 'water'
-                  : postWaterState.isSwampWading
-                    ? 'mud'
-                    : 'forest_floor',
-            },
-          });
+
+        if (!prevOnGround && !postWaterState.isInWater) {
+          const landingSurface = resolvePlayerSurfaceMaterial(
+            player.pos.x,
+            player.pos.z,
+            newOnBoardwalk,
+            false,
+            postWaterState.isSwampWading
+          );
+          const fallDistanceM = Math.max(0, fallPeakY - player.pos.y);
+          if (fallDistanceM >= 0.25 || preLandVelY < -2.4) {
+            const roundedDist = Math.round(fallDistanceM * 100) / 100;
+            soundscape.engine.emitEvent({
+              type: 'player.fall',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
+              intensity: THREE.MathUtils.clamp(0.4 + roundedDist * 0.42, 0.4, 1.35),
+              payload: {
+                distanceM: roundedDist,
+                surface: landingSurface,
+                material: landingSurface,
+                impactSpeed: Math.round(Math.abs(preLandVelY) * 100) / 100,
+                fromJump: fallFromJump,
+                waterDepthM: 0,
+              },
+            });
+          }
+          if (preLandVelY < -2.4) {
+            soundscape.engine.emitEvent({
+              type: 'player.land',
+              origin: 'player',
+              simulationTimestamp: simClockMs,
+              position: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
+              intensity: Math.min(1.2, Math.abs(preLandVelY) / 8),
+              payload: {
+                impactSpeed: Math.abs(preLandVelY),
+                surface: landingSurface,
+                material: landingSurface,
+              },
+            });
+          }
+        }
+
+        if (!postWaterState.isInWater) {
+          waterFallEmitted = false;
+          fallPeakY = player.pos.y;
+          fallFromJump = false;
         }
       } else {
         player.onGround = false;
       }
       prevOnGround = player.onGround;
+      prevInWater = postWaterState.isInWater;
 
       player.currentEye = THREE.MathUtils.lerp(
         player.currentEye,
@@ -2670,9 +2818,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     }
 
     const nearbyInteractives: THREE.Object3D[] = [];
+    const _waterAimHit = new THREE.Vector3();
 
     function updateInteractionHover(): void {
       if (!propsCtx || phaseRef.current !== 'playing' || uiModalOpen || player.carrying || seatedTent) {
+        canRefillBogWater = false;
         if (hoveredObj !== null || hoveredDeadfall !== null || lastPromptKey !== '') {
           hoveredObj = null;
           hoveredDeadfall = null;
@@ -2708,9 +2858,56 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       hoveredObj = nextHover && !nextHover.gathered ? nextHover : null;
 
       hoveredDeadfall = null;
-      if (!hoveredObj && vegetation) {
+      if (!hoveredObj) {
         camera.getWorldDirection(_camForward);
-        hoveredDeadfall = vegetation.findTargetDeadfall(camera.position, _camForward, 4.8);
+        if (vegetation) {
+          hoveredDeadfall = vegetation.findTargetDeadfall(camera.position, _camForward, 4.8);
+        }
+      }
+
+      canRefillBogWater = false;
+      if (!hoveredObj && !hoveredDeadfall && inventory.bottles.length > 0) {
+        const bp = getActiveBlueprint();
+        const waterRadius = bp.bogRadius + 28;
+        const onBoardwalkNow = isOnBoardwalk(player.pos.x, player.pos.z);
+        const rawGroundYNow = getTerrainHeight(player.pos.x, player.pos.z);
+        const inWaterBasinNow =
+          Math.hypot(player.pos.x - bp.bogCenterX, player.pos.z - bp.bogCenterZ) <= waterRadius;
+        const waterDepthNow =
+          onBoardwalkNow || !inWaterBasinNow ? 0 : Math.max(0, SWAMP_WATER_Y - rawGroundYNow);
+        const swimThreshold = lastIsSwimming ? SWIM_EXIT_DEPTH : SWIM_ENTER_DEPTH;
+        const isSwimmingNow = !onBoardwalkNow && waterDepthNow >= swimThreshold;
+        const colliders = propsCtx.boxColliders;
+
+        canRefillBogWater = evaluateBogWaterFocusTarget({
+          playerX: player.pos.x,
+          playerZ: player.pos.z,
+          onGround: player.onGround,
+          onBoardwalk: onBoardwalkNow,
+          isSwimming: isSwimmingNow,
+          waterDepth: waterDepthNow,
+          rawGroundY: rawGroundYNow,
+          camX: camera.position.x,
+          camY: camera.position.y,
+          camZ: camera.position.z,
+          dirX: _camForward.x,
+          dirY: _camForward.y,
+          dirZ: _camForward.z,
+          bogCenterX: bp.bogCenterX,
+          bogCenterZ: bp.bogCenterZ,
+          waterRadius,
+          getTerrainHeightAt: getTerrainHeight,
+          getSurfaceHeightAt,
+          isSegmentBlocked: (hitX, hitY, hitZ) => {
+            _waterAimHit.set(hitX, hitY, hitZ);
+            for (let i = 0; i < colliders.length; i++) {
+              if (sweepSphere(camera.position, _waterAimHit, 0, colliders[i])) {
+                return true;
+              }
+            }
+            return false;
+          },
+        });
       }
 
       let nextPrompt: InteractionPromptData | null = null;

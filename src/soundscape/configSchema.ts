@@ -569,7 +569,7 @@ export function normalizeAndValidateConfig(config: SoundscapeConfig): Normalized
         }
       }
     }
-    const actionKeys = ['impact', 'hollowImpact', 'break', 'scrape', 'creak', 'slide', 'splash', 'doorOpen', 'doorClose'] as const;
+    const actionKeys = ['impact', 'hollowImpact', 'break', 'scrape', 'creak', 'slide', 'splash', 'fall', 'fallHeavy', 'doorOpen', 'doorClose'] as const;
     for (const k of actionKeys) {
       const ref = mat[k];
       if (ref && !soundMap.has(ref.sound)) {

@@ -183,4 +183,9 @@ export const SOUNDSCAPE_ASSETS: AssetDefinition[] = [
   { id: 'red_fox_screech_02_mp3', file: 'wildlife/mammals/red-fox-screech-02.mp3', preload: true, durationSec: 5.352000, tags: ['wildlife', 'mammals'] },
   { id: 'proc_swamp_mud_wade', file: 'procedural:swamp_mud_wade', procedural: true, proceduralKind: 'swamp_mud_wade', durationSec: 0.45, tags: ['footsteps', 'mud', 'swamp'] },
   { id: 'proc_water_swim_loop', file: 'procedural:water_swim_loop', procedural: true, proceduralKind: 'water_swim_loop', loopable: true, durationSec: 2.5, tags: ['footsteps', 'water', 'swim'] },
+  { id: 'proc_water_plunge_splash', file: 'procedural:water_plunge_splash', procedural: true, proceduralKind: 'water_plunge_splash', durationSec: 1.15, tags: ['fall', 'water', 'splash'] },
+  { id: 'proc_fall_land_soft', file: 'procedural:fall_land_soft', procedural: true, proceduralKind: 'fall_land_soft', durationSec: 0.34, tags: ['fall', 'forest_floor'] },
+  { id: 'proc_fall_land_stone', file: 'procedural:fall_land_stone', procedural: true, proceduralKind: 'fall_land_stone', durationSec: 0.32, tags: ['fall', 'stone', 'gravel'] },
+  { id: 'proc_fall_land_wood', file: 'procedural:fall_land_wood', procedural: true, proceduralKind: 'fall_land_wood', durationSec: 0.38, tags: ['fall', 'wood'] },
+  { id: 'proc_fall_land_mud', file: 'procedural:fall_land_mud', procedural: true, proceduralKind: 'fall_land_mud', durationSec: 0.52, tags: ['fall', 'mud', 'swamp'] },
 ];

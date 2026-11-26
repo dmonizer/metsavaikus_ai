@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyBogShoreDropOff,
   CHUNK_COUNT,
   CHUNK_SIZE,
   getActiveBlueprint,
@@ -497,6 +498,57 @@ test('Non-bog valleys and bog water disc perimeter stay cleanly above SWAMP_WATE
 
   setActiveWorldSeed(2026);
 });
+
+test('applyBogShoreDropOff creates a slightly raised peat bank and steep straight-down drop into bog lakes while preserving roads and dry forest', () => {
+  // Outside the bog (swamp <= 0.02) or on roads (dRoad <= 3.0), height is untouched
+  assert.equal(applyBogShoreDropOff(SWAMP_WATER_Y + 0.1, 0, 20), SWAMP_WATER_Y + 0.1);
+  assert.equal(applyBogShoreDropOff(SWAMP_WATER_Y - 0.1, 0.9, 2.0), SWAMP_WATER_Y - 0.1);
+
+  // Inside the bog: shore lip slightly above waterline gets lifted into a noticeable peat bank rim
+  const rimH = applyBogShoreDropOff(SWAMP_WATER_Y + 0.08, 0.85, 25);
+  assert.ok(
+    rimH > SWAMP_WATER_Y + 0.25,
+    `Expected raised bog peat bank rim > ${(SWAMP_WATER_Y + 0.25).toFixed(2)}, got ${rimH.toFixed(3)}`
+  );
+
+  // Just inside the bog lake edge: drops steeply straight down into deep dark water
+  const edgeWaterH = applyBogShoreDropOff(SWAMP_WATER_Y - 0.12, 0.85, 25);
+  assert.ok(
+    edgeWaterH < SWAMP_WATER_Y - 1.05,
+    `Expected steep bog drop-off < ${(SWAMP_WATER_Y - 1.05).toFixed(2)}, got ${edgeWaterH.toFixed(3)}`
+  );
+
+  // Verify sharp vertical drop across a narrow transition (bank -> water > 1.25m step)
+  assert.ok(
+    rimH - edgeWaterH > 1.25,
+    `Expected steep drop > 1.25m from bank (${rimH.toFixed(2)}) to lake (${edgeWaterH.toFixed(2)})`
+  );
+
+  // Verify real terrain across bog shoreline exhibits raised banks immediately adjacent to deep bog water
+  const bp = setActiveWorldSeed(2026);
+  let steepShoreCrossings = 0;
+  for (let ang = 0; ang < Math.PI * 2; ang += Math.PI / 18) {
+    let prevH = getTerrainHeight(bp.bogCenterX, bp.bogCenterZ, bp);
+    for (let r = 2; r <= bp.bogRadius + 10; r += 2) {
+      const x = bp.bogCenterX + Math.cos(ang) * r;
+      const z = bp.bogCenterZ + Math.sin(ang) * r;
+      const h = getTerrainHeight(x, z, bp);
+      if (
+        (prevH < SWAMP_WATER_Y - 0.6 && h > SWAMP_WATER_Y + 0.2) ||
+        (h < SWAMP_WATER_Y - 0.6 && prevH > SWAMP_WATER_Y + 0.2)
+      ) {
+        steepShoreCrossings++;
+        break;
+      }
+      prevH = h;
+    }
+  }
+  assert.ok(
+    steepShoreCrossings >= 10,
+    `Expected steep raised-bank bog lake crossings around bog perimeter, found ${steepShoreCrossings}`
+  );
+});
+
 
 
 

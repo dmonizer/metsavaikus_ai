@@ -146,6 +146,36 @@ export function getNearestSwampIsland(
   return { island: best, dist: bestDist, islandMask: maxMask };
 }
 
+/**
+ * Bog-lake (laugas) shoreline drop-off modifier:
+ * Shapes peat-bog pool edges with a slightly raised sphagnum/peat rim (~0.32m above water)
+ * followed by a steep, near-vertical drop straight into deep bog water (>= 1.3m) so running
+ * off a bog bank produces a genuine physical drop-in instead of a gradual beach slope.
+ */
+export function applyBogShoreDropOff(h: number, swamp: number, dRoad: number): number {
+  if (swamp <= 0.02) return h;
+  const bogMask = clamp((swamp - 0.02) / 0.22, 0, 1);
+  const roadFade = dRoad < 5.2 ? clamp((dRoad - 2.6) / 2.6, 0, 1) : 1;
+  const weight = bogMask * bogMask * (3 - 2 * bogMask) * roadFade;
+  if (weight <= 0.001) return h;
+
+  const delta = h - SWAMP_WATER_Y;
+  // Steep sigmoid transition centered just at the peat rim edge
+  const bankFrac = 0.5 + 0.5 * Math.tanh((delta + 0.02) * 18.0);
+
+  // Slightly elevated sphagnum/peat rim (+0.32m at shore lip, fading smoothly to 0 on higher hills/islands)
+  const posDelta = Math.max(0, delta);
+  const lipLift = 0.32 * Math.exp(-posDelta * 2.1);
+  const bankY = SWAMP_WATER_Y + posDelta + lipLift;
+
+  // Steep-walled deep bog pool bed dropping immediately to ~1.30m+ depth off the bank
+  const subDepth = Math.max(0, -delta);
+  const poolBedY = SWAMP_WATER_Y - (1.30 + Math.min(1.1, subDepth * 0.72));
+
+  const shapedY = lerp(poolBedY, bankY, bankFrac);
+  return lerp(h, shapedY, weight);
+}
+
 export function evaluateTerrainFromNoise(
   x: number,
   z: number,
@@ -209,6 +239,10 @@ export function evaluateTerrainFromNoise(
 
   // Gentle grading along main road & connecting trails
   const dRoad = distToRoadDetail(x, z, bp).dist;
+
+  // Apply steep bog-lake shoreline drop-off modifier (raised peat rim + straight-down edge)
+  h = applyBogShoreDropOff(h, swamp, dRoad);
+
   if (dRoad < 6.2) {
     const roadMix = clamp(1 - (dRoad - 2.4) / 3.8, 0, 1);
     const smoothRoadH = Math.max(-0.55, nBase4 * 5.2);

@@ -11,6 +11,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     impact: { sound: 'wood_impact_solid' },
     hollowImpact: { sound: 'crate_impact_hollow' },
     break: { sound: 'wood_break' },
+    fall: { sound: 'player_fall_wood', volumeScale: 0.95, pitchScale: 1.0 },
+    fallHeavy: { sound: 'player_fall_wood', volumeScale: 1.25, pitchScale: 0.88 },
     doorOpen: { sound: 'intact_door_open' },
     doorClose: { sound: 'intact_door_close' },
   },
@@ -30,6 +32,7 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     doorClose: { sound: 'decrepid_door_creak', pitchScale: 0.9 },
     additionalReactions: [
       { event: 'player.step', probability: 0.15, sound: 'floorboard_creak' },
+      { event: 'player.fall', probability: 0.7, sound: 'floorboard_creak' },
     ],
   },
   {
@@ -40,6 +43,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
       run: { sound: 'wooden_floor_walk', volumeScale: 1.2, pitchScale: 1.06 },
       crouch: { sound: 'wooden_floor_walk', volumeScale: 0.48, pitchScale: 0.88 },
     },
+    fall: { sound: 'player_fall_wood', volumeScale: 1.0, pitchScale: 0.94 },
+    fallHeavy: { sound: 'player_fall_wood', volumeScale: 1.28, pitchScale: 0.84 },
   },
   {
     id: 'forest_floor',
@@ -49,6 +54,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
       crouch: { sound: 'forest_floor_walk', volumeScale: 0.52, pitchScale: 0.9 },
     },
     impact: { sound: 'wood_impact_solid', volumeScale: 0.7 },
+    fall: { sound: 'player_fall_forest', volumeScale: 0.92, pitchScale: 1.0 },
+    fallHeavy: { sound: 'player_fall_forest', volumeScale: 1.24, pitchScale: 0.86 },
   },
   {
     id: 'grass',
@@ -67,6 +74,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
       crouch: { sound: 'gravel_walk_loop', volumeScale: 0.55, pitchScale: 0.92 },
     },
     impact: { sound: 'stone_impact_solid', volumeScale: 0.8 },
+    fall: { sound: 'player_fall_stone', volumeScale: 0.92, pitchScale: 1.06 },
+    fallHeavy: { sound: 'player_fall_stone', volumeScale: 1.22, pitchScale: 0.94 },
   },
   {
     id: 'soil',
@@ -81,6 +90,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
       run: { sound: 'swamp_mud_wade', volumeScale: 1.18, pitchScale: 1.08 },
       crouch: { sound: 'swamp_mud_wade', volumeScale: 0.56, pitchScale: 0.88 },
     },
+    fall: { sound: 'player_fall_mud', volumeScale: 0.98, pitchScale: 0.98 },
+    fallHeavy: { sound: 'player_fall_mud', volumeScale: 1.28, pitchScale: 0.86 },
   },
   {
     id: 'water',
@@ -91,6 +102,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
       run: { sound: 'water_wade_loop', volumeScale: 1.15, pitchScale: 1.08 },
     },
     splash: { sound: 'distant_water_splash' },
+    fall: { sound: 'player_fall_water', volumeScale: 1.0, pitchScale: 1.0 },
+    fallHeavy: { sound: 'player_fall_water_heavy', volumeScale: 1.2, pitchScale: 0.92 },
   },
   {
     id: 'stone',
@@ -100,6 +113,8 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     },
     impact: { sound: 'stone_impact_solid' },
     break: { sound: 'stone_impact_solid', volumeScale: 1.25 },
+    fall: { sound: 'player_fall_stone', volumeScale: 1.0, pitchScale: 0.92 },
+    fallHeavy: { sound: 'player_fall_stone', volumeScale: 1.28, pitchScale: 0.82 },
   },
   {
     id: 'concrete',
@@ -109,6 +124,7 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     id: 'metal',
     impact: { sound: 'metal_impact_solid' },
     break: { sound: 'metal_impact_solid', volumeScale: 1.2 },
+    fall: { sound: 'metal_impact_solid', volumeScale: 0.85, pitchScale: 0.95 },
   },
   {
     id: 'glass',
@@ -121,6 +137,7 @@ export const SOUNDSCAPE_MATERIALS: MaterialProfile[] = [
     footsteps: {
       walk: { sound: 'grass_walk_step', volumeScale: 0.78, pitchScale: 0.84 },
     },
+    fall: { sound: 'player_fall_forest', volumeScale: 0.78, pitchScale: 0.84 },
   },
   {
     id: 'ice',
