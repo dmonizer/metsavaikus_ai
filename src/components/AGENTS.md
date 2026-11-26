@@ -5,7 +5,7 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
 ## Ownership and data flow
 
 - `App.tsx` owns game phase, packing selection, UI preferences, modals, toast state, language subscription, and the latest survival snapshot. It mounts the world and supplies HUD refs and callbacks.
-- `MetsavaikusWorld.tsx` is an imperative runtime inside a React effect. It creates/disposes the renderer and world systems, runs the frame loop, handles input and interactions, moves the player and dynamic props, advances survival/sleep, and bridges audio.
+- `MetsavaikusWorld.tsx` is an imperative runtime inside a React effect. It creates/disposes the renderer and world systems, runs the frame loop, handles input and interactions, moves the player and dynamic props, advances survival/sleep, and bridges audio through the per-world `soundscape.contextBuilder` (see the world guide for geography sampling).
 - `WorldActions` exposes commands through `actionsRef`; `WorldCallbacks` reports changes back to React. `WorldSurvivalSnapshot` is the UI-facing snapshot. These contracts currently live in `MetsavaikusWorld.tsx`.
 - Frequent vital/HUD updates write through `WorldHudRefs` with cached values. Snapshots update React less frequently. Keep frame-frequency data out of React state unless required by a UI interaction.
 - The world effect rebuilds on seed or ref-object identity changes. Its callbacks and mutable preference refs let ordinary UI updates reach the existing world.

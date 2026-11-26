@@ -10,7 +10,7 @@
 - `architectureAndProps.ts` builds houses, fences, wells, campfires, signposts, boardwalks, movable props, mushrooms, and runtime tents. Its returned `WorldPropsContext` exposes shared registries, placement/collection methods, shelter/environment queries, pooled lights, water reflection, and disposal. `pantry.ts` selects provision pickups.
 - `waterSurface.ts` owns bog water shading, shore-depth data, and reflection rendering. `weatherAndSky.ts` owns time/weather, sky, sun/shadows, rain, stars, and atmospheric effects.
 - `minimapMath.ts` owns fog of war, minimap rendering, and map coordinate helpers.
-- `soundEngine.ts` owns the legacy/synth audio facade and shared AudioContext. `soundscapeAdapter.ts` maps simulator state and spatial queries into the declarative audio engine; read [../soundscape/AGENTS.md](../soundscape/AGENTS.md) for audio changes.
+- `soundEngine.ts` owns the legacy/synth audio facade and shared AudioContext. `soundscapeAdapter.ts` maps simulator state and spatial queries into the declarative audio engine. Each world owns a `SimulatorSoundscapeContextBuilder`: static geography is resampled after 1m movement or within 200ms of smaller movement, with immediate seed/water/boardwalk invalidation; dynamic context remains fresh each frame; read [../soundscape/AGENTS.md](../soundscape/AGENTS.md) for audio changes.
 
 ## Shared geometry and physics
 

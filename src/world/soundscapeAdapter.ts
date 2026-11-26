@@ -259,7 +259,68 @@ export class WorldSpatialQueryProvider implements SpatialQueryProvider {
   }
 }
 
-export function buildWorldContextFromSimulator(input: SimulatorSoundscapeInput): WorldContext {
+interface SpatialEnvironmentSample {
+  biomeId: BiomeId;
+  roadInfo: ReturnType<typeof distToRoadDetail>;
+  villageDist: number;
+  waterDistM: number;
+  swampFactor: number;
+  biomeComposition: Partial<Record<BiomeId, number>>;
+}
+
+function sampleSpatialEnvironment(x: number, z: number): SpatialEnvironmentSample {
+  return {
+    biomeId: normalizeBiomeId(getBiomeInfo(x, z).id),
+    roadInfo: distToRoadDetail(x, z),
+    villageDist: getDistanceToNearestVillage(x, z).dist,
+    waterDistM: estimateWaterDistanceM(x, z),
+    swampFactor: getSwampFactor(x, z),
+    biomeComposition: computeBiomeComposition(x, z),
+  };
+}
+
+/** One bounded spatial sample per world; all dynamic context is still built every frame. */
+export class SimulatorSoundscapeContextBuilder {
+  private cached: SpatialEnvironmentSample | null = null;
+  private blueprint = getActiveBlueprint();
+  private x = Infinity;
+  private z = Infinity;
+  private sampledAtMs = -Infinity;
+  private inWater = false;
+  private onBoardwalk = false;
+  private samples = 0;
+
+  constructor(private readonly clock: Clock = new SystemRealClock()) {}
+
+  get spatialSampleCount(): number { return this.samples; }
+
+  build(input: SimulatorSoundscapeInput): WorldContext {
+    const nowMs = this.clock.nowMs();
+    const blueprint = getActiveBlueprint();
+    const { x, z } = input.listenerPos;
+    const dx = x - this.x, dz = z - this.z;
+    const moved = dx !== 0 || dz !== 0;
+    const inWater = input.waterDepthM > 0.02;
+    if (!this.cached || blueprint !== this.blueprint ||
+        (moved && (dx * dx + dz * dz >= 1 || nowMs - this.sampledAtMs >= 200)) ||
+        inWater !== this.inWater || input.onBoardwalk !== this.onBoardwalk) {
+      this.cached = sampleSpatialEnvironment(x, z);
+      this.blueprint = blueprint;
+      this.x = x;
+      this.z = z;
+      this.sampledAtMs = nowMs;
+      this.inWater = inWater;
+      this.onBoardwalk = input.onBoardwalk;
+      this.samples++;
+    }
+    return buildWorldContextFromSimulator(input, this.cached);
+  }
+}
+
+export function buildWorldContextFromSimulator(
+  input: SimulatorSoundscapeInput,
+  spatial = sampleSpatialEnvironment(input.listenerPos.x, input.listenerPos.z)
+): WorldContext {
   const weatherType = mapWeatherType(input.weather);
   const precipitation = weatherType === 'rain' || weatherType === 'storm' ? 'rain' : 'none';
   const weatherIntensity = weatherType === 'storm' ? 1.0 : weatherType === 'rain' ? 0.68 : weatherType === 'mist' ? 0.2 : 0.0;
@@ -269,11 +330,8 @@ export function buildWorldContextFromSimulator(input: SimulatorSoundscapeInput):
   const moonAboveHorizon = input.sunDirY < -0.02 || (input.timeOfDayHours >= 21 || input.timeOfDayHours <= 4.5);
   const moonElevDeg = moonAboveHorizon ? Math.max(8, -sunElevDeg + 15) : -20;
 
-  const biomeInfo = getBiomeInfo(input.listenerPos.x, input.listenerPos.z);
-  const biomeId = normalizeBiomeId(biomeInfo.id);
-  const roadInfo = distToRoadDetail(input.listenerPos.x, input.listenerPos.z);
-  const villageDist = getDistanceToNearestVillage(input.listenerPos.x, input.listenerPos.z).dist;
-  const waterDistM = input.waterDepthM > 0.02 ? 0 : estimateWaterDistanceM(input.listenerPos.x, input.listenerPos.z);
+  const { biomeId, roadInfo, villageDist } = spatial;
+  const waterDistM = input.waterDepthM > 0.02 ? 0 : spatial.waterDistM;
   const campfireDistM = input.nearestCampfirePos
     ? Math.hypot(
         input.listenerPos.x - input.nearestCampfirePos.x,
@@ -357,10 +415,10 @@ export function buildWorldContextFromSimulator(input: SimulatorSoundscapeInput):
       temperatureC: isNight ? 8 : 14,
       snowDepthM: 0,
       regionId: `estonia_baltic_${biomeId}`,
-      biomeComposition: computeBiomeComposition(input.listenerPos.x, input.listenerPos.z),
+      biomeComposition: { ...spatial.biomeComposition },
       featureDistances: {
         riverM: waterDistM,
-        bogM: Math.max(0, getSwampFactor(input.listenerPos.x, input.listenerPos.z) > 0.3 ? 0 : waterDistM),
+        bogM: Math.max(0, spatial.swampFactor > 0.3 ? 0 : waterDistM),
         waterM: waterDistM,
         roadM: roadInfo.dist,
         villageM: villageDist,
@@ -426,6 +484,7 @@ export function createSimulatorSoundscape(opts?: {
   engine: SoundscapeEngine;
   backend: AudioBackend;
   spatialQuery: WorldSpatialQueryProvider;
+  contextBuilder: SimulatorSoundscapeContextBuilder;
 } {
   const spatialQuery = new WorldSpatialQueryProvider();
   const backend: AudioBackend = opts?.useMockBackend
@@ -438,7 +497,7 @@ export function createSimulatorSoundscape(opts?: {
     rng: new SeededRng(opts?.seed ?? 2026),
     spatialQuery,
   });
-  return { engine, backend, spatialQuery };
+  return { engine, backend, spatialQuery, contextBuilder: new SimulatorSoundscapeContextBuilder(opts?.realClock) };
 }
 
 export function saveSoundscapeSnapshotToStorage(seed: number, engine: SoundscapeEngine): void {

@@ -164,7 +164,6 @@ import type {
 } from '../soundscape/types';
 import type { WebAudioHybridBackend } from '../soundscape/audioBackend';
 import {
-  buildWorldContextFromSimulator,
   createSimulatorSoundscape,
   loadSoundscapeSnapshotFromStorage,
   saveSoundscapeSnapshotToStorage,
@@ -4248,7 +4247,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
           soundscape.engine.step(
             dt,
-            buildWorldContextFromSimulator({
+            soundscape.contextBuilder.build({
               simulationTimeMs: simClockMs,
               timeOfDayHours: weatherSky.timeOfDay,
               simulationDay: simDay,

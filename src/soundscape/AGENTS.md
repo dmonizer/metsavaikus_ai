@@ -4,7 +4,7 @@ Read [../../docs/soundscape/README.md](../../docs/soundscape/README.md) for the 
 
 ## Runtime flow
 
-`world/soundscapeAdapter.ts` creates the engine/backend/spatial provider, builds `WorldContext` from simulator state, and saves/restores snapshots. `world/soundEngine.ts` attaches the backend to its AudioContext and retains synth/fallback effects. `components/MetsavaikusWorld.tsx` supplies context, steps the engine, and emits physical interaction events.
+`world/soundscapeAdapter.ts` creates the engine/backend/spatial provider, builds `WorldContext` from simulator state through a per-world geography cache (dynamic weather, structure, and motion remain fresh), and saves/restores snapshots. `world/soundEngine.ts` attaches the backend to its AudioContext and retains synth/fallback effects. `components/MetsavaikusWorld.tsx` supplies context, steps the engine, and emits physical interaction events.
 
 - `types.ts`: canonical context, event, config, backend, diagnostics, and persistence contracts.
 - `configSchema.ts`: validation, normalization, references, inheritance, and override merging. Invalid reloads preserve the previous valid configuration.
