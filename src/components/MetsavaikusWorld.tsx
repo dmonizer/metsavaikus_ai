@@ -3601,6 +3601,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (propsCtx) moveSphere(safeHold, holdOffset, 1, carried.radius, propsCtx.boxColliders, 0);
         if (carried.mesh.position.distanceToSquared(safeHold) > 0.000001) propsCtx?.invalidateLightShadows();
         carried.mesh.position.copy(safeHold);
+        propsCtx?.updateInteractivePosition(carried);
       }
 
       return { locomotion, jumped };
@@ -3658,9 +3659,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             obj.resting = true;
           }
         }
+        propsCtx.updateInteractivePosition(obj);
       }
     }
 
+    const nearbyInteractiveEntries: InteractiveEntry[] = [];
     const nearbyInteractives: THREE.Object3D[] = [];
     const _waterAimHit = new THREE.Vector3();
 
@@ -3679,18 +3682,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       nearbyInteractives.length = 0;
       const camX = camera.position.x;
       const camZ = camera.position.z;
-      const maxRangeSq = 6.5 * 6.5;
-      const items = propsCtx.interactiveObjects;
-      for (let i = 0; i < items.length; i++) {
-        const entry = items[i];
-        if (entry.gathered || !entry.mesh.visible) continue;
-        const me = entry.mesh.matrixWorld.elements;
-        const dx = me[12] - camX;
-        const dz = me[14] - camZ;
-        if (dx * dx + dz * dz <= maxRangeSq) {
-          nearbyInteractives.push(entry.mesh);
-        }
-      }
+      propsCtx.queryInteractiveObjects(camX, camZ, 6.5, nearbyInteractiveEntries);
+      for (const entry of nearbyInteractiveEntries) nearbyInteractives.push(entry.mesh);
 
       let nextHover: InteractiveEntry | null = null;
       if (nearbyInteractives.length > 0) {

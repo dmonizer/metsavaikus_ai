@@ -22,7 +22,7 @@ The React runtime in [../components/AGENTS.md](../components/AGENTS.md) owns pla
 
 ## Object and resource contracts
 
-`registerInteractive` connects meshes/descendants to interaction entries and shared arrays. Entries carry gathering, pickup, carry/kick, velocity/resting, and use callbacks. Removal must keep the scene, interaction/dynamic registries, collision/shelter data, and shadow invalidation consistent.
+`registerInteractive` connects meshes/descendants to interaction entries and shared arrays. Entries carry gathering, pickup, carry/kick, velocity/resting, and use callbacks. `pointSpatialIndex.ts` supplies shared point buckets for interactive and mushroom candidates. Query nearby interactions through `queryInteractiveObjects`; call `updateInteractivePosition` after moving a prop. Use callbacks reindex themselves (including doors); collection and packing remove index membership. Mushroom visibility clears the previous local visible set before applying the current radius/frustum/fade rules. Removal must keep the scene, interaction/dynamic registries, collision/shelter data, and shadow invalidation consistent.
 
 Keep pooled point-light counts and shader variants stable. Invalidate shadow maps when doors, carried props, tents, or light locations change. Preserve existing geometry batching, vegetation instancing, LOD, and bounded caches when splitting object factories. Track ownership of shared versus per-instance geometries/materials so disposal neither leaks resources nor destroys shared assets.
 

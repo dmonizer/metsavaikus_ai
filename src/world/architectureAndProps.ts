@@ -1,3 +1,4 @@
+import { PointSpatialIndex } from './pointSpatialIndex';
 import { createSeededRandom } from './seededRandom';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -185,6 +186,8 @@ export interface WorldPropsContext {
   boxColliders: BoxCollider[];
   boardwalkZones: BoardwalkZone[];
   interactiveObjects: InteractiveEntry[];
+  queryInteractiveObjects: (x: number, z: number, radius: number, out: InteractiveEntry[]) => void;
+  updateInteractivePosition: (entry: InteractiveEntry) => void;
   interactiveMeshes: THREE.Object3D[];
   dynamicObjects: InteractiveEntry[];
   mushroomCountTotal: number;
@@ -356,7 +359,11 @@ export function buildArchitectureAndProps(
   const interactiveObjects: InteractiveEntry[] = [];
   const interactiveMeshes: THREE.Object3D[] = [];
   const dynamicObjects: InteractiveEntry[] = [];
-  const mushroomNodes: Array<{ mesh: THREE.Object3D; x: number; z: number; entry: InteractiveEntry }> = [];
+  const interactiveIndex = new PointSpatialIndex<InteractiveEntry>();
+  const mushroomIndex = new PointSpatialIndex<InteractiveEntry>();
+  const nearbyMushrooms: InteractiveEntry[] = [];
+  const visibleMushrooms: InteractiveEntry[] = [];
+  const interactiveWorldPosition = new THREE.Vector3();
   const structureNodes: Array<{ obj: THREE.Object3D; x: number; z: number; maxDistSq: number }> = [];
   const disposables: Array<{ dispose: () => void }> = [];
 
@@ -425,6 +432,12 @@ export function buildArchitectureAndProps(
     return box;
   }
 
+  function updateInteractivePosition(entry: InteractiveEntry): void {
+    if (entry.gathered) { interactiveIndex.delete(entry); return; }
+    entry.mesh.getWorldPosition(interactiveWorldPosition);
+    interactiveIndex.set(entry, interactiveWorldPosition.x, interactiveWorldPosition.z);
+  }
+
   function registerInteractive(
     mesh: THREE.Object3D,
     opts: Partial<InteractiveEntry> & { name: string; desc: string }
@@ -447,7 +460,10 @@ export function buildArchitectureAndProps(
       breakable: !!opts.breakable,
       onKick: opts.onKick,
       onTouch: opts.onTouch,
-      onUse: opts.onUse,
+      onUse: opts.onUse ? () => {
+        opts.onUse!();
+        updateInteractivePosition(entry);
+      } : undefined,
       radius: opts.radius ?? 0.35,
       mass: opts.mass ?? 1.0,
       vel: new THREE.Vector3(),
@@ -463,6 +479,7 @@ export function buildArchitectureAndProps(
       child.userData.interactive = entry;
       if (child instanceof THREE.Mesh) child.receiveShadow = true;
     });
+    updateInteractivePosition(entry);
     interactiveObjects.push(entry);
     interactiveMeshes.push(mesh);
     if (entry.isDynamic) dynamicObjects.push(entry);
@@ -2194,6 +2211,7 @@ export function buildArchitectureAndProps(
 
       // Second kick shatters the stump into 3-4 physical Split Firewood pieces + ground splinters
       stumpEntry.gathered = true;
+      interactiveIndex.delete(stumpEntry);
       g.visible = false;
       if (handlers?.onStumpKick) {
         handlers.onStumpKick({ broken: true, material: 'wood', x, y: y + 0.25, z });
@@ -2954,7 +2972,8 @@ export function buildArchitectureAndProps(
     g.userData.debugLayer = 'mushroom';
     g.userData.debugName = MUSHROOM_SPECIES_INFO[species].estonian;
     g.userData.debugMeta = { species, edibility: MUSHROOM_SPECIES_INFO[species].edibility };
-    mushroomNodes.push({ mesh: g, x, z, entry });
+    g.visible = false;
+    mushroomIndex.set(entry, x, z);
   }
 
   function spawnPickupItemAt(
@@ -3113,6 +3132,8 @@ export function buildArchitectureAndProps(
   function gatherMushroom(entry: InteractiveEntry): MushroomSpecies | null {
     if (!entry.gatherable || entry.gathered || !entry.species) return null;
     entry.gathered = true;
+    interactiveIndex.delete(entry);
+    mushroomIndex.delete(entry);
     entry.mesh.visible = false;
     const idx = interactiveMeshes.indexOf(entry.mesh);
     if (idx !== -1) interactiveMeshes.splice(idx, 1);
@@ -3333,6 +3354,7 @@ export function buildArchitectureAndProps(
     lightShadowsDirty = true;
 
     target.interactiveEntry.gathered = true;
+    interactiveIndex.delete(target.interactiveEntry);
     scene.remove(target.group);
 
     const ioIdx = interactiveObjects.indexOf(target.interactiveEntry);
@@ -3593,6 +3615,16 @@ export function buildArchitectureAndProps(
     boxColliders,
     boardwalkZones,
     interactiveObjects,
+    queryInteractiveObjects: (x, z, radius, out) => {
+      interactiveIndex.queryRadius(x, z, radius, out);
+      let count = 0;
+      for (let i = 0; i < out.length; i++) {
+        const entry = out[i];
+        if (!entry.gathered && entry.mesh.visible) out[count++] = entry;
+      }
+      out.length = count;
+    },
+    updateInteractivePosition,
     interactiveMeshes,
     dynamicObjects,
     mushroomCountTotal,
@@ -3700,11 +3732,13 @@ export function buildArchitectureAndProps(
       const mushFadeStartSq = mushFadeStart * mushFadeStart;
       const mushFadeSpan = Math.max(1, mushroomDist - mushFadeStart);
       const fogCapSq = (maxRenderDist + 16) * (maxRenderDist + 16);
-      for (let i = 0; i < mushroomNodes.length; i++) {
-        const m = mushroomNodes[i];
-        if (m.entry.gathered) continue;
-        const dx = m.x - camX;
-        const dz = m.z - camZ;
+      for (const entry of visibleMushrooms) entry.mesh.visible = false;
+      visibleMushrooms.length = 0;
+      mushroomIndex.queryRadius(camX, camZ, mushroomDist, nearbyMushrooms);
+      for (let i = 0; i < nearbyMushrooms.length; i++) {
+        const m = nearbyMushrooms[i];
+        const dx = m.mesh.position.x - camX;
+        const dz = m.mesh.position.z - camZ;
         const dSq = dx * dx + dz * dz;
         if (dSq >= maxMushSq) {
           m.mesh.visible = false;
@@ -3713,14 +3747,15 @@ export function buildArchitectureAndProps(
             frustumPlanes && dSq > 25
               ? sphereIntersectsFrustum(
                   frustumPlanes,
-                  m.x,
+                  m.mesh.position.x,
                   m.mesh.position.y + 0.25,
-                  m.z,
+                  m.mesh.position.z,
                   1.2
                 )
               : true;
           m.mesh.visible = isVis;
           if (isVis) {
+            visibleMushrooms.push(m);
             if (dSq <= mushFadeStartSq) {
               m.mesh.scale.setScalar(1.0);
             } else {
@@ -3755,6 +3790,7 @@ export function buildArchitectureAndProps(
     collectPickupItem: (entry: InteractiveEntry): ItemId | null => {
       if (!entry.pickupItemId || entry.gathered) return null;
       entry.gathered = true;
+      interactiveIndex.delete(entry);
       lightShadowsDirty = true;
       entry.resting = true;
       entry.mesh.visible = false;
@@ -3911,6 +3947,10 @@ export function buildArchitectureAndProps(
       return out;
     },
     dispose: () => {
+      interactiveIndex.clear();
+      mushroomIndex.clear();
+      nearbyMushrooms.length = 0;
+      visibleMushrooms.length = 0;
       shelters.dispose();
       for (const light of pooledPointLights) { light.dispose(); scene.remove(light); }
       for (const tt of tents) {
