@@ -21,8 +21,10 @@ Keep real and simulation time explicit, especially across pause, fast-forward sl
 
 Route physical sounds from outcomes and preserve material, position, source IDs, correlation, and deduplication metadata. Check the legacy facade before adding playback to avoid playing an effect through both systems.
 
+Use the shared `usesContinuousPlayback` policy for initial sources and recreated sources: gapless repeats (finite or infinite, including explicit zero pauses) use native looping; positive pauses use one-shot sources restarted by the instance timer. Keep finite completion governed by the target count.
+
 Respect voice/event/reaction limits and stable lifecycle ownership. Audio nodes and async loads must be cleaned up safely on stop, reload, and world disposal. Preserve backend interchangeability and deterministic mock tests.
 
 ## Verification
 
-`soundscapeEngine.test.ts` tests engine behavior with controllable clocks/backends. Run `npm test`, lint, and `npm run test:audio` as appropriate; audible mix, browser autoplay/resume, and spatial perception still require listening checks. F9 opens the UI diagnostics/audition/reload overlay.
+`instanceManager.test.ts` verifies repeat policy across source creation, condition/manual resume, gapless finite completion and positive-pause restart. `soundscapeEngine.test.ts` tests engine behavior with controllable clocks/backends. Run `npm test`, lint, and `npm run test:audio` as appropriate; audible mix, browser autoplay/resume, and spatial perception still require listening checks. F9 opens the UI diagnostics/audition/reload overlay.

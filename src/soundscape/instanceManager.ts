@@ -481,7 +481,7 @@ export class InstanceManager {
         gain: initialGain,
         pitch,
         lowpassHz: isAudition ? 20000 : 18000,
-        loop: loopCountTarget === 'infinite' && !sound.playback.loop?.pause,
+        loop: usesContinuousPlayback(sound),
         offsetSec: 0,
       });
     }
@@ -647,7 +647,7 @@ export class InstanceManager {
         gain: inst.currentEnvelopeGain * inst.baseVolume * mixer.getEffectiveGain(inst.sound.bus),
         pitch: inst.pitch,
         lowpassHz: inst.isAudition ? 20000 : 18000,
-        loop: inst.loopCountTarget === 'infinite' && !inst.sound.playback.loop?.pause,
+        loop: usesContinuousPlayback(inst.sound),
         offsetSec: inst.resumeOffsetSec,
       });
     }
