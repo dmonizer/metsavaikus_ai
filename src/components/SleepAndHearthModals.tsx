@@ -228,6 +228,7 @@ interface CampfireHearthModalProps {
   inventory: InventoryState;
   onIgnite: () => void;
   onBank: () => void;
+  onThrowLog?: () => void;
   onCook: (recipe: 'seared_steak' | 'roasted_mushrooms') => void;
   onBoilBottle: (uid: string) => void;
   onOpenRest: () => void;
@@ -239,6 +240,7 @@ export const CampfireHearthModal: React.FC<CampfireHearthModalProps> = ({
   inventory,
   onIgnite,
   onBank,
+  onThrowLog,
   onCook,
   onBoilBottle,
   onOpenRest,
@@ -246,6 +248,7 @@ export const CampfireHearthModal: React.FC<CampfireHearthModalProps> = ({
 }) => {
   const { lang, t } = useLanguage();
   const rawSteaks = inventory.stacks.raw_steak ?? 0;
+  const firewoodCount = inventory.stacks.firewood ?? 0;
   const edibleMush = countEdibleMushrooms(inventory);
   const nonEmptyBottles = inventory.bottles.filter((b) => b.waterLiters > 0.001);
   const hasFireStarter = inventory.lighterUses > 0 || inventory.matchStrikes > 0;
@@ -295,25 +298,38 @@ export const CampfireHearthModal: React.FC<CampfireHearthModalProps> = ({
                   : t('hearth.useMatches', { count: inventory.matchStrikes })
                 : t('hearth.noStarter')}
           </div>
-          {campfire.lit ? (
-            <button
-              type="button"
-              onClick={onBank}
-              className="px-3.5 py-1.5 text-xs font-medium rounded bg-[#232b24] hover:bg-[#313b32] text-[#d7e2d5] border border-white/12 shrink-0 cursor-pointer"
-            >
-              {t('hearth.bankFire')}
-            </button>
-          ) : (
-            <button
-              type="button"
-              data-testid="ignite-campfire-btn"
-              disabled={!hasFireStarter}
-              onClick={onIgnite}
-              className="px-3.5 py-1.5 text-xs font-semibold rounded bg-[#6b4423] hover:bg-[#82532b] disabled:opacity-40 text-[#fdf3e6] border border-[#c98b51]/50 shrink-0 cursor-pointer disabled:cursor-not-allowed"
-            >
-              {t('hearth.igniteFire')}
-            </button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {onThrowLog && (
+              <button
+                type="button"
+                data-testid="throw-log-campfire-btn"
+                disabled={firewoodCount < 1}
+                onClick={onThrowLog}
+                className="px-3 py-1.5 text-xs font-medium rounded bg-[#4a2f18] hover:bg-[#5e3c1f] disabled:opacity-40 text-[#fbe8d2] border border-[#b87a42]/50 shrink-0 cursor-pointer disabled:cursor-not-allowed"
+              >
+                {t('hearth.throwLog', { count: firewoodCount })}
+              </button>
+            )}
+            {campfire.lit ? (
+              <button
+                type="button"
+                onClick={onBank}
+                className="px-3.5 py-1.5 text-xs font-medium rounded bg-[#232b24] hover:bg-[#313b32] text-[#d7e2d5] border border-white/12 shrink-0 cursor-pointer"
+              >
+                {t('hearth.bankFire')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                data-testid="ignite-campfire-btn"
+                disabled={!hasFireStarter}
+                onClick={onIgnite}
+                className="px-3.5 py-1.5 text-xs font-semibold rounded bg-[#6b4423] hover:bg-[#82532b] disabled:opacity-40 text-[#fdf3e6] border border-[#c98b51]/50 shrink-0 cursor-pointer disabled:cursor-not-allowed"
+              >
+                {t('hearth.igniteFire')}
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Cooking */}

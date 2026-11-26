@@ -568,6 +568,14 @@ export default function App() {
     }
   }, [activeCampfire]);
 
+  const handleThrowLogActiveCampfire = useCallback(() => {
+    if (!activeCampfire) return;
+    const updated = actionsRef.current?.throwFirewoodIntoCampfire(activeCampfire.id);
+    if (updated) {
+      setActiveCampfire(updated);
+    }
+  }, [activeCampfire]);
+
   const handleOpenCampfireRest = useCallback(() => {
     if (!activeCampfire) return;
     const fire = activeCampfire;
@@ -1245,6 +1253,7 @@ export default function App() {
           inventory={snapshot.inventory}
           onIgnite={handleIgniteActiveCampfire}
           onBank={handleBankActiveCampfire}
+          onThrowLog={handleThrowLogActiveCampfire}
           onCook={(recipe) => actionsRef.current?.cookAtCampfire(recipe)}
           onBoilBottle={(uid) => actionsRef.current?.boilBottle(uid)}
           onOpenRest={handleOpenCampfireRest}

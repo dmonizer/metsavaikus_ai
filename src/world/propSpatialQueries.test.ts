@@ -93,3 +93,59 @@ test('local mushroom visibility, fade and frustum match the full-scan rule after
     assert.ok(!out.includes(mushroom)); assert.equal(mushroom.mesh.visible, false);
   } finally { props.dispose(); }
 });
+
+test('campfire [F] secondary action invokes throw firewood handler instead of falling back to push', () => {
+  setActiveWorldSeed(2026);
+  const scene = new THREE.Scene(), texture = new THREE.Texture();
+  const textures = new Proxy({}, { get: () => texture }) as WorldTextures;
+  let sparkBursts = 0;
+  let logImpacts = 0;
+  let throwCalls = 0;
+  const sound = {
+    playImpact() {},
+    playGatherMushroom() {},
+    playFireSparkBurst() { sparkBursts++; },
+    playFireLogCatch() {},
+  } as unknown as SoundEngine;
+
+  const props = buildArchitectureAndProps(scene, textures, sound, () => {}, false, {
+    hasFirewoodInPack: () => true,
+    onThrowFirewoodAtCampfire: (cf) => {
+      throwCalls++;
+      props.throwFirewoodAtCampfire(cf.id, cf.x + 1.2, cf.y + 1.4, cf.z);
+    },
+    onCampfireLogImpact: () => {
+      logImpacts++;
+    },
+  });
+
+  try {
+    const primary = props.getCampfires().find((c) => c.lit)!;
+    assert.ok(primary, 'Expected primary lit campfire');
+    const out: InteractiveEntry[] = [];
+    props.queryInteractiveObjects(primary.x, primary.z, 3.0, out);
+    const cfEntry = out.find((e) => e.mesh.userData.debugLayer === 'campfire');
+    assert.ok(cfEntry, 'Campfire InteractiveEntry should be registered');
+    assert.ok(cfEntry.getSecondaryActionLabel?.(), 'Campfire should show secondary [F] label when carrying wood');
+    assert.equal(typeof cfEntry.onSecondaryAction, 'function', 'registerInteractive must preserve onSecondaryAction');
+
+    cfEntry.onSecondaryAction!();
+    assert.equal(throwCalls, 1);
+
+    const thrownWood = props.dynamicObjects.at(-1)!;
+    assert.equal(thrownWood.pickupItemId, 'firewood');
+    assert.equal(thrownWood.resting, false);
+
+    // Move thrown log to pit center as ballistic arc completes and absorb it
+    thrownWood.mesh.position.set(primary.x, primary.y + 0.18, primary.z);
+    const hits = props.feedDynamicFirewoodIntoCampfires();
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].lit, true);
+    assert.equal(sparkBursts, 1);
+    assert.equal(logImpacts, 1);
+    assert.equal(thrownWood.gathered, true);
+  } finally {
+    props.dispose();
+  }
+});
+

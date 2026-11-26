@@ -19,6 +19,7 @@ import { WorldTextures } from './proceduralTextures';
 import { SoundEngine } from './soundEngine';
 import { SkyFrameState, WeatherId } from './weatherAndSky';
 import { createReflectiveBogWater } from './waterSurface';
+import { CampfireFireVisual, createCampfireFireVisual } from './campfireFire';
 import { sphereIntersectsFrustum } from './forestFrustumCuller';
 import { MUSHROOM_SPECIES_INFO, MushroomSpecies } from '../game/gameLogic';
 import { ITEM_CATALOG, ItemId, MUSHROOM_TO_ITEM_ID } from '../game/itemCatalog';
@@ -76,7 +77,7 @@ export interface InteractiveEntry {
   getName?: () => string;
   getDesc?: () => string;
   getPickupLabel?: () => string;
-  getSecondaryActionLabel?: () => string;
+  getSecondaryActionLabel?: () => string | undefined;
   gatherable: boolean;
   species?: MushroomSpecies;
   gathered?: boolean;
@@ -86,6 +87,7 @@ export interface InteractiveEntry {
   kickable: boolean;
   breakable?: boolean;
   onKick?: () => void;
+  onSecondaryAction?: () => void;
   onTouch?: () => void;
   onUse?: () => void;
   radius: number;
@@ -152,6 +154,10 @@ export interface WorldInteractionHandlers {
     y: number;
     z: number;
   }) => void;
+  hasFirewoodInPack?: () => boolean;
+  onThrowFirewoodAtCampfire?: (campfire: CampfireInfo) => void;
+  onCampfireLogImpact?: (campfire: CampfireInfo, lit: boolean, x: number, y: number, z: number) => void;
+  onCampfireLogCaughtFire?: (campfire: CampfireInfo) => void;
 }
 
 export interface WorldEnvironmentAtPoint {
@@ -221,6 +227,20 @@ export interface WorldPropsContext {
   setCampfireLit: (id: string, lit: boolean) => boolean;
   getCampfireInfo: (id: string) => CampfireInfo | null;
   getCampfires: () => CampfireInfo[];
+  throwFirewoodAtCampfire: (
+    campfireId: string,
+    startX: number,
+    startY: number,
+    startZ: number
+  ) => { ok: boolean; campfire?: CampfireInfo };
+  feedCampfireWithLog: (campfireId: string) => { ok: boolean; lit: boolean; campfire?: CampfireInfo };
+  feedDynamicFirewoodIntoCampfires: () => Array<{
+    campfire: CampfireInfo;
+    lit: boolean;
+    x: number;
+    y: number;
+    z: number;
+  }>;
   isWaterVisible: () => boolean;
   isMistVisible: () => boolean;
   getBogShoreDepthInfo: () => {
@@ -374,7 +394,8 @@ export function buildArchitectureAndProps(
     y: number;
     z: number;
     lit: boolean;
-    flames: THREE.Mesh;
+    fire: CampfireFireVisual;
+    pitGroup: THREE.Group;
   }
   interface TentEntry {
     id: string;
@@ -459,6 +480,7 @@ export function buildArchitectureAndProps(
       kickable: !!opts.kickable && !opts.gatherable,
       breakable: !!opts.breakable,
       onKick: opts.onKick,
+      onSecondaryAction: opts.onSecondaryAction,
       onTouch: opts.onTouch,
       onUse: opts.onUse ? () => {
         opts.onUse!();
@@ -1510,9 +1532,9 @@ export function buildArchitectureAndProps(
   pooledPointLights[1].visible = true;
   scene.add(pooledPointLights[0], pooledPointLights[1]);
 
-  const flameMat = new THREE.MeshBasicMaterial({ color: 0xff8c24 });
-  const charLogMat = new THREE.MeshStandardMaterial({ color: 0x261a12, roughness: 0.95 });
-  disposables.push(flameMat, charLogMat);
+  const campfireHitProxyGeo = new THREE.CylinderGeometry(0.86, 0.92, 0.95, 10);
+  const campfireHitProxyMat = new THREE.MeshBasicMaterial({ visible: false });
+  disposables.push(campfireHitProxyGeo, campfireHitProxyMat);
 
   function buildCampfirePit(
     id: string,
@@ -1540,22 +1562,6 @@ export function buildArchitectureAndProps(
     pit.add(ringMesh);
     disposables.push(ringGeo);
 
-    const logGeo1 = new THREE.CylinderGeometry(0.085, 0.095, 0.88, 6);
-    const log1 = new THREE.Mesh(logGeo1, charLogMat);
-    log1.rotation.z = Math.PI / 2;
-    log1.rotation.y = 0.25;
-    log1.position.set(0, 0.12, 0.06);
-    const log2 = new THREE.Mesh(logGeo1, charLogMat);
-    log2.rotation.z = Math.PI / 2;
-    log2.rotation.y = -0.82;
-    log2.position.set(0.04, 0.18, -0.05);
-    const log3 = new THREE.Mesh(logGeo1, charLogMat);
-    log3.rotation.z = Math.PI / 2;
-    log3.rotation.y = 1.25;
-    log3.position.set(-0.05, 0.21, 0.02);
-    pit.add(log1, log2, log3);
-    disposables.push(logGeo1);
-
     const ashBedGeo = new THREE.CircleGeometry(0.95, 16);
     ashBedGeo.rotateX(-Math.PI / 2);
     const ashBedMat = new THREE.MeshStandardMaterial({
@@ -1571,12 +1577,16 @@ export function buildArchitectureAndProps(
     pit.add(ashBed);
     disposables.push(ashBedGeo, ashBedMat);
 
-    const flameGeo = new THREE.ConeGeometry(0.32, 0.82, 7);
-    const flames = new THREE.Mesh(flameGeo, flameMat);
-    flames.position.y = 0.45;
-    flames.visible = initiallyLit;
-    pit.add(flames);
-    disposables.push(flameGeo);
+    // Invisible raycast volume over the fire flames so aiming at flames selects the campfire cleanly
+    const hitProxy = new THREE.Mesh(campfireHitProxyGeo, campfireHitProxyMat);
+    hitProxy.position.y = 0.48;
+    pit.add(hitProxy);
+
+    const fireSeed =
+      (Math.round(fx * 37) * 73856093) ^ (Math.round(fz * 91) * 19349663) ^ campfires.length;
+    const fire = createCampfireFireVisual(fireSeed, initiallyLit);
+    pit.add(fire.group);
+    disposables.push(fire);
     scene.add(pit);
 
     // Register a circular foliage-clearing zone so grass, moss, ferns, and bushes never grow through the fire
@@ -1594,7 +1604,16 @@ export function buildArchitectureAndProps(
       vegetationMargin: 0.0,
     });
 
-    const entry: CampfireEntry = { id, label, x: fx, y: fy, z: fz, lit: initiallyLit, flames };
+    const entry: CampfireEntry = {
+      id,
+      label,
+      x: fx,
+      y: fy,
+      z: fz,
+      lit: initiallyLit,
+      fire,
+      pitGroup: pit,
+    };
     campfires.push(entry);
 
     virtualPointLights.push({
@@ -1610,27 +1629,33 @@ export function buildArchitectureAndProps(
 
     const getCampfireLabel = () =>
       entry.label === 'Wilderness' ? t('prop.campfireWilderness') : entry.label;
+    const toCampfireInfo = (): CampfireInfo => ({
+      id: entry.id,
+      label: entry.label,
+      x: entry.x,
+      y: entry.y,
+      z: entry.z,
+      lit: entry.lit,
+    });
     registerInteractive(pit, {
       name: t('prop.campfireName', { label: getCampfireLabel() }),
       desc: t('prop.campfireDesc'),
       getName: () => t('prop.campfireName', { label: getCampfireLabel() }),
       getDesc: () => t('prop.campfireDesc'),
+      getSecondaryActionLabel: () =>
+        handlers?.hasFirewoodInPack?.() ? t('prop.campfireThrowLogAction') : undefined,
       onUse: () => {
         if (handlers?.onOpenCampfire) {
-          handlers.onOpenCampfire({
-            id: entry.id,
-            label: entry.label,
-            x: entry.x,
-            y: entry.y,
-            z: entry.z,
-            lit: entry.lit,
-          });
+          handlers.onOpenCampfire(toCampfireInfo());
         } else {
           entry.lit = !entry.lit;
-          entry.flames.visible = entry.lit;
+          entry.fire.setLit(entry.lit);
           sound.playImpact(0.5);
           showToast(entry.lit ? t('prop.campfireStoke') : t('prop.campfireBank'));
         }
+      },
+      onSecondaryAction: () => {
+        handlers?.onThrowFirewoodAtCampfire?.(toCampfireInfo());
       },
       onTouch: () =>
         showToast(entry.lit ? t('prop.campfireTouchLit') : t('prop.campfireTouchCold')),
@@ -2225,8 +2250,8 @@ export function buildArchitectureAndProps(
     breakableStumps.push({ x, z, entry: stumpEntry });
   }
 
-  function spawnFirewoodLog(x: number, z: number): void {
-    const y = getTerrainHeight(x, z) + 0.12;
+  function spawnFirewoodLog(x: number, z: number, yOverride?: number): InteractiveEntry {
+    const y = yOverride ?? getTerrainHeight(x, z) + 0.12;
     const logGroup = new THREE.Group();
     logGroup.position.set(x, y, z);
     logGroup.rotation.y = rand() * Math.PI;
@@ -2254,6 +2279,7 @@ export function buildArchitectureAndProps(
       onGroundYOffset: 0.12,
     });
     pickupItems.push({ x, z, entry });
+    return entry;
   }
 
   function spawnStone(x: number, z: number): void {
@@ -3291,7 +3317,7 @@ export function buildArchitectureAndProps(
     const cf = campfires.find((c) => c.id === id);
     if (!cf) return false;
     cf.lit = lit;
-    cf.flames.visible = lit;
+    cf.fire.setLit(lit);
     return true;
   }
 
@@ -3299,6 +3325,127 @@ export function buildArchitectureAndProps(
     const cf = campfires.find((c) => c.id === id);
     if (!cf) return null;
     return { id: cf.id, label: cf.label, x: cf.x, y: cf.y, z: cf.z, lit: cf.lit };
+  }
+
+  let prevPropsElapsed: number | null = null;
+
+  function throwFirewoodAtCampfire(
+    campfireId: string,
+    startX: number,
+    startY: number,
+    startZ: number
+  ): { ok: boolean; campfire?: CampfireInfo } {
+    const cf = campfires.find((c) => c.id === campfireId);
+    if (!cf) return { ok: false };
+    const info: CampfireInfo = {
+      id: cf.id,
+      label: cf.label,
+      x: cf.x,
+      y: cf.y,
+      z: cf.z,
+      lit: cf.lit,
+    };
+
+    const entry = spawnFirewoodLog(startX, startZ, startY);
+    const tx = cf.x + (rand() - 0.5) * 0.28;
+    const ty = cf.y + 0.18;
+    const tz = cf.z + (rand() - 0.5) * 0.28;
+    const dx = tx - startX;
+    const dz = tz - startZ;
+    const horizDist = Math.hypot(dx, dz);
+    const flightTime = clamp(horizDist / 9.2, 0.28, 0.58);
+    const gravity = 15.0;
+
+    entry.resting = false;
+    entry.vel.set(
+      dx / flightTime,
+      (ty - startY + 0.5 * gravity * flightTime * flightTime) / flightTime,
+      dz / flightTime
+    );
+    entry.angVel.set((rand() - 0.5) * 9, (rand() - 0.5) * 7, (rand() - 0.5) * 9);
+    return { ok: true, campfire: info };
+  }
+
+  function feedCampfireWithLog(
+    campfireId: string
+  ): { ok: boolean; lit: boolean; campfire?: CampfireInfo } {
+    const cf = campfires.find((c) => c.id === campfireId);
+    if (!cf) return { ok: false, lit: false };
+    const info: CampfireInfo = {
+      id: cf.id,
+      label: cf.label,
+      x: cf.x,
+      y: cf.y,
+      z: cf.z,
+      lit: cf.lit,
+    };
+    const localX = (rand() - 0.5) * 0.34;
+    const localZ = (rand() - 0.5) * 0.34;
+    cf.fire.addFuelLog(localX, 0.16, localZ, rand() * Math.PI);
+    if (cf.lit) {
+      sound.playFireSparkBurst();
+    } else {
+      sound.playImpact(0.55);
+    }
+    handlers?.onCampfireLogImpact?.(info, cf.lit, cf.x + localX, cf.y + 0.18, cf.z + localZ);
+    return { ok: true, lit: cf.lit, campfire: info };
+  }
+
+  function feedDynamicFirewoodIntoCampfires(): Array<{
+    campfire: CampfireInfo;
+    lit: boolean;
+    x: number;
+    y: number;
+    z: number;
+  }> {
+    const hits: Array<{
+      campfire: CampfireInfo;
+      lit: boolean;
+      x: number;
+      y: number;
+      z: number;
+    }> = [];
+    if (campfires.length === 0) return hits;
+
+    for (let i = 0; i < dynamicObjects.length; i++) {
+      const obj = dynamicObjects[i];
+      if (obj.gathered || obj.resting || obj.pickupItemId !== 'firewood') continue;
+      const px = obj.mesh.position.x;
+      const py = obj.mesh.position.y;
+      const pz = obj.mesh.position.z;
+
+      for (let c = 0; c < campfires.length; c++) {
+        const cf = campfires[c];
+        const dx = px - cf.x;
+        const dz = pz - cf.z;
+        if (dx * dx + dz * dz <= 0.88 * 0.88 && py <= cf.y + 0.72 && py >= cf.y - 0.35) {
+          obj.gathered = true;
+          obj.resting = true;
+          obj.mesh.visible = false;
+          interactiveIndex.delete(obj);
+          lightShadowsDirty = true;
+
+          cf.fire.addFuelLog(dx, Math.max(0.12, py - cf.y), dz, obj.mesh.rotation.y);
+          const cfInfo: CampfireInfo = {
+            id: cf.id,
+            label: cf.label,
+            x: cf.x,
+            y: cf.y,
+            z: cf.z,
+            lit: cf.lit,
+          };
+          if (cf.lit) {
+            sound.playFireSparkBurst();
+          } else {
+            sound.playImpact(0.55);
+          }
+          handlers?.onCampfireLogImpact?.(cfInfo, cf.lit, px, py, pz);
+          hits.push({ campfire: cfInfo, lit: cf.lit, x: px, y: py, z: pz });
+          break;
+        }
+      }
+    }
+    return hits;
   }
 
   // Shared PBR materials for player-pitched 3D waterproof trekking tents
@@ -3640,10 +3787,30 @@ export function buildArchitectureAndProps(
       weather?: string,
       mushroomDist = 38
     ) => {
+      const propsDt =
+        prevPropsElapsed !== null ? clamp(elapsed - prevPropsElapsed, 0, 0.1) : 1 / 60;
+      prevPropsElapsed = elapsed;
+
+      let chosenBoost = 0;
       for (let i = 0; i < campfires.length; i++) {
         const cf = campfires[i];
         if (cf.lit) {
-          cf.flames.scale.y = 0.85 + Math.sin(elapsed * 20.0 + i * 1.7) * 0.2;
+          const cfDx = cf.x - camX;
+          const cfDz = cf.z - camZ;
+          // Animate active fires within render distance + immediate hearth vicinity
+          if (cfDx * cfDx + cfDz * cfDz <= (maxRenderDist + 20) * (maxRenderDist + 20)) {
+            cf.fire.update(elapsed, propsDt, () => {
+              sound.playFireLogCatch();
+              handlers?.onCampfireLogCaughtFire?.({
+                id: cf.id,
+                label: cf.label,
+                x: cf.x,
+                y: cf.y,
+                z: cf.z,
+                lit: cf.lit,
+              });
+            });
+          }
         }
       }
 
@@ -3670,11 +3837,19 @@ export function buildArchitectureAndProps(
       }
       const chosen0 = best0 >= 0 ? virtualPointLights[best0] : null;
       const chosen1 = best1 >= 0 ? virtualPointLights[best1] : null;
-      const flickerDelta = Math.sin(elapsed * 15.0) * 0.45;
+      const flickerDelta =
+        Math.sin(elapsed * 13.7) * 0.24 +
+        Math.sin(elapsed * 23.3 + 1.1) * 0.16 +
+        Math.sin(elapsed * 5.9) * 0.20;
       for (let slot = 0; slot < 2; slot++) {
         const pl = pooledPointLights[slot];
         const src = slot === 0 ? chosen0 : chosen1;
         if (src) {
+          chosenBoost = 0;
+          if (src.flicker) {
+            const matchedCf = campfires.find((c) => c.pitGroup === src.anchor);
+            if (matchedCf) chosenBoost = matchedCf.fire.getIntensityBoost() * 1.4;
+          }
           const nextPosition = src.anchor.position.clone();
           nextPosition.y += src.yOffset;
           if (lightShadowsDirty || pl.position.distanceToSquared(nextPosition) > 0.000001 || pl.intensity === 0) {
@@ -3686,9 +3861,9 @@ export function buildArchitectureAndProps(
             src.anchor.position.z
           );
           pl.color.setHex(src.colorHex);
-          pl.distance = src.distance;
+          pl.distance = src.distance + chosenBoost * 3.0;
           pl.decay = src.decay;
-          pl.intensity = src.flicker ? 2.5 + flickerDelta : src.baseIntensity;
+          pl.intensity = src.flicker ? 2.55 + flickerDelta + chosenBoost : src.baseIntensity;
         } else {
           pl.intensity = 0;
         }
@@ -3875,6 +4050,9 @@ export function buildArchitectureAndProps(
         z: c.z,
         lit: c.lit,
       })),
+    throwFirewoodAtCampfire,
+    feedCampfireWithLog,
+    feedDynamicFirewoodIntoCampfires,
     isWaterVisible: () => swampWater.visible,
     isMistVisible: () => mistInst.visible,
     getBogShoreDepthInfo: () => ({

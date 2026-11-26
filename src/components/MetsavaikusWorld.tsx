@@ -323,6 +323,7 @@ export interface WorldActions {
   dropBallast: () => void;
   igniteCampfire: (campfireId: string) => CampfireInfo | null;
   bankCampfire: (campfireId: string) => CampfireInfo | null;
+  throwFirewoodIntoCampfire: (campfireId: string) => CampfireInfo | null;
   placeCampfireFromWood: () => CampfireInfo | null;
   pitchTent: () => TentInfo | null;
   sitInTent: (tentId?: string) => boolean;
@@ -1286,6 +1287,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         callbacksRef.current.onToast(t('toast.gatherGently'));
         return;
       }
+      if (hoveredObj.onSecondaryAction) {
+        hoveredObj.onSecondaryAction();
+        syncVitalHudDom();
+        pushSurvivalSnapshot();
+        return;
+      }
       if (hoveredObj.onKick) {
         survival.physicalTiredness = Math.min(100, survival.physicalTiredness + 3.5);
         hoveredObj.onKick();
@@ -1744,6 +1751,20 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         callbacksRef.current.onToast(t('toast.bankedFire'));
         pushSurvivalSnapshot();
         return propsCtx ? propsCtx.getCampfireInfo(campfireId) : null;
+      },
+      throwFirewoodIntoCampfire: (campfireId: string) => {
+        if (!propsCtx) return null;
+        if ((inventory.stacks.firewood ?? 0) <= 0) {
+          callbacksRef.current.onToast(t('toast.noFirewoodToThrow'));
+          return propsCtx.getCampfireInfo(campfireId);
+        }
+        if (removeStackItem(inventory, 'firewood', 1)) {
+          recomputeBurden();
+          propsCtx.feedCampfireWithLog(campfireId);
+          syncVitalHudDom();
+          pushSurvivalSnapshot();
+        }
+        return propsCtx.getCampfireInfo(campfireId);
       },
       placeCampfireFromWood: () => {
         if (!propsCtx || rejectIfSwimming()) return null;
@@ -3666,6 +3687,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
         propsCtx.updateInteractivePosition(obj);
       }
+      propsCtx.feedDynamicFirewoodIntoCampfires();
     }
 
     const nearbyInteractiveEntries: InteractiveEntry[] = [];
@@ -4922,6 +4944,46 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               dedupeWindowMs: 120,
               payload: { material: info.material, breakable: true, broken: info.broken },
             });
+          },
+          hasFirewoodInPack: () => (inventory.stacks.firewood ?? 0) > 0,
+          onThrowFirewoodAtCampfire: (campfire) => {
+            if (!propsCtx) return;
+            if ((inventory.stacks.firewood ?? 0) <= 0) {
+              callbacksRef.current.onToast(t('toast.noFirewoodToThrow'));
+              return;
+            }
+            if (!removeStackItem(inventory, 'firewood', 1)) return;
+            recomputeBurden();
+            _euler.set(player.pitch, player.yaw, 0, 'YXZ');
+            _lookDir.set(0, 0, -1).applyEuler(_euler);
+            const sx = camera.position.x + _lookDir.x * 0.55;
+            const sy = camera.position.y - 0.18 + _lookDir.y * 0.35;
+            const sz = camera.position.z + _lookDir.z * 0.55;
+            propsCtx.throwFirewoodAtCampfire(campfire.id, sx, sy, sz);
+            sound.playImpact(0.32);
+            lastPromptKey = '';
+            pushDebugEvent('game', 'campfire.throw_log', `Threw firewood toward ${campfire.label}`);
+          },
+          onCampfireLogImpact: (campfire, lit, x, y, z) => {
+            soundscape.engine.emitEvent({
+              type: 'object.impact',
+              origin: 'environment',
+              simulationTimestamp: simClockMs,
+              position: { x, y, z },
+              intensity: lit ? 0.9 : 0.55,
+              dedupeKey: `campfire_log_${campfire.id}_${Math.floor(elapsed * 4)}`,
+              dedupeWindowMs: 120,
+              payload: { material: 'wood', breakable: false, broken: false },
+            });
+            callbacksRef.current.onToast(lit ? t('toast.threwLogLit') : t('toast.threwLogCold'));
+            pushDebugEvent(
+              'game',
+              'campfire.log_landed',
+              `Firewood landed in ${campfire.label} (${lit ? 'lit — spark burst!' : 'cold pit'})`
+            );
+          },
+          onCampfireLogCaughtFire: (campfire) => {
+            pushDebugEvent('game', 'campfire.log_caught_fire', `Thrown log caught fire at ${campfire.label}`);
           },
         },
         isLowPowerGpu

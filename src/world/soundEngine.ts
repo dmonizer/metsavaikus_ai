@@ -1118,6 +1118,82 @@ export class SoundEngine {
     src.start(now);
   }
 
+  playFireSparkBurst(): void {
+    if (!this.initialized || !this.ctx || this.muted) return;
+    const noiseBuf = this.stepNoiseBuffer ?? this.waterNoiseBuffer;
+    if (!noiseBuf) return;
+    const now = this.ctx.currentTime;
+
+    // 1. Warm thump + ember scatter hiss on log impact
+    const whoosh = this.ctx.createBufferSource();
+    whoosh.buffer = noiseBuf;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'bandpass';
+    lp.frequency.setValueAtTime(750, now);
+    lp.frequency.exponentialRampToValueAtTime(240, now + 0.28);
+    lp.Q.value = 0.85;
+    const wg = this.ctx.createGain();
+    wg.gain.setValueAtTime(0.18, now);
+    wg.gain.exponentialRampToValueAtTime(0.003, now + 0.3);
+    whoosh.connect(lp).connect(wg).connect(this.ctx.destination);
+    whoosh.onended = () => {
+      whoosh.disconnect();
+      lp.disconnect();
+      wg.disconnect();
+    };
+    whoosh.start(now);
+
+    // 2. Rapid cluster of crisp spark crackle pops
+    const popOffsets = [0.01, 0.045, 0.09, 0.145, 0.21, 0.29];
+    for (let i = 0; i < popOffsets.length; i++) {
+      const start = now + popOffsets[i];
+      const src = this.ctx.createBufferSource();
+      src.buffer = noiseBuf;
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 1800 + (i % 3) * 950;
+      bp.Q.value = 2.4;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.095 - i * 0.01, start);
+      g.gain.exponentialRampToValueAtTime(0.002, start + 0.045);
+      src.connect(bp).connect(g).connect(this.ctx.destination);
+      src.onended = () => {
+        src.disconnect();
+        bp.disconnect();
+        g.disconnect();
+      };
+      src.start(start);
+    }
+  }
+
+  playFireLogCatch(): void {
+    if (!this.initialized || !this.ctx || this.muted) return;
+    const noiseBuf = this.waterNoiseBuffer ?? this.stepNoiseBuffer;
+    if (!noiseBuf) return;
+    const now = this.ctx.currentTime;
+
+    // Soft thermal flare whoosh as the log catches fire
+    const src = this.ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(420, now);
+    filter.frequency.exponentialRampToValueAtTime(1150, now + 0.22);
+    filter.frequency.exponentialRampToValueAtTime(340, now + 0.52);
+    filter.Q.value = 0.9;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.004, now);
+    gain.gain.linearRampToValueAtTime(0.11, now + 0.14);
+    gain.gain.exponentialRampToValueAtTime(0.003, now + 0.55);
+    src.connect(filter).connect(gain).connect(this.ctx.destination);
+    src.onended = () => {
+      src.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+    src.start(now);
+  }
+
   playCookSizzle(): void {
     if (!this.initialized || !this.ctx || this.muted || !this.waterNoiseBuffer) return;
     const now = this.ctx.currentTime;
