@@ -1,3 +1,4 @@
+import { createSeededRandom } from './seededRandom';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
@@ -252,15 +253,7 @@ export interface WorldPropsContext {
   dispose: () => void;
 }
 
-function seededRand(seed: number): () => number {
-  let s = (seed | 0) ^ 0x517cc1b7;
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+const seededRand = (seed: number) => createSeededRandom(seed, 0x517cc1b7);
 
 function prepNonIndexed(
   geo: THREE.BufferGeometry,

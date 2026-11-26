@@ -1,3 +1,4 @@
+import { createSeededRandom as seededRand } from './seededRandom';
 import * as THREE from 'three';
 
 import logWeatheredUrl from '../assets/textures/log_weathered.jpg';
@@ -16,15 +17,6 @@ import meadowGrassUrl from '../assets/textures/meadow_grass.jpg';
 import leafPatchUrl from '../assets/textures/leaf_patch.jpg';
 import spruceFoliageUrl from '../assets/textures/spruce_foliage.jpg';
 
-function seededRand(seed: number): () => number {
-  let s = seed | 0;
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {

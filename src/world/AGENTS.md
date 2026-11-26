@@ -26,7 +26,7 @@ The React runtime in [../components/AGENTS.md](../components/AGENTS.md) owns pla
 
 Keep pooled point-light counts and shader variants stable. Invalidate shadow maps when doors, carried props, tents, or light locations change. Preserve existing geometry batching, vegetation instancing, LOD, and bounded caches when splitting object factories. Track ownership of shared versus per-instance geometries/materials so disposal neither leaks resources nor destroys shared assets.
 
-Seeded generators use different salts. Preserve output sequences and random-call ordering when extracting helpers, unless changing the generated world is intentional.
+`seededRandom.ts` owns the shared Mulberry32 mechanics; callers retain their original salts and independent streams. Golden sequence and blueprint tests protect pre-extraction output. Seeded generators use different salts. Preserve output sequences and random-call ordering when extracting helpers, unless changing the generated world is intentional.
 
 ## Verification
 
