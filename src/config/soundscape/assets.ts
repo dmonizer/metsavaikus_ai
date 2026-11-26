@@ -169,6 +169,17 @@ export const SOUNDSCAPE_ASSETS: AssetDefinition[] = [
   { id: 'red_fox_screech_02_mp3', file: 'wildlife/mammals/red-fox-screech-02.mp3', preload: true, durationSec: 5.352000, gainScale: 3.2, tags: ['wildlife', 'mammals'] },
 
   { id: 'music_night_01', file: 'music/night-01.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_night_02', file: 'music/night-02.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_night_03', file: 'music/night-03.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_day_01', file: 'music/day-01.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_day_02', file: 'music/day-02.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_day_03', file: 'music/day-03.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_rain_01', file: 'music/rain-01.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_rain_02', file: 'music/rain-02.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_mist_01', file: 'music/mist-01.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_mist_02', file: 'music/mist-02.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_mist_03', file: 'music/mist-03.mp3', preload:true, loopable: true, durationSec: 30.0 },
+  { id: 'music_mist_04', file: 'music/mist-04.mp3', preload:true, loopable: true, durationSec: 30.0 },
 
   { id: 'proc_cricket', file: 'procedural:field_cricket', procedural: true, proceduralKind: 'cricket', durationSec: 1.1 },
   { id: 'proc_insect_buzz', file: 'procedural:bog_mosquito', procedural: true, proceduralKind: 'insect', durationSec: 1.3 },
