@@ -22,6 +22,8 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
 
 Landing/physical surface events and continuous audio share `world/surfaceMaterial.ts`; keep the runtime adapter lazy so covered surfaces do not trigger unnecessary terrain sampling.
 
+Inventory commands call `finishInventoryChange` once after mutations, including failed ignition attempts that consume supplies. It refreshes derived burden before publishing the HUD and navigation snapshot. Keep feedback local to each command and finalize batches after the last mutation.
+
 ## Invariants and verification
 
 `game/keyboardInput.ts` decides which keys belong to gameplay and cancels their browser defaults (including Firefox quick find). Preserve native controls/text editing, composition, modified browser shortcuts and Escape from pointer lock. The canvas is focusable; gameplay start/resume, canvas clicks and the last overlay closing restore its focus.

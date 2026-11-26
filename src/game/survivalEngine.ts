@@ -195,6 +195,21 @@ export function computeWeightBurden(
   };
 }
 
+/** Refresh derived pack state after inventory changes or ingested-water absorption. */
+export function refreshInventoryBurden(
+  state: PlayerSurvivalState,
+  inventory: InventoryState,
+  thresholds?: Partial<WeightTierThresholds>
+): void {
+  state.backpackWeightKg = computeInventoryWeightKg(inventory);
+  const burden = computeWeightBurden(state.backpackWeightKg, state.waterStomachLoadL, thresholds);
+  state.totalEffectiveWeightKg = burden.effectiveWeightKg;
+  state.loadTier = burden.loadTier;
+  state.tiringMultiplier = burden.tiringMultiplier;
+  state.stomachDrainMultiplier = burden.stomachDrainMultiplier;
+  state.energyLoadMultiplier = burden.energyLoadMultiplier;
+}
+
 /**
  * Computes realistic Baltic air temperature + live windchill + wetness chill + shelter/fire warmth.
  */
@@ -404,17 +419,7 @@ export function stepSurvivalTick(
 
   // 1. Pack weight & ingested water absorption
   state.waterStomachLoadL = Math.max(0, state.waterStomachLoadL - dtMin * 0.28);
-  state.backpackWeightKg = computeInventoryWeightKg(inv);
-  const burden = computeWeightBurden(
-    state.backpackWeightKg,
-    state.waterStomachLoadL,
-    env.weightThresholds
-  );
-  state.totalEffectiveWeightKg = burden.effectiveWeightKg;
-  state.loadTier = burden.loadTier;
-  state.tiringMultiplier = burden.tiringMultiplier;
-  state.stomachDrainMultiplier = burden.stomachDrainMultiplier;
-  state.energyLoadMultiplier = burden.energyLoadMultiplier;
+  refreshInventoryBurden(state, inv, env.weightThresholds);
 
   // 2. Flashlight battery drain while ON
   if (env.flashlightActive && inv.flashlightBattery > 0) {

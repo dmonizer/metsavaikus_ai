@@ -34,6 +34,7 @@ import {
   LocomotionState,
   previewSleepOutcome,
   refillBottlesFromSource,
+  refreshInventoryBurden,
   stepSleepSlice,
   stepSurvivalTick,
   tryIgniteCampfire,
@@ -922,3 +923,64 @@ describe('Debug Survival Overrides & Ballast Thresholds', () => {
 
 
 
+
+describe('Inventory burden refresh', () => {
+  it('refreshes all derived fields immediately after consuming a spare battery', () => {
+    const inventory = createInventoryFromPacking({ flashlight: 1, extra_battery: 1 });
+    inventory.flashlightBattery = 20;
+    const state = createInitialSurvivalState();
+    state.waterStomachLoadL = 0.8;
+    const thresholds = { moderateKg: 0.5, heavyKg: 1.4, overburdenedKg: 1.8 };
+    refreshInventoryBurden(state, inventory, thresholds);
+    const before = state.backpackWeightKg;
+    assert.equal(loadFlashlightBattery(inventory).ok, true);
+
+    refreshInventoryBurden(state, inventory, thresholds);
+    assert.ok(state.backpackWeightKg < before);
+    assert.equal(state.backpackWeightKg, computeInventoryWeightKg(inventory));
+    const burden = computeWeightBurden(state.backpackWeightKg, state.waterStomachLoadL, thresholds);
+    assert.equal(state.totalEffectiveWeightKg, burden.effectiveWeightKg);
+    assert.equal(state.loadTier, burden.loadTier);
+    assert.equal(state.tiringMultiplier, burden.tiringMultiplier);
+    assert.equal(state.stomachDrainMultiplier, burden.stomachDrainMultiplier);
+    assert.equal(state.energyLoadMultiplier, burden.energyLoadMultiplier);
+  });
+
+  it('accounts for a final lighter charge consumed by an unsuccessful ignition', () => {
+    const inventory = createInventoryFromPacking({ lighter: 1 });
+    inventory.lighterUses = 1;
+    const state = createInitialSurvivalState(computeInventoryWeightKg(inventory));
+    const result = tryIgniteCampfire(inventory, 'storm', 80, 1);
+    assert.equal(result.ok, false);
+    assert.equal(result.used, 'lighter');
+    refreshInventoryBurden(state, inventory);
+    assert.equal(inventory.lighterUses, 0);
+    assert.equal(state.backpackWeightKg, 0);
+    assert.equal(state.totalEffectiveWeightKg, 0);
+    assert.equal(state.loadTier, 'light');
+
+    const withoutFuel = tryIgniteCampfire(inventory, 'storm', 80, 1);
+    assert.equal(withoutFuel.ok, false);
+    assert.equal(withoutFuel.used, null);
+    assert.equal(computeInventoryWeightKg(inventory), 0);
+  });
+
+  it('keeps bottle water and the stomach load distinct after drinking and refilling', () => {
+    const inventory = createInventoryFromPacking({ bottle_1l: 1 });
+    const bottle = inventory.bottles[0];
+    const state = createInitialSurvivalState(computeInventoryWeightKg(inventory));
+    const fullPackWeight = state.backpackWeightKg;
+
+    assert.equal(drinkFromBottle(state, inventory, bottle.uid).ok, true);
+    refreshInventoryBurden(state, inventory);
+    assert.ok(state.backpackWeightKg < fullPackWeight);
+    assert.ok(state.totalEffectiveWeightKg > state.backpackWeightKg);
+    assert.ok(state.waterStomachLoadL > 0);
+
+    assert.equal(refillBottlesFromSource(inventory, 'clean_well').refilledCount, 1);
+    refreshInventoryBurden(state, inventory);
+    assert.equal(state.backpackWeightKg, fullPackWeight);
+    assert.ok(state.totalEffectiveWeightKg > fullPackWeight);
+    assert.equal(refillBottlesFromSource(inventory, 'clean_well').refilledCount, 0);
+  });
+});

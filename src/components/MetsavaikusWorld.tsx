@@ -107,6 +107,7 @@ import {
   LocomotionState,
   PlayerSurvivalState,
   refillBottlesFromSource,
+  refreshInventoryBurden,
   stepSleepSlice,
   stepSurvivalTick,
   SurvivalTickEvents,
@@ -971,17 +972,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       return true;
     }
 
-    function recomputeBurden(): void {
-      survival.backpackWeightKg = computeInventoryWeightKg(inventory);
-      const burden = computeWeightBurden(
-        survival.backpackWeightKg,
-        survival.waterStomachLoadL,
-        weightThresholds
-      );
-      survival.totalEffectiveWeightKg = burden.effectiveWeightKg;
-      survival.loadTier = burden.loadTier;
-      survival.tiringMultiplier = burden.tiringMultiplier;
-      survival.stomachDrainMultiplier = burden.stomachDrainMultiplier;
+    function finishInventoryChange(beforePublish?: () => void): void {
+      refreshInventoryBurden(survival, inventory, weightThresholds);
+      beforePublish?.();
+      syncVitalHudDom();
+      pushSurvivalSnapshot();
     }
 
     function beginCollapse(): void {
@@ -1135,11 +1130,11 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (!hoveredObj) {
         if (!hoveredDeadfall && canRefillBogWater && inventory.bottles.length > 0) {
           const res = refillBottlesFromSource(inventory, 'bog_lake');
-          sound.playFootstep('water');
-          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
           callbacksRef.current.onToast(res.message);
-          syncVitalHudDom();
-          pushSurvivalSnapshot();
+          if (res.refilledCount > 0) {
+            sound.playFootstep('water');
+            finishInventoryChange();
+          }
         }
         return;
       }
@@ -1150,7 +1145,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           const meta = MUSHROOM_SPECIES_INFO[gatheredSpecies];
           const localizedName = getMushroomCopy(gatheredSpecies).name;
           addItemToInventory(inventory, MUSHROOM_TO_ITEM_ID[gatheredSpecies], 1);
-          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
           callbacksRef.current.onGatherMushroom(gatheredSpecies);
           if (meta.edibility === 'poisonous') {
             callbacksRef.current.onToast(t('toast.gatherPoisonous', { name: localizedName }));
@@ -1162,7 +1156,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           hoveredObj = null;
           lastPromptKey = '';
           callbacksRef.current.onPromptChange(null);
-          pushSurvivalSnapshot();
+          finishInventoryChange();
         }
         return;
       }
@@ -1171,28 +1165,27 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         const pickedId = propsCtx.collectPickupItem(hoveredObj);
         if (pickedId) {
           addItemToInventory(inventory, pickedId, 1);
-          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
-          const woodCount = inventory.stacks.firewood ?? 0;
-          const totalKg = survival.backpackWeightKg.toFixed(2);
-          const readyHint =
-            pickedId === 'firewood' && woodCount >= CAMPFIRE_WOOD_COST
-              ? t('toast.packedWoodReady')
-              : pickedId === 'firewood'
-                ? t('toast.packedWoodCount', { have: woodCount, need: CAMPFIRE_WOOD_COST })
-                : '';
-          callbacksRef.current.onToast(
-            t('toast.packedItem', {
-              name: getItemName(pickedId),
-              unitKg: ITEM_CATALOG[pickedId].weightKg.toFixed(2),
-              totalKg,
-              hint: readyHint,
-            })
-          );
-          hoveredObj = null;
-          lastPromptKey = '';
-          callbacksRef.current.onPromptChange(null);
-          syncVitalHudDom();
-          pushSurvivalSnapshot();
+          finishInventoryChange(() => {
+            const woodCount = inventory.stacks.firewood ?? 0;
+            const totalKg = survival.backpackWeightKg.toFixed(2);
+            const readyHint =
+              pickedId === 'firewood' && woodCount >= CAMPFIRE_WOOD_COST
+                ? t('toast.packedWoodReady')
+                : pickedId === 'firewood'
+                  ? t('toast.packedWoodCount', { have: woodCount, need: CAMPFIRE_WOOD_COST })
+                  : '';
+            callbacksRef.current.onToast(
+              t('toast.packedItem', {
+                name: getItemName(pickedId),
+                unitKg: ITEM_CATALOG[pickedId].weightKg.toFixed(2),
+                totalKg,
+                hint: readyHint,
+              })
+            );
+            hoveredObj = null;
+            lastPromptKey = '';
+            callbacksRef.current.onPromptChange(null);
+          });
         }
         return;
       }
@@ -1677,8 +1670,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           if (res.poisoned) vomitLurchTimer = 0.6;
         }
         callbacksRef.current.onToast(res.message);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        if (res.ok) finishInventoryChange();
       },
       drinkBottle: (uid: string) => {
         if (rejectIfSwimming()) return;
@@ -1688,15 +1680,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           if (res.poisoned) vomitLurchTimer = 0.7;
         }
         callbacksRef.current.onToast(res.message);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        if (res.ok) finishInventoryChange();
       },
       loadBattery: () => {
         if (rejectIfSwimming()) return;
         const res = loadFlashlightBattery(inventory);
         if (res.ok) sound.playImpact(0.35);
         callbacksRef.current.onToast(res.message);
-        pushSurvivalSnapshot();
+        if (res.ok) finishInventoryChange();
       },
       dropItem: (itemId: ItemId) => {
         if (rejectIfSwimming()) return;
@@ -1705,29 +1696,23 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             flashlightOn = false;
             flashlight.intensity = 0;
           }
-          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
           lastMinimapCanvas = null;
           callbacksRef.current.onToast(t('toast.droppedItem', { name: getItemName(itemId) }));
-          syncVitalHudDom();
-          pushSurvivalSnapshot();
+          finishInventoryChange();
         }
       },
       dropBottleByUid: (uid: string) => {
         if (rejectIfSwimming()) return;
         if (dropBottle(inventory, uid)) {
-          recomputeBurden();
           callbacksRef.current.onToast(t('toast.droppedBottle'));
-          syncVitalHudDom();
-          pushSurvivalSnapshot();
+          finishInventoryChange();
         }
       },
       dropBallast: () => {
         if (rejectIfSwimming()) return;
         inventory.debugBallastKg = 0;
-        recomputeBurden();
         pushDebugEvent('debug', 'debug.ballast', 'Cleared debug ballast (0.00 kg)');
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       igniteCampfire: (campfireId: string) => {
         const res = tryIgniteCampfire(inventory, weatherSky.currentWeather, survival.wetness);
@@ -1736,7 +1721,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           propsCtx.setCampfireLit(campfireId, true);
         }
         callbacksRef.current.onToast(res.message);
-        pushSurvivalSnapshot();
+        if (res.used) finishInventoryChange();
         return propsCtx ? propsCtx.getCampfireInfo(campfireId) : null;
       },
       bankCampfire: (campfireId: string) => {
@@ -1779,10 +1764,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           return null;
         }
         removeStackItem(inventory, 'firewood', CAMPFIRE_WOOD_COST);
-        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
         callbacksRef.current.onToast(placed.message);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
         return placed.campfire;
       },
       pitchTent: () => {
@@ -1801,10 +1784,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           return null;
         }
         removeStackItem(inventory, 'tent', 1);
-        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
         callbacksRef.current.onToast(placed.message);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
         return placed.tent;
       },
       sitInTent: (tentId?: string) => {
@@ -1848,8 +1829,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         callbacksRef.current.onToast(
           nowWorn ? t('toast.woreRainJacket') : t('toast.tookOffRainJacket')
         );
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       sleepInSleepingBag: () => {
         if (rejectIfSwimming()) return;
@@ -1880,16 +1860,15 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         const res = cookCampfireRecipe(inventory, recipe);
         if (res.ok) {
           sound.playCookSizzle();
-          survival.backpackWeightKg = computeInventoryWeightKg(inventory);
         }
         callbacksRef.current.onToast(res.message);
-        pushSurvivalSnapshot();
+        if (res.ok) finishInventoryChange();
       },
       boilBottle: (uid: string) => {
         const res = boilBottleAtCampfire(inventory, uid);
         if (res.ok) sound.playCookSizzle();
         callbacksRef.current.onToast(res.message);
-        pushSurvivalSnapshot();
+        if (res.ok) finishInventoryChange();
       },
       startSleep: (spot: SleepSpotInfo, hours: number) => {
         if (document.pointerLockElement) document.exitPointerLock?.();
@@ -2379,9 +2358,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (patch.flashlightBattery !== undefined) {
           inventory.flashlightBattery = THREE.MathUtils.clamp(patch.flashlightBattery, 0, 100);
         }
-        recomputeBurden();
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       applyStatePreset: (preset) => {
         switch (preset) {
@@ -2425,10 +2402,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             survival.deathFactors = [];
             break;
         }
-        recomputeBurden();
         pushDebugEvent('survival', `debug.preset.${preset}`, `Applied state preset: ${preset}`);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       adjustInventoryItem: (itemId: ItemId, delta: number) => {
         if (delta > 0) {
@@ -2448,11 +2423,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             }
           }
         }
-        recomputeBurden();
         lastMinimapCanvas = null;
         pushDebugEvent('debug', 'debug.inventory', `${delta >= 0 ? '+' : ''}${delta} ${itemId}`);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       setBottleState: (uid, patch) => {
         const b = inventory.bottles.find((item) => item.uid === uid);
@@ -2462,39 +2435,31 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
         if (patch.waterQuality !== undefined) b.waterQuality = patch.waterQuality;
         if (patch.waterTempC !== undefined) b.waterTempC = patch.waterTempC;
-        recomputeBurden();
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       adjustDebugBallastKg: (deltaKg: number) => {
         const next = Math.round(((inventory.debugBallastKg ?? 0) + deltaKg) * 100) / 100;
         inventory.debugBallastKg = Math.abs(next) < 0.005 ? 0 : next;
-        recomputeBurden();
         pushDebugEvent('debug', 'debug.ballast', `Ballast adjusted to ${inventory.debugBallastKg.toFixed(2)} kg`);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       setDebugBallastKg: (kg: number) => {
         const rounded = Math.round(kg * 100) / 100;
         inventory.debugBallastKg = Math.abs(rounded) < 0.005 ? 0 : rounded;
-        recomputeBurden();
         pushDebugEvent('debug', 'debug.ballast', `Ballast set to ${inventory.debugBallastKg.toFixed(2)} kg`);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       setWeightThresholds: (patch) => {
         const moderateKg = Math.max(0.5, patch.moderateKg ?? weightThresholds.moderateKg);
         const heavyKg = Math.max(moderateKg + 0.5, patch.heavyKg ?? weightThresholds.heavyKg);
         const overburdenedKg = Math.max(heavyKg + 0.5, patch.overburdenedKg ?? weightThresholds.overburdenedKg);
         weightThresholds = { moderateKg, heavyKg, overburdenedKg };
-        recomputeBurden();
         pushDebugEvent(
           'debug',
           'debug.weight_thresholds',
           `Thresholds: mod=${moderateKg}kg, heavy=${heavyKg}kg, over=${overburdenedKg}kg`
         );
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
       },
       spawnEntry: (spawnId, target, opts) => {
         const entry = spawnCatalog.find((e) => e.id === spawnId);
@@ -2826,9 +2791,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             collected++;
           }
         }
-        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        if (collected > 0) finishInventoryChange();
         return {
           collected,
           totalWood: inventory.stacks.firewood ?? 0,
@@ -2873,10 +2836,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (seatedTent?.id === tt.id) exitTentSeat(true);
         if (!propsCtx.packUpPlayerTent(tt.id)) return false;
         addItemToInventory(inventory, 'tent', 1);
-        survival.backpackWeightKg = computeInventoryWeightKg(inventory);
         callbacksRef.current.onToast(t('prop.tentPackedUp'));
-        syncVitalHudDom();
-        pushSurvivalSnapshot();
+        finishInventoryChange();
         return true;
       },
       toggleRainJacketForTest: () => {
@@ -4873,18 +4834,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               exitTentSeat(true);
             }
             addItemToInventory(inventory, 'tent', 1);
-            survival.backpackWeightKg = computeInventoryWeightKg(inventory);
             sound.playImpact(0.5);
             callbacksRef.current.onToast(t('prop.tentPackedUp'));
-            syncVitalHudDom();
-            pushSurvivalSnapshot();
+            finishInventoryChange();
           },
           onRefillWell: (source) => {
             const res = refillBottlesFromSource(inventory, source);
-            survival.backpackWeightKg = computeInventoryWeightKg(inventory);
             callbacksRef.current.onToast(res.message);
-            syncVitalHudDom();
-            pushSurvivalSnapshot();
+            if (res.refilledCount > 0) finishInventoryChange();
           },
           onLootCrate: (_crateId, label, loot) => {
             const names: string[] = [];
@@ -4892,12 +4849,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               addItemToInventory(inventory, entry.itemId, entry.qty);
               names.push(`${entry.qty}× ${getItemName(entry.itemId)}`);
             }
-            survival.backpackWeightKg = computeInventoryWeightKg(inventory);
             callbacksRef.current.onToast(
               t('prop.lootedCrate', { label, items: names.join(', ') })
             );
-            syncVitalHudDom();
-            pushSurvivalSnapshot();
+            finishInventoryChange();
           },
           onDoorToggle: (info) => {
             soundscape.engine.emitEvent({
