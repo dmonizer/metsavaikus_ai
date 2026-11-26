@@ -20,7 +20,7 @@ Browser-based Estonian wilderness exploration and survival game. React owns menu
 
 ## Verification and tooling
 
-Use `package.json` as the command reference. `npm test` runs colocated Node/tsx tests; `npm run lint` is TypeScript checking; `npm run build` builds production assets. `npm run test:rendering` and `npm run test:audio` run browser checks under `scripts/` against fixtures in `tests/` and require Chrome/Chromium (`CHROME_BIN` can override discovery).
+Use `package.json` as the command reference. `npm test` runs colocated Node/tsx tests; `npm run lint` is TypeScript checking; `npm run build` builds production assets. `npm run test:rendering` and `npm run test:audio` run browser checks under `scripts/` against fixtures in `tests/` and require Chrome/Chromium (`CHROME_BIN` can override discovery). `npm run test:keyboard` checks Firefox browser find and native UI input in an isolated profile; it requires Firefox and geckodriver (`FIREFOX_BIN`/`GECKODRIVER_BIN` override discovery).
 
 Keep the asset-copy behavior in `vite.config.ts`: root-relative source asset URLs depend on it in production. Existing soundscape design and extension references are indexed in [docs/soundscape/README.md](docs/soundscape/README.md); verify historical delivery statements against the current code.
 

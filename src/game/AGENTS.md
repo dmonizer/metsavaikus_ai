@@ -7,6 +7,7 @@ This directory holds mostly renderer-independent domain rules. The caller in `co
 - `survivalEngine.ts`: vital state, exposure/temperature, burden, poisoning/collapse, consumption, bottle refill/boiling, cooking, ignition, sleep simulation/preview, and discovery tracking. Functions mutate passed state/inventory; inspect mutation semantics before sharing state with UI snapshots.
 - `waterPhysics.ts`: water-state evaluation, swim enter/exit thresholds, and focused bog-water interaction tests. Preserve hysteresis and boardwalk handling; the runtime supplies terrain and obstruction queries.
 - `qualityGovernor.ts`: hardware-aware profiles, adaptive tier selection with hysteresis, and distance smoothing. The runtime applies profiles to terrain, vegetation, weather/shadows, and resolution.
+- `keyboardInput.ts`: shared keyboard ownership/default-cancellation policy; only bound game controls are claimed during active play, preserving native UI controls, browser modifiers, IME and pointer-lock Escape. `npm run test:keyboard` verifies trusted input and Firefox quick find in an isolated profile.
 - `frameTiming.ts`: bounded elapsed-time policy (250ms maximum per frame) and physics substeps (at most 1/60s). It discards longer stalls without retaining catch-up debt; zero/invalid deltas do not advance time.
 - `perfLogger.ts`: bounded performance reports and frame diagnostics consumed by the runtime/debug surface.
 

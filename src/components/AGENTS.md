@@ -22,6 +22,8 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
 
 ## Invariants and verification
 
+`game/keyboardInput.ts` decides which keys belong to gameplay and cancels their browser defaults (including Firefox quick find). Preserve native controls/text editing, composition, modified browser shortcuts and Escape from pointer lock. The canvas is focusable; gameplay start/resume, canvas clicks and the last overlay closing restore its focus.
+
 Game phases include title, packing, playing, paused, sleeping, collapsing, and collapsed. Modal visibility, pointer lock, movement suppression, and audio suspension must agree across App and the runtime. Inspect both input handlers when changing Escape or pause behavior.
 
 `game/frameTiming.ts` preserves up to 250ms foreground time per render and splits player/prop integration into at most 1/60s steps. Weather, survival, audio and sleep consume the accepted frame time once; jump events are combined across physics steps. Focus/visibility changes reset the wall-clock baseline; paused/collapsed/debug-frozen simulation does not catch up later.

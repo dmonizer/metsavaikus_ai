@@ -1,3 +1,4 @@
+import { consumeGameKeyDown } from '../game/keyboardInput';
 import { computeFrameTiming } from '../game/frameTiming';
 import { moveSphere, pushCharacterOut, sweepSphere } from '../world/spatialPhysics';
 import React, { useEffect, useRef } from 'react';
@@ -472,6 +473,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.shadowMap.autoUpdate = false;
     renderer.shadowMap.needsUpdate = true;
+    renderer.domElement.tabIndex = 0;
     renderer.domElement.style.display = 'block';
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
@@ -1390,6 +1392,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       pushSurvivalSnapshot();
     }
 
+    function restoreGameFocus(): void {
+      if (phaseRef.current === 'playing' && !uiModalOpen && !diagnosticsOpen && !debugPanelOpen) {
+        renderer.domElement.focus({ preventScroll: true });
+      }
+    }
+
     actionsRef.current = {
       startPlaying: (packingSelection: PackingSelection) => {
         sound.init();
@@ -1420,6 +1428,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         prevInWater = false;
         climbingOutOfWater = false;
         callbacksRef.current.onPhaseChange('playing');
+        renderer.domElement.focus({ preventScroll: true });
         syncVitalHudDom();
         pushSurvivalSnapshot();
         window.requestAnimationFrame(() => {
@@ -1451,6 +1460,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         keysHeld.clear();
         keysJustPressed.clear();
         callbacksRef.current.onPhaseChange('playing');
+        renderer.domElement.focus({ preventScroll: true });
       },
       restartWorld: (packingSelection?: PackingSelection) => {
         player.pos.set(spawnX, getTerrainHeight(spawnX, spawnZ), spawnZ);
@@ -1499,6 +1509,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         soundscape.engine.stopAuditionSounds();
         sound.resume();
         callbacksRef.current.onPhaseChange('playing');
+        renderer.domElement.focus({ preventScroll: true });
         syncVitalHudDom();
         pushSurvivalSnapshot();
       },
@@ -1571,6 +1582,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
       },
       setUiModalOpen: (open: boolean) => {
+        const wasOpen = uiModalOpen;
         uiModalOpen = open;
         if (open) {
           keysHeld.clear();
@@ -1578,20 +1590,28 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           mouseDragging = false;
           if (document.pointerLockElement) document.exitPointerLock?.();
           pushSurvivalSnapshot();
+        } else if (wasOpen) {
+          restoreGameFocus();
         }
       },
       setDiagnosticsOpen: (open: boolean) => {
+        const wasOpen = diagnosticsOpen;
         diagnosticsOpen = open;
         if (open) {
           if (document.pointerLockElement) document.exitPointerLock?.();
           mouseDragging = false;
+        } else if (wasOpen) {
+          restoreGameFocus();
         }
       },
       setDebugPanelOpen: (open: boolean) => {
+        const wasOpen = debugPanelOpen;
         debugPanelOpen = open;
         if (open) {
           if (document.pointerLockElement) document.exitPointerLock?.();
           mouseDragging = false;
+        } else if (wasOpen) {
+          restoreGameFocus();
         }
       },
       getSoundscapeDiagnostics: () => soundscape.engine.getDiagnosticsSnapshot(),
@@ -2950,6 +2970,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
     const onMouseDown = (e: MouseEvent) => {
       if (phaseRef.current !== 'playing' || uiModalOpen || diagnosticsOpen) return;
       if (e.target !== renderer.domElement) return;
+      renderer.domElement.focus({ preventScroll: true });
       sound.init();
       if (pickTargetActive && e.button === 0) {
         const rect = renderer.domElement.getBoundingClientRect();
@@ -3008,29 +3029,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
     const onKeyDown = (e: KeyboardEvent) => {
       const code = e.code;
-      const target = e.target as HTMLElement | null;
-      const isEditingText =
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target?.isContentEditable;
-      if (isEditingText && code !== 'F9' && code !== 'F8' && code !== 'Escape') {
-        return;
-      }
-
-      if (phaseRef.current === 'title' || phaseRef.current === 'packing') {
-        return;
-      }
-      if (
-        phaseRef.current === 'sleeping' ||
-        phaseRef.current === 'collapsing' ||
-        phaseRef.current === 'collapsed'
-      ) {
-        return;
-      }
+      if (!consumeGameKeyDown(e, {
+        phase: phaseRef.current,
+        modalOpen: uiModalOpen || diagnosticsOpen || debugPanelOpen,
+        pointerLocked,
+      })) return;
 
       if (code === 'F8') {
         if (phaseRef.current === 'playing' || phaseRef.current === 'paused') {
-          e.preventDefault();
           if (document.pointerLockElement) document.exitPointerLock?.();
           keysHeld.clear();
           keysJustPressed.clear();
@@ -3042,7 +3048,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (code === 'F9') {
         if (phaseRef.current === 'playing' || phaseRef.current === 'paused') {
-          e.preventDefault();
           if (document.pointerLockElement) document.exitPointerLock?.();
           keysHeld.clear();
           keysJustPressed.clear();
@@ -3054,7 +3059,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (code === 'Tab' || code === 'KeyB') {
         if (phaseRef.current === 'playing') {
-          e.preventDefault();
           if (rejectIfSwimming()) return;
           callbacksRef.current.onToggleBackpack();
         }
@@ -3063,7 +3067,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (code === 'KeyM') {
         if (phaseRef.current === 'playing') {
-          e.preventDefault();
           callbacksRef.current.onToggleFullMap();
         }
         return;
@@ -3073,7 +3076,6 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         if (code === 'Escape' && (diagnosticsOpen || debugPanelOpen) && !uiModalOpen) {
           return;
         }
-        e.preventDefault();
         if (uiModalOpen) {
           callbacksRef.current.onCloseModals();
           return;

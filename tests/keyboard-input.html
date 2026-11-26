@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Game keyboard regression</title></head>
+  <body>
+    <p>Wilderness walking with WASD. This text also makes Firefox quick find observable.</p>
+    <canvas id="world" tabindex="0" width="400" height="200" aria-label="Test game"></canvas>
+    <input id="text" aria-label="Test text">
+    <textarea id="config" aria-label="Test configuration"></textarea>
+    <div id="editable" contenteditable="true" aria-label="Test editor"></div>
+    <button id="button">Test button</button>
+    <select id="select" aria-label="Test selector"><option>Alpha</option><option>Beta</option></select>
+    <script type="module" src="/tests/keyboard-input.ts"></script>
+  </body>
+</html>
