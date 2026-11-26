@@ -24,6 +24,8 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
 
 Game phases include title, packing, playing, paused, sleeping, collapsing, and collapsed. Modal visibility, pointer lock, movement suppression, and audio suspension must agree across App and the runtime. Inspect both input handlers when changing Escape or pause behavior.
 
+`game/frameTiming.ts` preserves up to 250ms foreground time per render and splits player/prop integration into at most 1/60s steps. Weather, survival, audio and sleep consume the accepted frame time once; jump events are combined across physics steps. Focus/visibility changes reset the wall-clock baseline; paused/collapsed/debug-frozen simulation does not catch up later.
+
 Every world lifecycle addition needs ownership for cleanup: listeners, scheduled frames/timeouts, GPU resources, audio resources, and asynchronous initialization. Preserve restart/unmount behavior and the disposed guard after asset loading. Carried and physically moving props must call `propsCtx.updateInteractivePosition` after movement so local interaction queries remain current.
 
 Use the translation helpers for user-visible strings; see [../i18n/AGENTS.md](../i18n/AGENTS.md). Check lint/build plus applicable domain tests. Browser checks cover specific fixtures; manually verify affected gameplay flows such as restart, modal opening, pointer lock, tent seating, and sleep when they change.

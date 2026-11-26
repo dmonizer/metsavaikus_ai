@@ -1,3 +1,4 @@
+import { computeFrameTiming } from '../game/frameTiming';
 import { moveSphere, pushCharacterOut, sweepSphere } from '../world/spatialPhysics';
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
@@ -3134,6 +3135,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       keysHeld.clear();
       keysJustPressed.clear();
       mouseDragging = false;
+      // Focus/visibility transitions must not advance the world by suspended time.
+      lastTime = performance.now();
     };
 
     const onResize = () => {
@@ -3980,11 +3983,12 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const now = performance.now();
       const rawDtMs = Math.max(0.1, now - lastTime);
       const rawDt = rawDtMs / 1000;
-      const dt = Math.min(0.05, Math.max(0.001, rawDt));
+      const frameTiming = computeFrameTiming(rawDt);
+      const dt = frameTiming.deltaSec;
       lastTime = now;
       elapsed += dt;
       const isSimFrozen = curPhaseIsFrozen();
-      if (!isSimFrozen) {
+      if (!isSimFrozen && phaseRef.current !== 'paused' && phaseRef.current !== 'collapsed') {
         simElapsed += dt;
       }
 
@@ -4038,19 +4042,23 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         camera.updateMatrixWorld();
       } else if (curPhase === 'playing') {
         skyTimeScale = clockSpeedMult;
-        const t0 = performance.now();
-        const moveRes = updatePlayer(dt);
-        lastLocomotion = moveRes.locomotion;
-        jumpedThisFrame = moveRes.jumped;
-        const t1 = performance.now();
-        updateDynamicObjects(dt);
+        for (let step = 0; step < frameTiming.stepCount; step++) {
+          const t0 = performance.now();
+          const moveRes = updatePlayer(frameTiming.stepSec);
+          lastLocomotion = moveRes.locomotion;
+          jumpedThisFrame ||= moveRes.jumped;
+          const t1 = performance.now();
+          updateDynamicObjects(frameTiming.stepSec);
+          const t2 = performance.now();
+          playerMs += t1 - t0;
+          propsMs += t2 - t1;
+        }
+        const hoverStart = performance.now();
         updateInteractionHover();
-        const t2 = performance.now();
-        playerMs = t1 - t0;
-        propsMs = t2 - t1;
+        propsMs += performance.now() - hoverStart;
       } else if (curPhase === 'sleeping' && sleepSession) {
         // Fast-time sleeping animation with gentle camera pan on location!
-        const wallDt = Math.min(0.25, Math.max(0.001, rawDt));
+        const wallDt = dt;
         const hrsPerRealSec = sleepSession.totalHours / sleepSession.realDurationSec;
         const hrsStep = Math.min(
           sleepSession.totalHours - sleepSession.elapsedHours,
