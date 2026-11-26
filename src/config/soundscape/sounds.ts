@@ -8,7 +8,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'forest_day_ambience',
     bus: 'environment.ambience',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_forest_day' }],
+    assets: [{ assetId: 'forest-day-ambience' }],
     playback: {
       volume: 0.24,
       loop: { count: 'infinite' },
@@ -33,7 +33,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'forest_night_ambience',
     bus: 'environment.ambience',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_forest_night' }],
+    assets: [{ assetId: 'forest-night-ambience' }],
     playback: {
       volume: 0.22,
       loop: { count: 'infinite' },
@@ -58,9 +58,9 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     bus: 'environment.ambience',
     trigger: { type: 'continuous' },
     assets: [
-      { assetId: 'proc_marsh_ambience' },
-      { assetId: 'proc_marsh_ambience_01' },
-      { assetId: 'proc_marsh_ambience_02' },
+      { assetId: 'marsh-ambience' },
+      { assetId: 'marsh-ambience-01' },
+      { assetId: 'marsh-ambience-02' },
     ],
     playback: {
       volume: 0.25,
@@ -113,7 +113,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'wind_open',
     bus: 'environment.weather.wind',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_wind_open' }],
+    assets: [{ assetId: 'wind-open-loop' }],
     playback: {
       volume: 0.22,
       loop: { count: 'infinite' },
@@ -137,7 +137,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'wind_forest_trees',
     bus: 'environment.weather.wind',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_wind_trees' }],
+    assets: [{ assetId: 'wind-forest-trees-loop' }],
     playback: {
       volume: 0.28,
       loop: { count: 'infinite' },
@@ -162,7 +162,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'rain_clean_loop',
     bus: 'environment.weather.rain',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_rain_clean' }],
+    assets: [{ assetId: 'rain-clean-loop' }],
     playback: {
       volume: 0.36,
       loop: { count: 'infinite' },
@@ -241,7 +241,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'rain_tent_loop',
     bus: 'environment.weather.rain',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_rain_tent' }],
+    assets: [{ assetId: 'rain-on-tent-loop' }],
     playback: {
       volume: 0.42,
       loop: { count: 'infinite' },
@@ -307,7 +307,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'roof_water_trickling',
     bus: 'environment.water',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_water_trickling' }],
+    assets: [{ assetId: 'roof-water-trickling-loop' }],
     playback: {
       volume: 0.24,
       loop: { count: 'infinite' },
@@ -349,15 +349,15 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     bus: 'environment.wildlife.birds',
     trigger: { type: 'stochastic' },
     assets: [
-      { assetId: 'proc_bird_chirp' },
-      { assetId: 'proc_bird_chirp_02' },
-      { assetId: 'proc_bird_chirp_03' },
-      { assetId: 'proc_bird_chirp_04' },
-      { assetId: 'proc_bird_chirp_05' },
-      { assetId: 'proc_bird_chirp_06' },
-      { assetId: 'proc_bird_chirp_07' },
-      { assetId: 'proc_bird_chirp_08' },
-      { assetId: 'proc_bird_chirp_09' },
+      { assetId: 'songbird-chirp-01' },
+      { assetId: 'songbird-chirp-02' },
+      { assetId: 'songbird-chirp-03' },
+      { assetId: 'songbird-chirp-04' },
+      { assetId: 'songbird-chirp-05' },
+      { assetId: 'songbird-chirp-06' },
+      { assetId: 'songbird-chirp-07' },
+      { assetId: 'songbird-chirp-08' },
+      { assetId: 'songbird-chirp-09' },
     ],
     playback: {
       volume: [0.22, 0.42],
@@ -739,7 +739,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'occasional_waterside_splash',
     bus: 'environment.water',
     trigger: { type: 'stochastic' },
-    assets: [{ assetId: 'proc_water_splash' }],
+    assets: [{ assetId: 'distant-water-splash' }],
     playback: {
       volume: [0.28, 0.55],
       pitch: [0.9, 1.12],
@@ -780,7 +780,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     extends: 'occasional_waterside_splash',
     bus: 'environment.water',
     trigger: { type: 'event', event: 'water.splash' },
-    assets: [{ assetId: 'proc_water_splash' }],
+    assets: [{ assetId: 'distant-water-splash' }],
     playback: {
       volume: [0.35, 0.6],
       pitch: [0.92, 1.1],
@@ -912,10 +912,10 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     bus: 'player.movement',
     trigger: { type: 'event', event: 'material.step.wooden_floor' },
     assets: [
-      { assetId: 'proc_wooden_floor_step' },
-      { assetId: 'proc_wooden_floor_step_02' },
-      { assetId: 'proc_wooden_floor_step_03' },
-      { assetId: 'proc_wooden_floor_step_04' },
+      { assetId: 'wooden-floor-step-01' },
+      { assetId: 'wooden-floor-step-02' },
+      { assetId: 'wooden-floor-step-03' },
+      { assetId: 'wooden-floor-step-04' },
     ],
     playback: {
       volume: 0.52,
@@ -935,8 +935,8 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     bus: 'player.movement',
     trigger: { type: 'event', event: 'material.step.grass' },
     assets: [
-      { assetId: 'proc_grass_step' },
-      { assetId: 'proc_grass_step_02' },
+      { assetId: 'grass-step-01' },
+      { assetId: 'grass-step-02' },
     ],
     playback: {
       volume: 0.44,
@@ -979,7 +979,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'breathing_rest',
     bus: 'player.breathing',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_breathing_rest' }],
+    assets: [{ assetId: 'breathing-rest-loop' }],
     playback: {
       volume: 0.14,
       loop: { count: 'infinite' },
@@ -1003,7 +1003,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'breathing_walk',
     bus: 'player.breathing',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_breathing_walk' }],
+    assets: [{ assetId: 'breathing-walk-loop' }],
     playback: {
       volume: 0.2,
       loop: { count: 'infinite' },
@@ -1027,7 +1027,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'breathing_exerted',
     bus: 'player.breathing',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_breathing_exerted' }],
+    assets: [{ assetId: 'breathing-exerted-loop' }],
     playback: {
       volume: 0.3,
       loop: { count: 'infinite' },
@@ -1112,7 +1112,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     trigger: { type: 'event', event: 'material.fall.water_heavy' },
     assets: [
       { assetId: 'proc_water_plunge_splash' },
-      { assetId: 'proc_water_splash' },
+      { assetId: 'distant-water-splash' },
     ],
     playback: {
       volume: 0.94,
@@ -1202,7 +1202,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'wood_impact_solid',
     bus: 'objects',
     trigger: { type: 'event', event: 'object.impact.solid_wood' },
-    assets: [{ assetId: 'proc_wood_impact' }],
+    assets: [{ assetId: 'wood-impact-solid-01' }],
     playback: {
       volume: [0.45, 0.72],
       pitch: [0.9, 1.08],

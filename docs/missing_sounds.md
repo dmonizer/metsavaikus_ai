@@ -4,7 +4,7 @@
 
 There are **16 assets still generated procedurally**, verified against `procedural: true` in [assets.ts](../src/config/soundscape/assets.ts). These are the remaining recording slots. The tables list suggested replacement paths relative to `src/assets/sounds/`, with the intended sound and playback format.
 
-An asset ID beginning with `proc_` does not necessarily mean it is synthesized: IDs were retained when recordings replaced the original generators. Only assets explicitly marked `procedural: true` are included below.
+Recorded replacements now use sample filenames without extensions as asset IDs; remaining synthesized assets retain `proc_` IDs. Only assets explicitly marked `procedural: true` are included below.
 
 ### High priority
 

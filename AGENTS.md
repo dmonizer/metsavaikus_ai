@@ -23,3 +23,5 @@ Browser-based Estonian wilderness exploration and survival game. React owns menu
 Use `package.json` as the command reference. `npm test` runs colocated Node/tsx tests; `npm run lint` is TypeScript checking; `npm run build` builds production assets. `npm run test:rendering` and `npm run test:audio` run browser checks under `scripts/` against fixtures in `tests/` and require Chrome/Chromium (`CHROME_BIN` can override discovery).
 
 Keep the asset-copy behavior in `vite.config.ts`: root-relative source asset URLs depend on it in production. Existing soundscape design and extension references are indexed in [docs/soundscape/README.md](docs/soundscape/README.md); verify historical delivery statements against the current code.
+
+When replacing procedural sound assets with recordings, follow the asset ID and reference rules in [src/config/soundscape/AGENTS.md](src/config/soundscape/AGENTS.md).
