@@ -14,6 +14,8 @@
 
 `surfaceMaterial.ts` is authoritative for surface precedence shared by landing/physical events and the soundscape adapter. Terrain queries can be lazy getters; preserve boardwalk, water, interior floor, mud, gravel, village grass, forest ordering.
 
+`geometryPreparation.ts` owns non-indexed conversion and fallback normals/UVs/vertex colors. Botanical preparation requests white or height-gradient colors; props request a solid color only when supplied. Existing attributes are preserved. The default source policy reuses non-indexed input and retains indexed input; explicit copy/consume policies govern other ownership needs.
+
 ## Shared geometry and physics
 
 `shelterGeometry.ts` is authoritative for rotated house/tent footprints, floors, cover, and vegetation exclusion. Its data texture supplies shared shader queries. Register/remove runtime footprints with the same lifecycle as their object. Preserve rotation conventions and roof-ridge coverage across CPU and GPU consumers.

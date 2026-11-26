@@ -1,3 +1,4 @@
+import { prepareGeometry } from './geometryPreparation';
 import { PointSpatialIndex } from './pointSpatialIndex';
 import { createSeededRandom } from './seededRandom';
 import * as THREE from 'three';
@@ -282,23 +283,7 @@ function prepNonIndexed(
   geo: THREE.BufferGeometry,
   color?: THREE.Color
 ): THREE.BufferGeometry {
-  const g = geo.index ? geo.toNonIndexed() : geo;
-  if (!g.attributes.normal) g.computeVertexNormals();
-  if (!g.attributes.uv) {
-    const count = g.attributes.position.count;
-    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
-  }
-  if (color && !g.attributes.color) {
-    const count = g.attributes.position.count;
-    const cols = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      cols[i * 3] = color.r;
-      cols[i * 3 + 1] = color.g;
-      cols[i * 3 + 2] = color.b;
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-  }
-  return g;
+  return prepareGeometry(geo, { colors: color ? { mode: 'solid', color } : undefined });
 }
 
 function makeBoxPart(

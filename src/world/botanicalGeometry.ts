@@ -1,3 +1,4 @@
+import { prepareGeometry } from './geometryPreparation';
 import { createSeededRandom } from './seededRandom';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -10,36 +11,11 @@ export function prepGeo(
   colorBottom?: THREE.Color,
   colorTop?: THREE.Color
 ): THREE.BufferGeometry {
-  const g = geo.index ? geo.toNonIndexed() : geo;
-  if (!g.attributes.normal) g.computeVertexNormals();
-  if (!g.attributes.uv) {
-    const count = g.attributes.position.count;
-    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
-  }
-  if (!g.attributes.color) {
-    const pos = g.attributes.position;
-    const cols = new Float32Array(pos.count * 3);
-    if (colorBottom && colorTop) {
-      let minY = Infinity;
-      let maxY = -Infinity;
-      for (let i = 0; i < pos.count; i++) {
-        const y = pos.getY(i);
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-      const span = Math.max(0.01, maxY - minY);
-      for (let i = 0; i < pos.count; i++) {
-        const t = Math.min(1, Math.max(0, (pos.getY(i) - minY) / span));
-        cols[i * 3] = colorBottom.r + (colorTop.r - colorBottom.r) * t;
-        cols[i * 3 + 1] = colorBottom.g + (colorTop.g - colorBottom.g) * t;
-        cols[i * 3 + 2] = colorBottom.b + (colorTop.b - colorBottom.b) * t;
-      }
-    } else {
-      cols.fill(1);
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-  }
-  return g;
+  return prepareGeometry(geo, {
+    colors: colorBottom && colorTop
+      ? { mode: 'height-gradient', bottom: colorBottom, top: colorTop }
+      : { mode: 'white' },
+  });
 }
 
 export function applyHeightGradient(
