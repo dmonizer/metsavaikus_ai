@@ -179,7 +179,7 @@ export const SOUNDSCAPE_ASSETS: AssetDefinition[] = [
   { id: 'proc_stone_impact', file: 'procedural:stone_impact', procedural: true, proceduralKind: 'stone_impact', durationSec: 0.3 },
   { id: 'proc_metal_impact', file: 'procedural:metal_impact', procedural: true, proceduralKind: 'metal_impact', durationSec: 0.4 },
   { id: 'proc_intact_door', file: 'procedural:intact_door', procedural: true, proceduralKind: 'door', durationSec: 0.55 },
-  { id: 'proc_campfire_crackle', file: 'procedural:campfire_crackle', procedural: true, proceduralKind: 'campfire', loopable: true, durationSec: 3.0 },
+  { id: 'campfire_loop', file: 'objects/fire/campfire-loop.mp3', preload:true, loopable: true, durationSec: 26.0 },
   { id: 'proc_room_tone', file: 'procedural:room_tone', procedural: true, proceduralKind: 'forest_night', loopable: true, durationSec: 4.0 },
   { id: 'proc_clothing_rustle', file: 'procedural:clothing_rustle', procedural: true, proceduralKind: 'rustle', durationSec: 0.3 },
   { id: 'proc_gunshot_crack', file: 'procedural:gunshot_crack', procedural: true, proceduralKind: 'gunshot', durationSec: 0.9 },

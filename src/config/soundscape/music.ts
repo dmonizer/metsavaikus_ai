@@ -39,8 +39,8 @@ export const SOUNDSCAPE_MUSIC: MusicProfile[] = [
     },
     assets: [{ assetId: 'music_night_01', weight: 1 }],
     playback: {
-      volume: 0.4,
-      loop: { count: 2, pause: ['60s', '110s'] },
+      volume: 0.3,
+      loop: { count: 5, pause: ['60s', '110s'] },
       fadeInMs: '5s',
       fadeOutMs: '5s',
       crossfadeMs: '5s',

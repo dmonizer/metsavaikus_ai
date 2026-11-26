@@ -1425,7 +1425,7 @@ export const SOUNDSCAPE_SOUNDS: SoundDefinition[] = [
     id: 'campfire_crackle',
     bus: 'objects',
     trigger: { type: 'continuous' },
-    assets: [{ assetId: 'proc_campfire_crackle' }],
+    assets: [{ assetId: 'campfire_loop' }],
     playback: {
       volume: 0.36,
       loop: { count: 'infinite' },
