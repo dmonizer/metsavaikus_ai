@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { WorldResources } from './worldResources';
 import type { InteractiveEntry } from './architectureAndProps';
 import type { ItemId } from '../game/itemCatalog';
 import { getItemName, t } from '../i18n/i18n';
@@ -14,7 +15,7 @@ export function buildPantry(
   width: number,
   depth: number,
   register: RegisterInteractive,
-  disposables: Array<{ dispose(): void }>
+  resources: Pick<WorldResources, 'own'>
 ): void {
   const pantry = new THREE.Group();
   pantry.name = 'pantry';
@@ -23,7 +24,7 @@ export function buildPantry(
   const wood = new THREE.MeshStandardMaterial({ color: 0x795737, roughness: 0.9 });
   const shelfGeo = new THREE.BoxGeometry(1.55, 0.08, 0.55);
   const postGeo = new THREE.BoxGeometry(0.08, 1.7, 0.55);
-  disposables.push(wood, shelfGeo, postGeo);
+  resources.own(wood, shelfGeo, postGeo);
   for (const height of [0.16, 0.72, 1.3]) {
     const shelf = new THREE.Mesh(shelfGeo, wood);
     shelf.position.y = height;
@@ -57,7 +58,7 @@ export function buildPantry(
     if (provision.shape === 'loaf') geometry.scale(1.5, 0.7, 0.85);
     if (provision.shape === 'sausage') geometry.rotateZ(Math.PI / 2);
     const material = new THREE.MeshStandardMaterial({ color: provision.color, roughness: 0.8 });
-    disposables.push(geometry, material);
+    resources.own(geometry, material);
     const food = new THREE.Mesh(geometry, material);
     food.position.set(provision.x, provision.y, 0.04);
     food.castShadow = food.receiveShadow = true;

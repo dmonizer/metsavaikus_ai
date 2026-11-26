@@ -93,6 +93,9 @@ function verify() {
   world.background = new THREE.Color(0);
   const texture = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
   texture.needsUpdate = true;
+  // WorldTextures is borrowed by props and intentionally outlives their scope.
+  renderer.initTexture(texture);
+  const geometryBaseline = renderer.info.memory.geometries;
   const textures = new Proxy({}, { get: () => texture }) as WorldTextures;
   const props = buildArchitectureAndProps(
     world,
@@ -119,10 +122,31 @@ function verify() {
   camera.lookAt(x - house.w / 2, building.position.y + 1.7, z);
   lights[0].castShadow = false;
   const leakingLight = luminance(world, camera);
+  // The first lit render also uploads renderer-owned fallback textures.
+  // Compare against this warm baseline before allocating actual shadow maps.
+  const propsMemoryBaseline = { geometries: geometryBaseline, textures: renderer.info.memory.textures };
   lights[0].castShadow = true;
   lights[0].shadow.needsUpdate = true;
   const blockedLight = luminance(world, camera);
   props.dispose();
+  const propsMemoryAfter = { ...renderer.info.memory };
+  const restartMemoryCounts: Array<typeof propsMemoryBaseline> = [];
+  for (let cycle = 0; cycle < 2; cycle++) {
+    const restarted = buildArchitectureAndProps(world, textures,
+      { playImpact() {} } as unknown as SoundEngine, () => {}, true);
+    const houseRoot = world.children.find(node => node.position.x === x && node.position.z === z)!;
+    for (const node of world.children) node.visible = node === houseRoot || node instanceof THREE.PointLight;
+    houseRoot.traverse(node => {
+      if (node instanceof THREE.Mesh) node.material = new THREE.MeshLambertMaterial({ color: 0xeeeeee });
+    });
+    const light = world.children.find(node => node instanceof THREE.PointLight) as THREE.PointLight;
+    light.intensity = 50;
+    light.shadow.needsUpdate = true;
+    luminance(world, camera);
+    restarted.dispose();
+    restartMemoryCounts.push({ ...renderer.info.memory });
+  }
+  texture.dispose();
   weather.dispose();
   shelters.dispose();
   renderer.dispose();
@@ -135,10 +159,17 @@ function verify() {
     rainRestored,
     leakingLight,
     blockedLight,
+    propsMemoryBaseline,
+    propsMemoryAfter,
+    restartMemoryCounts,
   };
   function check(condition: boolean, message: string) {
     if (!condition) throw new Error(message + ': ' + JSON.stringify(result));
   }
+  check(propsMemoryAfter.geometries === propsMemoryBaseline.geometries, 'Prop geometry memory must return to baseline');
+  check(propsMemoryAfter.textures === propsMemoryBaseline.textures, 'Prop texture/shadow memory must return to baseline');
+  check(restartMemoryCounts.every(count => count.geometries === propsMemoryBaseline.geometries &&
+    count.textures === propsMemoryBaseline.textures), 'Restarts must release rendered geometries and shadow textures');
   check(result.grassBefore > 0, 'Vegetation fixture must render');
   check(result.grassPitched === 0, 'Tent must exclude vegetation');
   check(result.grassPacked === result.grassBefore, 'Packing must restore vegetation');

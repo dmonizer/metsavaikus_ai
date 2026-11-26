@@ -784,7 +784,6 @@ export function createCampfireFireVisual(
   const addedLogGeo = new THREE.CylinderGeometry(0.068, 0.082, 0.54, 7);
   const addedLogFlameGeo = buildLogFlameClusterGeometry(seed + 19);
   const fuelLogSlots: FuelLogSlot[] = [];
-  const logDisposables: Array<{ dispose: () => void }> = [];
 
   let prevElapsed: number | null = null;
   let fuelBoost = 0;
@@ -876,7 +875,6 @@ export function createCampfireFireVisual(
 
     wrapper.add(logMesh, logFlameMesh);
     fuelLogsGroup.add(wrapper);
-    logDisposables.push(logMat, flameMat);
 
     const slot: FuelLogSlot = {
       wrapper,
@@ -1079,8 +1077,9 @@ export function createCampfireFireVisual(
       burstMat.dispose();
       addedLogGeo.dispose();
       addedLogFlameGeo.dispose();
-      for (const d of logDisposables) {
-        d.dispose();
+      for (const slot of fuelLogSlots) {
+        slot.logMat.dispose();
+        slot.flameMat.dispose();
       }
       fuelLogSlots.length = 0;
       burstParticles.length = 0;

@@ -1,3 +1,4 @@
+import { WorldResources } from './worldResources';
 import { prepareGeometry } from './geometryPreparation';
 import { PointSpatialIndex } from './pointSpatialIndex';
 import { createSeededRandom } from './seededRandom';
@@ -370,7 +371,8 @@ export function buildArchitectureAndProps(
   const visibleMushrooms: InteractiveEntry[] = [];
   const interactiveWorldPosition = new THREE.Vector3();
   const structureNodes: Array<{ obj: THREE.Object3D; x: number; z: number; maxDistSq: number }> = [];
-  const disposables: Array<{ dispose: () => void }> = [];
+  const resources = new WorldResources(scene);
+  resources.own(shelters);
 
   interface CampfireEntry {
     id: string;
@@ -508,8 +510,7 @@ export function buildArchitectureAndProps(
   swampWater.userData.debugLayer = 'water';
   swampWater.userData.debugName = 'Rabajärv (Bog Lake Water)';
   swampWater.userData.debugMeta = { waterY: SWAMP_WATER_Y, radius: waterRadius };
-  scene.add(swampWater);
-  disposables.push(bogWater);
+  resources.addComposite(swampWater, bogWater);
 
   const mistGeo = new THREE.PlaneGeometry(12, 12);
   mistGeo.rotateX(-Math.PI / 2);
@@ -535,8 +536,8 @@ export function buildArchitectureAndProps(
     mistInst.setMatrixAt(i, mistDummy.matrix);
   }
   mistInst.instanceMatrix.needsUpdate = true;
-  scene.add(mistInst);
-  disposables.push(mistGeo, mistMat);
+  resources.add(mistInst);
+  resources.own(mistGeo, mistMat);
 
   // ============================================================================
   // Photo-Matched PBR Estonian Heritage Log Buildings (Sobel Normal Maps + AO!)
@@ -674,7 +675,7 @@ export function buildArchitectureAndProps(
     envMapIntensity: 0.3,
   });
 
-  disposables.push(
+  resources.own(
     weatheredLogMat,
     warmLogMat,
     thatchMat,
@@ -710,7 +711,7 @@ export function buildArchitectureAndProps(
     m.castShadow = castShadow;
     m.receiveShadow = true;
     parent.add(m);
-    disposables.push(merged);
+    resources.own(merged);
   }
 
   function buildEstonianLogHouse(
@@ -780,7 +781,7 @@ export function buildArchitectureAndProps(
     group.userData.debugLayer = 'structure';
     group.userData.debugName = name;
     group.userData.debugMeta = { buildingId, decay, abandoned, roofStyle };
-    scene.add(group);
+    resources.add(group);
     structureNodes.push({ obj: group, x, z, maxDistSq: 255 * 255 });
 
     // Soft ambient-occlusion grounding skirt beneath each building
@@ -789,7 +790,7 @@ export function buildArchitectureAndProps(
     const shadowQuad = new THREE.Mesh(shadowGeo, contactShadowMat);
     shadowQuad.position.y = 0.03;
     group.add(shadowQuad);
-    disposables.push(shadowGeo);
+    resources.own(shadowGeo);
 
     const plinthParts: THREE.BufferGeometry[] = [];
     const wallParts: THREE.BufferGeometry[] = [];
@@ -1105,7 +1106,7 @@ export function buildArchitectureAndProps(
         metalness: 0.0,
         envMapIntensity: 0.45,
       });
-      disposables.push(doorMat);
+      resources.own(doorMat);
       const doorMesh = new THREE.Mesh(
         new THREE.BoxGeometry(doorWidth - 0.04, h - 0.72, 0.1),
         doorMat
@@ -1168,7 +1169,7 @@ export function buildArchitectureAndProps(
     }
 
     if (opts.pantry && !abandoned && decay === 'intact') {
-      buildPantry(group, w, d, registerInteractive, disposables);
+      buildPantry(group, w, d, registerInteractive, resources);
     }
 
     // Interactive Bed inside roofed usable houses & intact bog huts
@@ -1183,7 +1184,7 @@ export function buildArchitectureAndProps(
       const frameGeo = new THREE.BoxGeometry(1.05, 0.34, 1.95);
       const blanketGeo = new THREE.BoxGeometry(0.98, 0.16, 1.52);
       const pillowGeo = new THREE.BoxGeometry(0.76, 0.14, 0.36);
-      disposables.push(frameGeo, blanketGeo, pillowGeo);
+      resources.own(frameGeo, blanketGeo, pillowGeo);
 
       const frameMesh = new THREE.Mesh(frameGeo, timberTrimMat);
       frameMesh.position.y = 0.17;
@@ -1225,7 +1226,7 @@ export function buildArchitectureAndProps(
         const crateLx = w * 0.27;
         const crateLz = -d * 0.24;
         const crateGeo = new THREE.BoxGeometry(0.74, 0.56, 0.54);
-        disposables.push(crateGeo);
+        resources.own(crateGeo);
         const crateMesh = new THREE.Mesh(crateGeo, crateWoodMat);
         crateMesh.position.set(crateLx, 0.43 + 0.28, crateLz);
         group.add(crateMesh);
@@ -1340,14 +1341,14 @@ export function buildArchitectureAndProps(
     const fenceMesh = new THREE.Mesh(fenceGeo, timberTrimMat);
     fenceMesh.castShadow = shadows;
     fenceMesh.receiveShadow = true;
-    scene.add(fenceMesh);
+    resources.add(fenceMesh);
     structureNodes.push({
       obj: fenceMesh,
       x: (x0 + x1) * 0.5,
       z: (z0 + z1) * 0.5,
       maxDistSq: 220 * 220,
     });
-    disposables.push(fenceGeo);
+    resources.own(fenceGeo);
   }
 
   function buildWaterWell(
@@ -1368,7 +1369,7 @@ export function buildArchitectureAndProps(
     const wellShadow = new THREE.Mesh(wellShadowGeo, contactShadowMat);
     wellShadow.position.y = 0.03;
     wellGroup.add(wellShadow);
-    disposables.push(wellShadowGeo);
+    resources.own(wellShadowGeo);
 
     const stoneGeo = new THREE.CylinderGeometry(0.92, 1.04, stale ? 0.84 : 1.0, 12);
     const stoneCyl = new THREE.Mesh(stoneGeo, stonePlinthMat);
@@ -1377,7 +1378,7 @@ export function buildArchitectureAndProps(
     stoneCyl.castShadow = shadows;
     stoneCyl.receiveShadow = true;
     wellGroup.add(stoneCyl);
-    disposables.push(stoneGeo);
+    resources.own(stoneGeo);
 
     const waterDiscGeo = new THREE.CircleGeometry(0.76, 12);
     waterDiscGeo.rotateX(-Math.PI / 2);
@@ -1387,12 +1388,12 @@ export function buildArchitectureAndProps(
     );
     waterDisc.position.y = stale ? 0.72 : 0.84;
     wellGroup.add(waterDisc);
-    disposables.push(waterDiscGeo);
+    resources.own(waterDiscGeo);
 
     if (!stale) {
       const postGeo = new THREE.BoxGeometry(0.14, 2.0, 0.14);
       const roofGeo = new THREE.ConeGeometry(1.42, 0.96, 4);
-      disposables.push(postGeo, roofGeo);
+      resources.own(postGeo, roofGeo);
       [-0.85, 0.85].forEach((px) => {
         const post = new THREE.Mesh(postGeo, timberTrimMat);
         post.position.set(px, 1.5, 0);
@@ -1407,14 +1408,14 @@ export function buildArchitectureAndProps(
     } else {
       // Broken crooked well post on decrepit abandoned hut well
       const brokenPostGeo = new THREE.BoxGeometry(0.13, 1.25, 0.13);
-      disposables.push(brokenPostGeo);
+      resources.own(brokenPostGeo);
       const post = new THREE.Mesh(brokenPostGeo, timberTrimMat);
       post.position.set(-0.82, 1.0, 0);
       post.rotation.z = 0.22;
       wellGroup.add(post);
     }
 
-    scene.add(wellGroup);
+    resources.add(wellGroup);
     structureNodes.push({ obj: wellGroup, x: wx, z: wz, maxDistSq: 220 * 220 });
     circleColliders.push({ x: wx, z: wz, r: 1.1 });
 
@@ -1515,11 +1516,12 @@ export function buildArchitectureAndProps(
   }
   pooledPointLights[0].visible = true;
   pooledPointLights[1].visible = true;
-  scene.add(pooledPointLights[0], pooledPointLights[1]);
+  resources.add(pooledPointLights[0], pooledPointLights[1]);
+  resources.own(...pooledPointLights);
 
   const campfireHitProxyGeo = new THREE.CylinderGeometry(0.86, 0.92, 0.95, 10);
   const campfireHitProxyMat = new THREE.MeshBasicMaterial({ visible: false });
-  disposables.push(campfireHitProxyGeo, campfireHitProxyMat);
+  resources.own(campfireHitProxyGeo, campfireHitProxyMat);
 
   function buildCampfirePit(
     id: string,
@@ -1545,7 +1547,7 @@ export function buildArchitectureAndProps(
     const ringMesh = new THREE.Mesh(ringGeo, stonePlinthMat);
     ringMesh.castShadow = shadows;
     pit.add(ringMesh);
-    disposables.push(ringGeo);
+    resources.own(ringGeo);
 
     const ashBedGeo = new THREE.CircleGeometry(0.95, 16);
     ashBedGeo.rotateX(-Math.PI / 2);
@@ -1560,7 +1562,7 @@ export function buildArchitectureAndProps(
     ashBed.position.y = 0.03;
     ashBed.receiveShadow = true;
     pit.add(ashBed);
-    disposables.push(ashBedGeo, ashBedMat);
+    resources.own(ashBedGeo, ashBedMat);
 
     // Invisible raycast volume over the fire flames so aiming at flames selects the campfire cleanly
     const hitProxy = new THREE.Mesh(campfireHitProxyGeo, campfireHitProxyMat);
@@ -1571,8 +1573,8 @@ export function buildArchitectureAndProps(
       (Math.round(fx * 37) * 73856093) ^ (Math.round(fz * 91) * 19349663) ^ campfires.length;
     const fire = createCampfireFireVisual(fireSeed, initiallyLit);
     pit.add(fire.group);
-    disposables.push(fire);
-    scene.add(pit);
+    resources.ownComposite(fire.group, fire);
+    resources.add(pit);
 
     // Register a circular foliage-clearing zone so grass, moss, ferns, and bushes never grow through the fire
     shelters.add({
@@ -1681,7 +1683,7 @@ export function buildArchitectureAndProps(
     board.position.y = 1.55;
     board.castShadow = shadows;
     g.add(post, board);
-    scene.add(g);
+    resources.add(g);
     circleColliders.push({ x, z, r: 0.22 });
 
     registerInteractive(board, {
@@ -1839,9 +1841,9 @@ export function buildArchitectureAndProps(
       }
       plankInst.instanceMatrix.needsUpdate = true;
       sleeperInst.instanceMatrix.needsUpdate = true;
-      scene.add(plankInst, sleeperInst);
+      resources.add(plankInst, sleeperInst);
       structureNodes.push({ obj: plankInst, x: bp.bogCenterX, z: bp.bogCenterZ, maxDistSq: 450 * 450 });
-      disposables.push(twinPlankGeo, sleeperGeo, plankMat, sleeperMat);
+      resources.own(twinPlankGeo, sleeperGeo, plankMat, sleeperMat);
     }
   }
 
@@ -1888,7 +1890,7 @@ export function buildArchitectureAndProps(
     transparent: true,
     opacity: 0.45,
   });
-  disposables.push(
+  resources.own(
     crateMat,
     barrelGeo,
     barrelMat,
@@ -1931,7 +1933,7 @@ export function buildArchitectureAndProps(
   })();
   const lanternGlobeGeo = new THREE.CylinderGeometry(0.072, 0.086, 0.17, 12);
   const lanternFlameGeo = new THREE.ConeGeometry(0.024, 0.065, 6);
-  disposables.push(lanternMetalGeo, lanternGlobeGeo, lanternFlameGeo);
+  resources.own(lanternMetalGeo, lanternGlobeGeo, lanternFlameGeo);
 
   function spawnCrate(x: number, z: number, size = 0.72): void {
     const y = getTerrainHeight(x, z) + size / 2;
@@ -1939,7 +1941,7 @@ export function buildArchitectureAndProps(
     mesh.position.set(x, y, z);
     mesh.castShadow = shadows;
     mesh.receiveShadow = true;
-    scene.add(mesh);
+    resources.add(mesh);
     registerInteractive(mesh, {
       name: t('prop.woodenCrate'),
       desc: t('prop.woodenCrateDesc'),
@@ -1962,7 +1964,7 @@ export function buildArchitectureAndProps(
     mesh.position.set(x, y, z);
     mesh.castShadow = shadows;
     mesh.receiveShadow = true;
-    scene.add(mesh);
+    resources.add(mesh);
     registerInteractive(mesh, {
       name: t('prop.oilDrum'),
       desc: t('prop.oilDrumDesc'),
@@ -1989,13 +1991,13 @@ export function buildArchitectureAndProps(
     globe.position.y = 0.02;
 
     const flameMat = new THREE.MeshBasicMaterial({ color: 0xffba49 });
-    disposables.push(flameMat);
+    resources.own(flameMat);
     const flame = new THREE.Mesh(lanternFlameGeo, flameMat);
     flame.position.y = -0.02;
     flame.visible = initiallyLit;
 
     group.add(chassis, globe, flame);
-    scene.add(group);
+    resources.add(group);
 
     let lit = initiallyLit;
     virtualPointLights.push({
@@ -2047,7 +2049,7 @@ export function buildArchitectureAndProps(
   const chipGeo = new THREE.BoxGeometry(0.11, 0.035, 0.22);
   const woodHitProxyGeo = new THREE.SphereGeometry(0.42, 6, 6);
   const woodHitProxyMat = new THREE.MeshBasicMaterial({ visible: false });
-  disposables.push(
+  resources.own(
     splitWoodMat,
     deadwoodBarkMat,
     stumpMossMat,
@@ -2081,7 +2083,7 @@ export function buildArchitectureAndProps(
     piece.add(core, barkCap, hitProxy);
     piece.position.set(x, y, z);
     piece.rotation.y = rand() * Math.PI * 2;
-    scene.add(piece);
+    resources.add(piece);
 
     const entry = registerInteractive(piece, {
       name: t('prop.splitFirewoodName'),
@@ -2138,7 +2140,7 @@ export function buildArchitectureAndProps(
       const cz = z + Math.sin(ca) * cd;
       chip.position.set(cx, getTerrainHeight(cx, cz) + 0.025, cz);
       chip.rotation.y = rand() * Math.PI;
-      scene.add(chip);
+      resources.add(chip);
     }
     return count;
   }
@@ -2186,8 +2188,8 @@ export function buildArchitectureAndProps(
     moss.position.set(-0.12 * scale, trunkR * 1.62, 0);
 
     g.add(trunk, heartEnd, rootA, rootB, stub, moss);
-    scene.add(g);
-    disposables.push(trunkGeo, heartGeo, rootGeo, stubGeo, mossGeo);
+    resources.add(g);
+    resources.own(trunkGeo, heartGeo, rootGeo, stubGeo, mossGeo);
 
     let kicksRemaining = 2;
     const stumpEntry = registerInteractive(g, {
@@ -2247,7 +2249,7 @@ export function buildArchitectureAndProps(
     const hitProxy = new THREE.Mesh(woodHitProxyGeo, woodHitProxyMat);
     hitProxy.position.y = 0.04;
     logGroup.add(mesh, hitProxy);
-    scene.add(logGroup);
+    resources.add(logGroup);
     const entry = registerInteractive(logGroup, {
       name: t('prop.birchFirewoodName'),
       desc: t('prop.birchFirewoodDesc'),
@@ -2274,7 +2276,7 @@ export function buildArchitectureAndProps(
     mesh.position.set(x, y, z);
     mesh.castShadow = shadows;
     mesh.receiveShadow = true;
-    scene.add(mesh);
+    resources.add(mesh);
     registerInteractive(mesh, {
       name: t('prop.fieldstoneName'),
       desc: t('prop.fieldstoneDesc'),
@@ -2446,7 +2448,7 @@ export function buildArchitectureAndProps(
   mushShadowGeo.rotateX(-Math.PI / 2);
   mushShadowGeo.translate(0, 0.012, 0);
 
-  disposables.push(
+  resources.own(
     chanterelleMat,
     saffronCapMat,
     porciniCapMat,
@@ -2757,7 +2759,7 @@ export function buildArchitectureAndProps(
     return g;
   })();
 
-  disposables.push(
+  resources.own(
     chanterelleBodyGeo,
     saffronBodyGeo,
     porciniStemGeo,
@@ -2805,7 +2807,7 @@ export function buildArchitectureAndProps(
         parts.push(clone);
       }
       const clusterGeo = mergeGeometries(parts)!;
-      disposables.push(clusterGeo);
+      resources.own(clusterGeo);
       const m = new THREE.Mesh(clusterGeo, mat);
       m.castShadow = shadows;
       m.receiveShadow = true;
@@ -2851,7 +2853,7 @@ export function buildArchitectureAndProps(
       const mCap = mergeGeometries(capParts)!;
       const mGills = mergeGeometries(gillParts)!;
       const mWarts = mergeGeometries(wartParts)!;
-      disposables.push(mStem, mCap, mGills, mWarts);
+      resources.own(mStem, mCap, mGills, mWarts);
       const capMesh = new THREE.Mesh(mCap, flyAgaricCapMat);
       capMesh.castShadow = shadows;
       capMesh.receiveShadow = true;
@@ -2892,7 +2894,7 @@ export function buildArchitectureAndProps(
       const mStem = mergeGeometries(stemParts)!;
       const mCap = mergeGeometries(capParts)!;
       const mGills = mergeGeometries(gillParts)!;
-      disposables.push(mStem, mCap, mGills);
+      resources.own(mStem, mCap, mGills);
       const capMesh = new THREE.Mesh(mCap, destroyingAngelCapMat);
       capMesh.castShadow = shadows;
       capMesh.receiveShadow = true;
@@ -2940,7 +2942,7 @@ export function buildArchitectureAndProps(
       const mStem = mergeGeometries(stemParts)!;
       const mCap = mergeGeometries(capParts)!;
       const mPore = mergeGeometries(poreParts)!;
-      disposables.push(mStem, mCap, mPore);
+      resources.own(mStem, mCap, mPore);
       const capMesh = new THREE.Mesh(mCap, capMat);
       capMesh.castShadow = shadows;
       capMesh.receiveShadow = true;
@@ -2951,7 +2953,7 @@ export function buildArchitectureAndProps(
     hitProxy.position.y = 0.16;
     g.add(hitProxy);
 
-    scene.add(g);
+    resources.add(g);
     mushroomCountTotal++;
 
     const info = MUSHROOM_SPECIES_INFO[species];
@@ -3043,8 +3045,8 @@ export function buildArchitectureAndProps(
     bodyMesh.receiveShadow = true;
     const hitProxy = new THREE.Mesh(woodHitProxyGeo, woodHitProxyMat);
     itemGroup.add(bodyMesh, hitProxy);
-    scene.add(itemGroup);
-    disposables.push(mat, bodyGeo);
+    resources.add(itemGroup);
+    resources.own(mat, bodyGeo);
 
     const entry = registerInteractive(itemGroup, {
       name: getItemName(itemId),
@@ -3468,7 +3470,7 @@ export function buildArchitectureAndProps(
     roughness: 0.82,
     metalness: 0.05,
   });
-  disposables.push(
+  resources.own(
     tentRainflyMat,
     tentInnerMat,
     tentGroundsheetMat,
@@ -3487,7 +3489,7 @@ export function buildArchitectureAndProps(
 
     target.interactiveEntry.gathered = true;
     interactiveIndex.delete(target.interactiveEntry);
-    scene.remove(target.group);
+    resources.detach(target.group);
 
     const ioIdx = interactiveObjects.indexOf(target.interactiveEntry);
     if (ioIdx >= 0) interactiveObjects.splice(ioIdx, 1);
@@ -3689,7 +3691,7 @@ export function buildArchitectureAndProps(
       tentGroup.add(guy);
     }
 
-    scene.add(tentGroup);
+    resources.add(tentGroup);
     lightShadowsDirty = true;
 
     const interactiveEntry = registerInteractive(tentGroup, {
@@ -4114,12 +4116,7 @@ export function buildArchitectureAndProps(
       mushroomIndex.clear();
       nearbyMushrooms.length = 0;
       visibleMushrooms.length = 0;
-      shelters.dispose();
-      for (const light of pooledPointLights) { light.dispose(); scene.remove(light); }
-      for (const tt of tents) {
-        for (const geo of tt.geometries) geo.dispose();
-      }
-      for (const d of disposables) d.dispose();
+      resources.dispose();
     },
   };
 }

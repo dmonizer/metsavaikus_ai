@@ -137,3 +137,23 @@ test('existing base logs and logs tossed onto an unlit pit heat up and catch fir
 
   fire.dispose();
 });
+
+test('fuel log materials are released once across eviction and fire teardown', () => {
+  const fire = createCampfireFireVisual(123, true);
+  const fuelLogs = fire.group.children[2];
+  const disposals: number[] = [];
+
+  for (let i = 0; i < 7; i++) {
+    fire.addFuelLog(0, 0.15, 0, 0);
+    fuelLogs.children.at(-1)!.traverse(object => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const index = disposals.push(0) - 1;
+      (object.material as THREE.Material).addEventListener('dispose', () => disposals[index]++);
+    });
+  }
+
+  assert.equal(fire.getActiveFuelLogCount(), 6);
+  assert.deepEqual(disposals.slice(0, 2), [1, 1]);
+  fire.dispose();
+  assert.deepEqual(disposals, Array(14).fill(1));
+});
