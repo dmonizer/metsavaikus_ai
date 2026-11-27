@@ -11,7 +11,7 @@ Browser-based Estonian wilderness exploration and survival game. React owns menu
 
 ## Read only the relevant subsystem guides
 
-- **UI, game phases, world lifecycle, input, HUD, or React/runtime communication:** [src/components/AGENTS.md](src/components/AGENTS.md), also covering `src/App.tsx`.
+- **UI, title preloading, game phases, world lifecycle, input, HUD, or React/runtime communication:** [src/components/AGENTS.md](src/components/AGENTS.md), also covering `src/App.tsx`.
 - **Objects, houses, tents, campfires, terrain, vegetation, water, weather, maps, or spatial physics:** [src/world/AGENTS.md](src/world/AGENTS.md).
 - **Inventory, survival, sleep, water locomotion, quality adaptation, or performance logging:** [src/game/AGENTS.md](src/game/AGENTS.md).
 - **Audio scheduling, playback, acoustic processing, events, or persistence:** [src/soundscape/AGENTS.md](src/soundscape/AGENTS.md).

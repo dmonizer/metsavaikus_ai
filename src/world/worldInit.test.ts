@@ -202,3 +202,23 @@ test('formatWorldInitError produces clean fallback messages for non-Error reject
   assert.equal(formatWorldInitError({ type: 'error' }), 'Asset load failed (error)');
   assert.match(formatWorldInitError(null), /Unexpected error/);
 });
+
+test('a cancelled asynchronous build cannot report an error into the next world', async () => {
+  const building = deferred<void>();
+  const stage = deferred<void>();
+  const handle = startAsyncWorldInit({
+    loadComputeEngine: async () => ({}),
+    loadTextures: async () => ({ dispose() {} }),
+    buildWorld: async () => {
+      building.resolve();
+      await stage.promise;
+    },
+    cleanupResources: () => assert.fail('late cleanup'),
+    onError: () => assert.fail('late error'),
+    isDisposed: () => false,
+  });
+  await building.promise;
+  handle.cancel();
+  stage.reject(new Error('old world'));
+  await handle.done;
+});

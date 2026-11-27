@@ -5,7 +5,7 @@ export interface DisposableResource {
 export interface AsyncWorldInitParams<TEngine, TTextures extends DisposableResource> {
   loadComputeEngine: () => Promise<TEngine>;
   loadTextures: () => Promise<TTextures>;
-  buildWorld: (engine: TEngine, textures: TTextures) => void;
+  buildWorld: (engine: TEngine, textures: TTextures) => void | Promise<void>;
   cleanupResources: () => void;
   onError: (message: string) => void;
   isDisposed: () => boolean;
@@ -33,7 +33,7 @@ export function formatWorldInitError(err: unknown): string {
 }
 
 /**
- * Coordinates asynchronous engine + texture loading and synchronous world construction
+ * Coordinates asynchronous engine + texture loading and staged world construction
  * with full failure handling, sibling-promise disposal, and unmount cancellation safety.
  */
 export function startAsyncWorldInit<TEngine, TTextures extends DisposableResource>(
@@ -85,22 +85,18 @@ export function startAsyncWorldInit<TEngine, TTextures extends DisposableResourc
   texturesPromise.catch(() => {});
 
   const done = Promise.all([enginePromise, texturesPromise]).then(
-    ([engine, loadedTextures]) => {
+    async ([engine, loadedTextures]) => {
       if (cancelled || params.isDisposed()) {
         disposeSettledTextures();
         return;
       }
       builtWorldStarted = true;
       try {
-        params.buildWorld(engine, loadedTextures);
+        await params.buildWorld(engine, loadedTextures);
       } catch (err) {
+        if (cancelled || params.isDisposed()) return;
         cancelled = true;
         disposeSettledTextures();
-        try {
-          loadedTextures.dispose();
-        } catch {
-          // Ignore secondary texture dispose errors
-        }
         params.cleanupResources();
         if (!params.isDisposed()) {
           params.onError(formatWorldInitError(err));
@@ -108,6 +104,7 @@ export function startAsyncWorldInit<TEngine, TTextures extends DisposableResourc
       }
     },
     (err) => {
+      if (cancelled || params.isDisposed()) return;
       cancelled = true;
       disposeSettledTextures();
       params.cleanupResources();

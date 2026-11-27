@@ -46,3 +46,5 @@ Game phases include title, packing, playing, paused, sleeping, collapsing, and c
 Every world lifecycle addition needs ownership for cleanup: listeners, scheduled frames/timeouts, GPU resources, audio resources, and asynchronous initialization. Preserve restart/unmount behavior and the disposed guard after asset loading. Carried and physically moving props must call `propsCtx.updateInteractivePosition` after movement so local interaction queries remain current.
 
 Use the translation helpers for user-visible strings; see [../i18n/AGENTS.md](../i18n/AGENTS.md). Check lint/build plus applicable domain tests. Browser checks cover specific fixtures; manually verify affected gameplay flows such as restart, modal opening, pointer lock, tent seating, and sleep when they change.
+
+The title entry button stays disabled through world initialization. The runtime reports localized stage identifiers and signals readiness after its first render. Retry and world replacement reset this state. Returning from packing reuses the loaded world.

@@ -102,6 +102,12 @@ const EN_DICT = {
   'lang.label': 'Language',
 
   // Title Screen
+  'title.loading.starting': 'Preparing the countryside…',
+  'title.loading.textures': 'Loading textures…',
+  'title.loading.audio': 'Loading sound and music…',
+  'title.loading.map': 'Generating map…',
+  'title.loading.landscape': 'Growing the forest…',
+  'title.loading.rendering': 'Rendering the countryside…',
   'title.eyebrow': 'Estonian Countryside Simulation · Seed #{seed}',
   'title.tagline':
     'Pack your rucksack and roam procedural Estonian birch groves, spruce thickets, villages, and misty peat bog islands — managing warmth, water, rations, campfires, and seven wild mushroom species.',
@@ -661,6 +667,12 @@ const ET_DICT: TranslationDict = {
   'lang.label': 'Keel',
 
   // Title Screen
+  'title.loading.starting': 'Maailma ettevalmistamine…',
+  'title.loading.textures': 'Tekstuuride laadimine…',
+  'title.loading.audio': 'Helide ja muusika laadimine…',
+  'title.loading.map': 'Kaardi loomine…',
+  'title.loading.landscape': 'Metsa kasvatamine…',
+  'title.loading.rendering': 'Maastiku renderdamine…',
   'title.eyebrow': 'Eesti maastiku simulatsioon · Seeme #{seed}',
   'title.tagline':
     'Paki seljakott ja rända läbi protseduuriliste Eesti kaasikute, kuusetihnikute, külade ja uduste rabasaarte — hoides sooja, vett, toiduvaru, lõkkeid ja seitset metsaseeneliiki.',

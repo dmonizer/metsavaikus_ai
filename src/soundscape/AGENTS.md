@@ -28,3 +28,5 @@ Respect voice/event/reaction limits and stable lifecycle ownership. Audio nodes 
 ## Verification
 
 `instanceManager.test.ts` verifies repeat policy across source creation, condition/manual resume, gapless finite completion and positive-pause restart. `soundscapeEngine.test.ts` tests engine behavior with controllable clocks/backends. Run `npm test`, lint, and `npm run test:audio` as appropriate; audible mix, browser autoplay/resume, and spatial perception still require listening checks. F9 opens the UI diagnostics/audition/reload overlay.
+
+Title preloading downloads the encoded files of registered, preload-enabled recordings. The Web Audio backend shares those downloads with playback and decodes on audio unlock; world disposal aborts pending fetches. Individual unavailable recordings follow the existing audio fallback.

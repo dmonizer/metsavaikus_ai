@@ -2,9 +2,11 @@ import type { RefObject } from 'react';
 import type { QualityMode, QualityTierName } from '../game/qualityGovernor';
 import { useLanguage } from '../i18n/i18n';
 import { QualityModeControl, ResolutionScaleControl } from './DisplaySettingsControls';
+import type { WorldLoadingStage } from './worldRuntimeContracts';
 import { LanguageSwitcher } from './LanguageSwitcher';
 
 export interface TitleScreenProps {
+  loadingStage: WorldLoadingStage | null;
   worldSeed: number;
   fpsEl: RefObject<HTMLSpanElement | null>;
   resolutionSummary: string;
@@ -19,6 +21,7 @@ export interface TitleScreenProps {
 }
 
 export function TitleScreen({
+  loadingStage,
   worldSeed,
   fpsEl,
   resolutionSummary,
@@ -123,10 +126,14 @@ export function TitleScreen({
         <button
           type="button"
           data-start="true"
+          disabled={loadingStage !== null}
           onClick={onStartPacking}
-          className="px-8 py-3.5 text-sm font-semibold tracking-wider uppercase rounded bg-[#3b5a42] hover:bg-[#4b7254] text-[#f4f7f2] border border-[#72997a] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c7dec2]"
+          className="inline-flex items-center justify-center gap-2.5 disabled:cursor-wait disabled:bg-[#304836] px-8 py-3.5 text-sm font-semibold tracking-wider uppercase rounded bg-[#3b5a42] hover:bg-[#4b7254] text-[#f4f7f2] border border-[#72997a] transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c7dec2]"
         >
-          {t('title.enterCountryside')}
+          {loadingStage && (
+            <span aria-hidden="true" className="size-4 rounded-full border-2 border-current border-r-transparent motion-safe:animate-spin" />
+          )}
+          <span role="status">{loadingStage ? t(`title.loading.${loadingStage}`) : t('title.enterCountryside')}</span>
         </button>
       </div>
 

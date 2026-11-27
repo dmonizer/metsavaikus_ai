@@ -108,6 +108,7 @@ import type {
   GamePhase,
   WorldActions,
   WorldCallbacks,
+  WorldLoadingStage,
   WorldHudRefs,
   WorldSurvivalSnapshot,
 } from './worldRuntimeContracts';
@@ -264,7 +265,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
     const sound = new SoundEngine();
     const soundscape = createSimulatorSoundscape({ seed: worldSeed });
-    sound.attachSoundscapeEngine(soundscape.engine, soundscape.backend as WebAudioHybridBackend);
+    const audioBackend = soundscape.backend as WebAudioHybridBackend;
+    sound.attachSoundscapeEngine(soundscape.engine, audioBackend);
     loadSoundscapeSnapshotFromStorage(worldSeed, soundscape.engine);
 
     const vegQualityOpts: VegetationQualityOptions = {};
@@ -1983,13 +1985,28 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       },
     });
 
+    async function showLoadingStage(stage: WorldLoadingStage): Promise<boolean> {
+      if (disposed || cleanedUp) return false;
+      callbacksRef.current.onWorldLoading(stage);
+      if (phaseRef.current !== 'title') return true;
+      // Let the browser paint the label before synchronous generation occupies the main thread.
+      await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+      return !disposed && !cleanedUp;
+    }
+
+    callbacksRef.current.onWorldLoading('textures');
     asyncInitHandle = startAsyncWorldInit({
       loadComputeEngine: () => ComputeEngine.create(),
       loadTextures: () =>
         createWorldTextures(Math.min(4, renderer.capabilities.getMaxAnisotropy())),
-      buildWorld: (engine, loadedTextures) => {
+      buildWorld: async (engine, loadedTextures) => {
         computeEngine = engine;
         textures = loadedTextures;
+        if (phaseRef.current === 'title') {
+          if (!await showLoadingStage('audio')) return;
+          await audioBackend.preloadRecordings();
+        }
+        if (!await showLoadingStage('map')) return;
 
         propsCtx = buildArchitectureAndProps(
           scene,
@@ -2057,6 +2074,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           }
         }
 
+        if (!await showLoadingStage('landscape')) return;
         vegetation = new WorldVegetationSystem(
           loadedTextures,
           gpu.isSoftwareGl,
@@ -2090,6 +2108,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
         renderer.domElement.dataset.wasmActive = String(engine.isWasmActive);
 
+        if (!await showLoadingStage('rendering')) return;
         if (!gpu.isSoftwareGl) {
           weatherSky.setShaderCompilePreview(true);
           vegetation.setShaderCompilePreview(true);
@@ -2100,14 +2119,14 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
 
         worldInitReady = true;
-        callbacksRef.current.onWorldReady({
-          wasmActive: engine.isWasmActive,
-          totalMushrooms: propsCtx.mushroomCountTotal,
-        });
         syncHudAndSnapshot();
 
         lastTime = performance.now();
         tick();
+        callbacksRef.current.onWorldReady({
+          wasmActive: engine.isWasmActive,
+          totalMushrooms: propsCtx.mushroomCountTotal,
+        });
       },
       cleanupResources: cleanupRuntime,
       onError: (message) => {

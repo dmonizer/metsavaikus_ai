@@ -238,7 +238,9 @@ export class WebAudioHybridBackend implements AudioBackend {
   private limiter: DynamicsCompressorNode | null = null;
   private limiterEnabled = true;
 
-  private registeredAssets: readonly AssetDefinition[] = [];
+  private recordingsToPreload: readonly AssetDefinition[] = [];
+  private readonly downloads = new Map<string, Promise<ArrayBuffer | null>>();
+  private readonly downloadAbort = new AbortController();
   private decodedBuffers = new Map<string, AudioBuffer>();
   private loadingPromises = new Map<string, Promise<AudioBuffer | null>>();
   private failedAssets = new Set<string>();
@@ -290,20 +292,41 @@ export class WebAudioHybridBackend implements AudioBackend {
     }
 
     // Replay preload queue if preloadAssets() was called before AudioContext was unlocked
-    if (this.registeredAssets.length > 0) {
-      this.preloadAssets(this.registeredAssets);
-    }
+    for (const asset of this.recordingsToPreload) void this.ensureBufferLoaded(asset);
   }
 
   preloadAssets(assets: readonly AssetDefinition[]): void {
-    this.registeredAssets = [...assets];
+    this.recordingsToPreload = assets.filter(asset => asset.preload && !asset.procedural && !asset.placeholder);
     this.proceduralCount = assets.filter((a) => a.procedural).length;
     if (!this.ctx) return;
-    for (const a of assets) {
-      if (a.preload && !a.procedural && !a.placeholder) {
-        void this.ensureBufferLoaded(a);
-      }
+    for (const asset of this.recordingsToPreload) void this.ensureBufferLoaded(asset);
+  }
+
+  /** Download configured recordings silently. Decoding uses the playback context on unlock. */
+  async preloadRecordings(): Promise<void> {
+    await Promise.all(this.recordingsToPreload
+      .map(asset => this.decodedBuffers.has(asset.file) ? null : this.download(asset.file)));
+  }
+
+  private download(file: string): Promise<ArrayBuffer | null> {
+    const pending = this.downloads.get(file);
+    if (pending) return pending;
+    const url = resolveShippedAudioUrl(file);
+    if (!url || typeof fetch !== 'function') {
+      this.failedAssets.add(file);
+      return Promise.resolve(null);
     }
+    const request = fetch(url, { signal: this.downloadAbort.signal })
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.arrayBuffer();
+      })
+      .catch(() => {
+        if (!this.downloadAbort.signal.aborted) this.failedAssets.add(file);
+        return null;
+      });
+    this.downloads.set(file, request);
+    return request;
   }
 
   private async ensureBufferLoaded(asset: AssetDefinition): Promise<AudioBuffer | null> {
@@ -315,19 +338,11 @@ export class WebAudioHybridBackend implements AudioBackend {
     const inFlight = this.loadingPromises.get(asset.file);
     if (inFlight) return inFlight;
 
-    const url = resolveShippedAudioUrl(asset.file);
-    if (!url || typeof fetch !== 'function') {
-      this.failedAssets.add(asset.file);
-      return null;
-    }
-
-    const p = fetch(url)
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.arrayBuffer();
-      })
-      .then((ab) => this.ctx!.decodeAudioData(ab))
+    const ctx = this.ctx;
+    const p = this.download(asset.file)
+      .then(bytes => bytes && ctx.decodeAudioData(bytes))
       .then((decoded) => {
+        if (!decoded || this.downloadAbort.signal.aborted) return null;
         this.decodedBuffers.set(asset.file, decoded);
         return decoded;
       })
@@ -336,6 +351,7 @@ export class WebAudioHybridBackend implements AudioBackend {
         return null;
       })
       .finally(() => {
+        this.downloads.delete(asset.file);
         this.loadingPromises.delete(asset.file);
       });
 
@@ -1133,6 +1149,9 @@ export class WebAudioHybridBackend implements AudioBackend {
   }
 
   dispose(): void {
+    this.downloadAbort.abort();
+    this.downloads.clear();
+    this.decodedBuffers.clear();
     for (const v of this.voices.values()) {
       v.stopped = true;
       v.cleanup();

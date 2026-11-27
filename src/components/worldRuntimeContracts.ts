@@ -8,6 +8,8 @@ import type { DiagnosticsSnapshot, ValidationIssue } from '../soundscape/types';
 import type { CampfireInfo, SleepSpotInfo, TentInfo } from '../world/architectureAndProps';
 import type { WeatherId } from '../world/weatherAndSky';
 
+export type WorldLoadingStage = 'starting' | 'textures' | 'audio' | 'map' | 'landscape' | 'rendering';
+
 export type GamePhase =
   | 'title'
   | 'packing'
@@ -64,6 +66,7 @@ export interface WorldCallbacks {
   onCarryChange: (label: string) => void;
   onToast: (msg: string) => void;
   onPhaseChange: (phase: GamePhase) => void;
+  onWorldLoading: (stage: WorldLoadingStage) => void;
   onWorldReady: (info: { wasmActive: boolean; totalMushrooms: number }) => void;
   onWorldError?: (message: string) => void;
   onDisplayMetrics?: (info: { autoDpr: number; viewportW: number; viewportH: number }) => void;

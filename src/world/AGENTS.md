@@ -50,3 +50,5 @@ The planar mirror uses a conservative horizontal-disc/frustum test even when the
 Terrain color and roughness share shoreline depth and swash masks; keep their different wetness response curves. The rendering fixture exercises the patched terrain material at two fixed phases.
 
 The boardwalk deck and sleepers share a world-space bounding box computed from all segment instances. Apply fog distance to the nearest point of that box and let each render camera frustum-cull the batches.
+
+World initialization awaits staged construction and routes async failures through the retry overlay. Check lifetime after yielding between construction stages.

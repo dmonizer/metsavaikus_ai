@@ -27,6 +27,7 @@ import type {
   GamePhase,
   WorldActions,
   WorldCallbacks,
+  WorldLoadingStage,
   WorldHudRefs,
   WorldSurvivalSnapshot,
 } from './components/worldRuntimeContracts';
@@ -141,6 +142,7 @@ export default function App() {
   const [toastVisible, setToastVisible] = useState<boolean>(false);
   const [muted, setMuted] = useState<boolean>(false);
   const [worldKey, setWorldKey] = useState<number>(0);
+  const [loadingStage, setLoadingStage] = useState<WorldLoadingStage | null>('starting');
   const [worldError, setWorldError] = useState<string | null>(null);
   const [resolutionScale, setResolutionScale] = useState<number | null>(getInitialResolutionScale);
   const [qualityMode, setQualityMode] = useState<QualityMode>(getInitialQualityMode);
@@ -332,7 +334,9 @@ export default function App() {
         document.body.dataset.state = nextPhase;
         setPhase(nextPhase);
       },
+      onWorldLoading: setLoadingStage,
       onWorldReady: ({ totalMushrooms }) => {
+        setLoadingStage(null);
         setWorldError(null);
         setTotalWorldMushrooms(totalMushrooms);
       },
@@ -433,12 +437,13 @@ export default function App() {
   }, []);
 
   const handleOpenPacking = useCallback(() => {
+    if (loadingStage !== null || worldError) return;
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
     document.body.dataset.state = 'packing';
     setPhase('packing');
-  }, []);
+  }, [loadingStage, worldError]);
 
   const handleBeginFromPacking = useCallback(() => {
     setBasket(createEmptyBasket());
@@ -485,6 +490,7 @@ export default function App() {
     setActiveSleepSpot(null);
     setActiveCampfire(null);
     setSnapshot(null);
+    setLoadingStage('starting');
     setWorldKey((k) => k + 1);
   }, []);
 
@@ -497,6 +503,7 @@ export default function App() {
     setFullMapOpen(false);
     setActiveSleepSpot(null);
     setActiveCampfire(null);
+    setLoadingStage('starting');
     setWorldKey((k) => k + 1);
     document.body.dataset.state = 'playing';
     setPhase('playing');
@@ -513,6 +520,7 @@ export default function App() {
     setFullMapOpen(false);
     setActiveSleepSpot(null);
     setActiveCampfire(null);
+    setLoadingStage('starting');
     setWorldKey((k) => k + 1);
     document.body.dataset.state = 'playing';
     setPhase('playing');
@@ -913,6 +921,7 @@ export default function App() {
       {/* Title Screen Overlay */}
       {phase === 'title' && (
         <TitleScreen
+          loadingStage={loadingStage}
           worldSeed={worldSeed}
           fpsEl={fpsEl}
           resolutionSummary={resolutionSummary}
