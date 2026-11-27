@@ -129,7 +129,7 @@ export class TerrainChunkManager {
       metalness: 0.0,
       envMapIntensity: 0.36,
     });
-    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_moss_swash_v8';
+    this.material.customProgramCacheKey = () => 'terrain_pbr_splat_dapple_moss_swash_v9';
     this.material.onBeforeCompile = (shader) => {
       shader.uniforms.uMeadowTex = { value: meadowTex };
       shader.uniforms.uRoadTex = { value: roadTex };
@@ -221,6 +221,11 @@ export class TerrainChunkManager {
               vec3 dappleTint = mix(vec3(0.68, 0.74, 0.78), vec3(1.24, 1.18, 0.96), dappleMask);
               baseGround *= mix(vec3(1.0), dappleTint, forestDappleAmt * 0.52);
 
+            #endif
+
+              float swashWaterMask = 0.0;
+              float residualFilm = 0.0;
+              float wetGloss = 0.0;
               // Synchronized curved shoreline swash run-up + draining residual wet film across ALL bog shores (including islands & spits!)
               vec2 sp = vTerrainWorldPos.xz;
               float bogDist = length(sp - uBogCenterRadius.xy);
@@ -244,7 +249,7 @@ export class TerrainChunkManager {
                 float activeSwashH = (activeWave - 0.32) * swashAmp + 0.036;
 
                 // Advancing glossy water sheet on the gently sloping shore (seamlessly joins water plane's edgeAlpha!)
-                float swashWaterMask = (1.0 - smoothstep(activeSwashH - 0.016, activeSwashH + 0.018, hAboveWater))
+                swashWaterMask = (1.0 - smoothstep(activeSwashH - 0.016, activeSwashH + 0.018, hAboveWater))
                   * smoothstep(-0.14, -0.02, hAboveWater) * bogShoreMask;
                 // Delicate luminous water-lip meniscus right along the moving curved wave front
                 float swashMeniscus = smoothstep(activeSwashH - 0.018, activeSwashH - 0.002, hAboveWater)
@@ -258,8 +263,10 @@ export class TerrainChunkManager {
                 float residualDrain = 1.0 - smoothstep(0.0, 0.84, drainProgress + reachNorm * 0.44 - 0.16);
                 float residualReach = (1.0 - smoothstep(swashReachH - 0.014, swashReachH + 0.020, hAboveWater))
                   * smoothstep(-0.04, 0.002, hAboveWater);
-                float residualFilm = residualReach * smoothstep(0.08, 0.30, swashCyc) * residualDrain * bogShoreMask;
+                residualFilm = residualReach * smoothstep(0.08, 0.30, swashCyc) * residualDrain * bogShoreMask;
 
+                wetGloss = (1.0 - smoothstep(-0.04, 0.34, hAboveWater)) * bogShoreMask;
+                #ifdef USE_MAP
                 // Base damp capillary sand/peat margin plus dynamic darkening from swash & draining residual film
                 float wetShore = (1.0 - smoothstep(-0.04, 0.36, hAboveWater)) * bogShoreMask;
                 float dynamicWet = clamp(max(swashWaterMask, residualFilm), 0.0, 1.0);
@@ -271,36 +278,20 @@ export class TerrainChunkManager {
                 vec3 shallowReflect = mix(vec3(0.075, 0.088, 0.078), uSkyHorizon * 0.90, 0.38 + 0.56 * shoreFres);
                 baseGround = mix(baseGround, shallowReflect, clamp(swashWaterMask * (0.58 + 0.34 * shoreFres) + residualFilm * (0.18 + 0.28 * shoreFres), 0.0, 0.88));
                 baseGround = mix(baseGround, mix(uSkyHorizon, vec3(0.88, 0.91, 0.89), 0.35), swashMeniscus * 0.32);
+                #endif
               }
 
+            #ifdef USE_MAP
               diffuseColor.rgb *= baseGround;
             #endif`
           )
           .replace(
             '#include <roughnessmap_fragment>',
             `#include <roughnessmap_fragment>
-            vec2 rp = vTerrainWorldPos.xz;
-            float rBogMask = 1.0 - smoothstep(uBogCenterRadius.z - 12.0, uBogCenterRadius.z + 4.0, length(rp - uBogCenterRadius.xy));
-            if (rBogMask > 0.005) {
-              float rWindNorm = clamp((uWindStrength - 0.14) / 2.15, 0.0, 1.0);
-              vec2 rShoreUv = clamp((rp - (uBogCenterRadius.xy - vec2(uBogCenterRadius.z))) / (2.0 * uBogCenterRadius.z), vec2(0.002), vec2(0.998));
-              float rSmoothDepth = texture2D(uShoreDepthMap, rShoreUv).r * 2.55 - 0.65;
-              float rCurve = sin(rp.x * 0.42 + rp.y * 0.35) * 0.018 + cos(rp.x * 0.91 - rp.y * 0.77) * 0.009;
-              float rAbove = -rSmoothDepth - rCurve;
-              float rPhase = uTime * mix(1.25, 2.25, rWindNorm)
-                + sin(rp.x * 0.27 + rp.y * 0.19) * 1.65
-                + cos(rp.x * 0.14 - rp.y * 0.31) * 1.15;
-              float rCyc = fract(rPhase * 0.15915494);
-              float rWave = smoothstep(0.0, 0.34, rCyc) * (1.0 - smoothstep(0.34, 0.80, rCyc));
-              float rActiveH = (rWave - 0.32) * mix(0.052, 0.105, rWindNorm) + 0.036;
-              float rReachH = mix(0.072, 0.135, rWindNorm);
-              float rSwash = (1.0 - smoothstep(rActiveH - 0.016, rActiveH + 0.018, rAbove)) * smoothstep(-0.14, -0.02, rAbove) * rBogMask;
-              float rDrain = 1.0 - smoothstep(0.0, 0.84, smoothstep(0.34, 0.96, rCyc) + clamp((rAbove + 0.01) / max(0.001, rReachH), 0.0, 1.0) * 0.44 - 0.16);
-              float rResid = (1.0 - smoothstep(rReachH - 0.014, rReachH + 0.020, rAbove)) * smoothstep(-0.04, 0.002, rAbove) * smoothstep(0.08, 0.30, rCyc) * rDrain * rBogMask;
-              float wetGloss = (1.0 - smoothstep(-0.04, 0.34, rAbove)) * rBogMask;
+            if (bogShoreMask > 0.005) {
               roughnessFactor = mix(roughnessFactor, 0.52, wetGloss);
-              roughnessFactor = mix(roughnessFactor, 0.14, rResid);
-              roughnessFactor = mix(roughnessFactor, 0.06, rSwash);
+              roughnessFactor = mix(roughnessFactor, 0.14, residualFilm);
+              roughnessFactor = mix(roughnessFactor, 0.06, swashWaterMask);
             }`
           )
           .replace(

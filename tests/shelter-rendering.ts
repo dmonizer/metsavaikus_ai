@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { ShelterGeometry, excludeShelterVegetation } from '../src/world/shelterGeometry';
+import { ComputeEngine } from '../src/world/wasmCompute';
+import { TerrainChunkManager } from '../src/world/terrainChunkManager';
 import { WeatherAndSkySystem } from '../src/world/weatherAndSky';
 import { buildArchitectureAndProps } from '../src/world/architectureAndProps';
 import { getActiveBlueprint, setActiveWorldSeed } from '../src/world/terrainMath';
@@ -7,7 +9,7 @@ import type { WorldTextures } from '../src/world/proceduralTextures';
 import type { SoundEngine } from '../src/world/soundEngine';
 
 // Read pixels from the real shaders and generated house geometry, without loading game UI.
-function verify() {
+async function verify() {
   const renderer = new THREE.WebGLRenderer({ antialias: false });
   renderer.debug.onShaderError = () => {
     throw new Error('Shader compilation failed');
@@ -172,12 +174,36 @@ function verify() {
     restarted.dispose();
     restartMemoryCounts.push({ ...renderer.info.memory });
   }
+  // Exercise the production terrain shader across a depth gradient at two swash phases.
+  const terrain = new TerrainChunkManager(await ComputeEngine.create(), texture);
+  const depth = new THREE.DataTexture(new Uint8Array([42, 0, 0, 255, 80, 0, 0, 255]), 2, 1);
+  depth.minFilter = depth.magFilter = THREE.LinearFilter;
+  depth.needsUpdate = true;
+  terrain.setBogShoreDepthMap(depth, centerX, centerZ, 18);
+  const groundScene = new THREE.Scene();
+  const sun = new THREE.DirectionalLight(0xffe6bb, 3);
+  sun.position.set(5, 3, 1);
+  groundScene.add(terrain.group, sun, new THREE.HemisphereLight(0xbcd8ee, 0x38472b, 1));
+  waterCamera.position.set(centerX, 9, centerZ + 8);
+  waterCamera.lookAt(centerX, -1, centerZ);
+  terrain.update(waterCamera);
+  function shorelineHash(time: number, wind: number) {
+    terrain.setLightingState(0.8, time, wind);
+    luminance(groundScene, waterCamera);
+    let hash = 2166136261;
+    for (const channel of pixels) hash = Math.imul(hash ^ channel, 16777619);
+    return hash >>> 0;
+  }
+  const shoreCalm = shorelineHash(2, 0.25);
+  const shoreWind = shorelineHash(7, 1.8);
+  terrain.dispose();
+  depth.dispose();
   texture.dispose();
   weather.dispose();
   shelters.dispose();
   renderer.dispose();
   const result = {
-    waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
+    shoreCalm, shoreWind, waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
     grassBefore,
     grassPitched,
     grassPacked,
@@ -197,6 +223,7 @@ function verify() {
   check(propsMemoryAfter.textures === propsMemoryBaseline.textures, 'Prop texture/shadow memory must return to baseline');
   check(restartMemoryCounts.every(count => count.geometries === propsMemoryBaseline.geometries &&
     count.textures === propsMemoryBaseline.textures), 'Restarts must release rendered geometries and shadow textures');
+  check(shoreCalm !== shoreWind, 'The two shoreline states must produce different pixels');
   check(!skyReflection, 'Looking above the lake must skip the mirror pass');
   check(waterDrawn && downReflection && edgeReflection, 'Water and partial-disc reflections must render');
   check(result.grassBefore > 0, 'Vegetation fixture must render');
@@ -212,7 +239,7 @@ function verify() {
 
 const output = document.querySelector<HTMLPreElement>('#results')!;
 try {
-  output.textContent = JSON.stringify(verify(), null, 2);
+  output.textContent = JSON.stringify(await verify(), null, 2);
   output.dataset.status = 'passed';
 } catch (error) {
   output.textContent = error instanceof Error ? error.stack! : String(error);

@@ -46,3 +46,5 @@ Run `node --import tsx scripts/bench-world-streaming.mjs` for fixed seed-2026 ro
 Grass tile baking uses per-layer reusable sample and packing buffers. Keep matrix/color slabs returned to the tile cache independently owned and preserve double precision until the original float-buffer writes.
 
 The planar mirror uses a conservative horizontal-disc/frustum test even when the player is inside the bog radius. Keep partial-disc views and refresh the mirror on re-entry.
+
+Terrain color and roughness share shoreline depth and swash masks; keep their different wetness response curves. The rendering fixture exercises the patched terrain material at two fixed phases.
