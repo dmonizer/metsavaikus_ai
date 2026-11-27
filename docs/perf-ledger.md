@@ -27,3 +27,9 @@ Isolated sample generation for 50 tiles (all four layers, 30 timed batches) fell
 Village clearings and swamp islands affect height only inside their individual radii. Axis checks eliminate distant features before evaluating their Euclidean distance. The original radial falloff still runs for every potential contributor, including overlapping clearings and islands. This benefits all terrain-height consumers, including the four normal taps outside the WASM noise kernel.
 
 Streaming benchmark medians immediately before/after were 11.22 → 7.74 ms per detailed terrain fill and 5.34 → 4.03 ms per uncached grass tile. The combined output hash and road checksum matched entry 2. Type check, build and 199 tests passed.
+
+## 5. Mirror pass visibility
+
+Added a main-camera frustum test against the full horizontal water disc. The padded test includes the complete rendered perimeter. It runs even above the lake, where a spherical bound frequently intersects a sky-facing camera. A rejected view invalidates the cached mirror so re-entry refreshes it on software GL.
+
+Extended the Chrome rendering fixture with fixed lake, sky and shoreline cameras. Before the change all three requested a mirror pass. Afterward the sky-facing view skipped the pass, and both the downward view and the partial-disc view still rendered a reflection. Luminance sums stayed at 5721701 for the downward image and 6946816 for the sky image. Shelter and shadow checks, type check, production build and 199 tests passed. This saves a scene render only on qualifying frames.

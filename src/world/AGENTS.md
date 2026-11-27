@@ -44,3 +44,5 @@ Shelter shaders use a 16 m grid of conservative footprint-row ranges. Rebuild it
 Run `node --import tsx scripts/bench-world-streaming.mjs` for fixed seed-2026 road queries, detailed terrain generation, grass bakes and a geometry-output hash. Road broad-phase rejection uses trail-weighted segment bounds; winning candidates retain the full projection and distance calculation.
 
 Grass tile baking uses per-layer reusable sample and packing buffers. Keep matrix/color slabs returned to the tile cache independently owned and preserve double precision until the original float-buffer writes.
+
+The planar mirror uses a conservative horizontal-disc/frustum test even when the player is inside the bog radius. Keep partial-disc views and refresh the mirror on re-entry.

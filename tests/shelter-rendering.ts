@@ -128,6 +128,32 @@ function verify() {
   lights[0].castShadow = true;
   lights[0].shadow.needsUpdate = true;
   const blockedLight = luminance(world, camera);
+  // Use the production disc, depth map and mirror pass with fixed time and camera poses.
+  const water = world.children.find(node => node.userData.debugLayer === 'water')!;
+  const waterScene = new THREE.Scene();
+  waterScene.background = new THREE.Color(0x98c0ea);
+  waterScene.add(water);
+  water.visible = true;
+  const { centerX, centerZ, radius } = props.getBogShoreDepthInfo();
+  const waterCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 350);
+  waterCamera.position.set(centerX, 8, centerZ);
+  waterCamera.lookAt(centerX + 1, -3, centerZ);
+  const downReflection = props.renderWaterReflection(renderer, waterScene, waterCamera, true);
+  const waterDown = luminance(waterScene, waterCamera);
+  const waterPixels = pixels.slice();
+  water.visible = false;
+  luminance(waterScene, waterCamera);
+  const waterDrawn = waterPixels.some((value, i) => value !== pixels[i]);
+  water.visible = true;
+  waterCamera.lookAt(centerX + 1, 30, centerZ);
+  props.renderWaterReflection(renderer, waterScene, waterCamera, false);
+  const skyReflection = props.renderWaterReflection(renderer, waterScene, waterCamera, true);
+  const waterSky = luminance(waterScene, waterCamera);
+  waterCamera.position.set(centerX + radius - 2, 2, centerZ);
+  waterCamera.lookAt(waterCamera.position.x, 1, centerZ - 10);
+  props.renderWaterReflection(renderer, waterScene, waterCamera, false);
+  const edgeReflection = props.renderWaterReflection(renderer, waterScene, waterCamera, true);
+  world.add(water);
   props.dispose();
   const propsMemoryAfter = { ...renderer.info.memory };
   const restartMemoryCounts: Array<typeof propsMemoryBaseline> = [];
@@ -151,6 +177,7 @@ function verify() {
   shelters.dispose();
   renderer.dispose();
   const result = {
+    waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
     grassBefore,
     grassPitched,
     grassPacked,
@@ -170,6 +197,8 @@ function verify() {
   check(propsMemoryAfter.textures === propsMemoryBaseline.textures, 'Prop texture/shadow memory must return to baseline');
   check(restartMemoryCounts.every(count => count.geometries === propsMemoryBaseline.geometries &&
     count.textures === propsMemoryBaseline.textures), 'Restarts must release rendered geometries and shadow textures');
+  check(!skyReflection, 'Looking above the lake must skip the mirror pass');
+  check(waterDrawn && downReflection && edgeReflection, 'Water and partial-disc reflections must render');
   check(result.grassBefore > 0, 'Vegetation fixture must render');
   check(result.grassPitched === 0, 'Tent must exclude vegetation');
   check(result.grassPacked === result.grassBefore, 'Packing must restore vegetation');

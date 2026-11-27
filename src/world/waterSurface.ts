@@ -476,6 +476,10 @@ export function createReflectiveBogWater(
 
   // Pre-allocated reflection pass math scratch objects (zero per-frame allocations)
   const reflectionCamera = new THREE.PerspectiveCamera();
+  const mainFrustum = new THREE.Frustum();
+  const viewProjection = new THREE.Matrix4();
+  const discCenter = new THREE.Vector3(centerX, SWAMP_WATER_Y, centerZ);
+  const paddedRadiusSq = (waterRadius + 0.001) ** 2;
   const worldPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -(SWAMP_WATER_Y - 0.03));
   const viewPlane = new THREE.Plane();
   const clipVec = new THREE.Vector4();
@@ -533,6 +537,17 @@ export function createReflectiveBogWater(
       if (camWorldPos.y <= SWAMP_WATER_Y + 0.03) {
         waterMat.uniforms.uHasReflection.value = 0.0;
         return false;
+      }
+      viewProjection.multiplyMatrices(mainCamera.projectionMatrix, mainCamera.matrixWorldInverse);
+      mainFrustum.setFromProjectionMatrix(viewProjection, mainCamera.coordinateSystem, mainCamera.reversedDepth);
+      // Project the horizontal disc radius onto each plane normal. Keep any uncertain edge.
+      for (const plane of mainFrustum.planes) {
+        const distance = plane.distanceToPoint(discCenter) + 0.001;
+        const { x, z } = plane.normal;
+        if (distance < 0 && distance * distance > paddedRadiusSq * (x * x + z * z)) {
+          waterMat.uniforms.uHasReflection.value = 0;
+          return false;
+        }
       }
       if (isSoftwareGl && (reflFrame++ & 1) === 1 && waterMat.uniforms.uHasReflection.value > 0.5) {
         return false;
