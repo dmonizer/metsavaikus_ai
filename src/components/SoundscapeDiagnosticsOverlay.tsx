@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { X, Volume2, VolumeX, Play, Pause, Square, RefreshCw, Zap, RotateCcw } from 'lucide-react';
 import type { DiagnosticsSnapshot, ValidationIssue } from '../soundscape/types';
+import { SOUNDSCAPE_SOUNDS } from '../config/soundscape/sounds';
 import { formatGameHour } from '../game/survivalEngine';
 
 export interface SoundscapeDiagnosticsOverlayProps {
   open: boolean;
   snapshot: DiagnosticsSnapshot | null;
-  availableSoundIds: string[];
+  availableSoundIds?: string[];
   onClose: () => void;
   onTriggerEvent: (type: string, intensity?: number) => void;
   onAuditionSound: (soundId: string) => boolean;
@@ -40,10 +41,12 @@ const TEST_EVENT_OPTIONS = [
   'player.land',
 ];
 
+const DEFAULT_SOUND_IDS = SOUNDSCAPE_SOUNDS.map((s) => s.id);
+
 export const SoundscapeDiagnosticsOverlay: React.FC<SoundscapeDiagnosticsOverlayProps> = ({
   open,
   snapshot,
-  availableSoundIds,
+  availableSoundIds = DEFAULT_SOUND_IDS,
   onClose,
   onTriggerEvent,
   onAuditionSound,

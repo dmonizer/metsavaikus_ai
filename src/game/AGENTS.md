@@ -1,10 +1,10 @@
 # Gameplay rules and quality
 
-This directory holds mostly renderer-independent domain rules. The caller in `components/MetsavaikusWorld.tsx` owns live state and integration; read [../components/AGENTS.md](../components/AGENTS.md) when changing action wiring or frame timing.
+This directory holds mostly renderer-independent domain rules. The caller in `components/MetsavaikusWorld.tsx` and `components/runtime/` owns live state and integration; read [../components/AGENTS.md](../components/AGENTS.md) when changing action wiring or frame timing.
 
 - `itemCatalog.ts`: canonical item IDs/definitions, packing and inventory operations, equipment bonuses, weight, bottles, navigation availability, and campfire recipes. Use its mutation helpers. `survivalEngine.refreshInventoryBurden` refreshes pack weight, load tier, and exertion multipliers for inventory finalization and the survival tick.
 - `gameLogic.ts`: mushroom species/basket data, interaction prompt construction, resolution/FPS utilities, pointer lock, mouse-look clamping, and height-clearance rules.
-- `survivalEngine.ts`: vital state, exposure/temperature, burden, poisoning/collapse, consumption, bottle refill/boiling, cooking, ignition, sleep simulation/preview, and discovery tracking. Functions mutate passed state/inventory; inspect mutation semantics before sharing state with UI snapshots.
+- `survivalEngine.ts`: barrel facade re-exporting `survivalTypes.ts`, `survivalVitals.ts`, `survivalConsumables.ts`, `survivalSleep.ts`, and `survivalDiscovery.ts` (vital state, exposure/temperature, burden, poisoning/collapse, consumption, bottle refill/boiling, cooking, ignition, sleep simulation/preview, and discovery tracking). Functions mutate passed state/inventory; inspect mutation semantics before sharing state with UI snapshots.
 - `waterPhysics.ts`: water-state evaluation, swim enter/exit thresholds, and focused bog-water interaction tests. Preserve hysteresis and boardwalk handling; the runtime supplies terrain and obstruction queries.
 - `qualityGovernor.ts`: hardware-aware profiles, adaptive tier selection with hysteresis, and distance smoothing. The runtime applies profiles to terrain, vegetation, weather/shadows, and resolution.
 - `keyboardInput.ts`: shared keyboard ownership/default-cancellation policy; only bound game controls are claimed during active play, preserving native UI controls, browser modifiers, IME and pointer-lock Escape. `npm run test:keyboard` verifies trusted input and Firefox quick find in an isolated profile.

@@ -9,7 +9,7 @@ import {
   PlayerSurvivalState,
   previewSleepOutcome,
 } from '../game/survivalEngine';
-import { CampfireInfo, SleepSpotInfo } from '../world/architectureAndProps';
+import type { CampfireInfo, SleepSpotInfo } from '../world/architectureAndProps';
 import { getItemName, getWaterQualityShort, useLanguage } from '../i18n/i18n';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { ItemArtwork } from './ItemArtwork';

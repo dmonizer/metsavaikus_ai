@@ -950,13 +950,17 @@ export class SoundscapeEngine {
     this.prevDistanceMoved = world.player.distanceMovedTotal;
 
     const activity = world.player.activity;
-    const isMoving =
+    const locomotionActivity =
       activity === 'walking' ||
       activity === 'running' ||
       activity === 'sprinting' ||
       activity === 'crouching' ||
       activity === 'wading' ||
       activity === 'swimming';
+    const hasMotion = world.player.speedMps > 0.05 || movedDelta > 0.0005;
+    const isMoving =
+      locomotionActivity &&
+      (world.player.isMoving !== undefined ? world.player.isMoving && hasMotion : hasMotion);
 
     const surface = world.player.surfaceMaterial;
     const gait: GaitType =

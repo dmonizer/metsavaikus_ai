@@ -625,6 +625,21 @@ const EN_DICT = {
   'surv.sleepWarnEmptyMid': 'Stomach will empty mid-sleep — energy recovery capped.',
   'surv.sleepWarnCold': 'Too cold while sleeping — energy recovery capped.',
   'surv.sleepWarnRain': 'Exposed to rain — clothes will soak and recovery is capped. Pitch a tent or find roofed shelter!',
+
+  // World Initialization Error Overlay
+  'worldError.eyebrow': 'World Initialization Failed',
+  'worldError.title': 'Unable to enter Metsavaikus',
+  'worldError.desc':
+    'A required texture, terrain compute resource, or WebGL scene component failed to initialize. Partially loaded resources have been released.',
+  'worldError.detailsLabel': 'Error details',
+  'worldError.retry': 'Retry Loading World',
+  'worldError.newMap': 'Generate New Map',
+
+  // Lazy Chunk Loading & Error Boundary
+  'lazy.loading': 'Loading…',
+  'lazy.loadFailed': 'Failed to load this view.',
+  'lazy.retry': 'Retry',
+  'lazy.close': 'Close',
 } as const;
 
 export type TranslationKey = keyof typeof EN_DICT;
@@ -1156,6 +1171,21 @@ const ET_DICT: TranslationDict = {
   'surv.sleepWarnEmptyMid': 'Kõht läheb une pealt tühjaks — energia taastumine on piiratud.',
   'surv.sleepWarnCold': 'Magades on liiga külm — energia taastumine on piiratud.',
   'surv.sleepWarnRain': 'Oled lageda taeva all vihma käes — riided saavad märjaks ja puhkus on piiratud. Püstita telk või otsi katusealust!',
+
+  // World Initialization Error Overlay
+  'worldError.eyebrow': 'Maailma laadimine ebaõnnestus',
+  'worldError.title': 'Metsavaikusesse sisenemine ebaõnnestus',
+  'worldError.desc':
+    'Vajaliku tekstuuri, maastiku arvutusmooduli või WebGL-stseeni käivitamine ebaõnnestus. Osaliselt laaditud ressursid on vabastatud.',
+  'worldError.detailsLabel': 'Vea üksikasjad',
+  'worldError.retry': 'Proovi uuesti',
+  'worldError.newMap': 'Loo uus kaart',
+
+  // Lazy Chunk Loading & Error Boundary
+  'lazy.loading': 'Laadimine…',
+  'lazy.loadFailed': 'Vaate laadimine ebaõnnestus.',
+  'lazy.retry': 'Proovi uuesti',
+  'lazy.close': 'Sulge',
 };
 
 export const TRANSLATIONS: Record<LanguageCode, TranslationDict> = {

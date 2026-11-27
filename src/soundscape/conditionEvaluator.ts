@@ -353,6 +353,8 @@ export class ConditionEvaluator {
       const sub = path.slice('player.'.length);
       if (sub === 'activity') return w.player.activity;
       if (sub === 'gait') return w.player.gait;
+      if (sub === 'crouching') return Boolean(w.player.crouching ?? w.player.activity === 'crouching');
+      if (sub === 'is_moving') return Boolean(w.player.isMoving ?? w.player.speedMps > 0.05);
       if (sub === 'speed') return w.player.speedMps;
       if (sub === 'stamina') return w.player.stamina;
       if (sub === 'exertion') return w.player.exertion;

@@ -5,6 +5,7 @@ import { MockAudioBackend } from './audioBackend';
 import { ManualClock, SeededRng } from './clocks';
 import { hasValidationErrors, normalizeAndValidateConfig } from './configSchema';
 import { SoundscapeEngine } from './soundscapeEngine';
+import { SoundEngine } from '../world/soundEngine';
 import type { SoundscapeConfig, SpatialQueryProvider, Vector3, WorldContext } from './types';
 
 function makeWorld(overrides?: Partial<{
@@ -26,6 +27,8 @@ function makeWorld(overrides?: Partial<{
   campfireM: number;
   activity: WorldContext['player']['activity'];
   gait: WorldContext['player']['gait'];
+  speedMps: number;
+  isMoving: boolean;
   surface: WorldContext['player']['surfaceMaterial'];
   distMoved: number;
   exertion: number;
@@ -98,7 +101,8 @@ function makeWorld(overrides?: Partial<{
     player: {
       activity: overrides?.activity ?? 'idle',
       gait: overrides?.gait ?? null,
-      speedMps: overrides?.activity && overrides.activity !== 'idle' ? 4.5 : 0,
+      isMoving: overrides?.isMoving,
+      speedMps: overrides?.speedMps ?? (overrides?.activity && overrides.activity !== 'idle' && overrides.activity !== 'stationary' && overrides.activity !== 'sleeping' ? 4.5 : 0),
       stamina: overrides?.stamina ?? 90,
       exertion: overrides?.exertion ?? 0.05,
       tiredness: overrides?.tiredness ?? 5,
@@ -966,6 +970,177 @@ test('plank trail, swamp mud, shallow water, and swimming use distinct sounds an
   );
   assert.equal(shallowWadeLoop.stopped, true);
   engine.dispose();
+});
+
+test('engine gates gait loops and walking physiology on actual motion even when activity is crouching', () => {
+  const { engine, backend, realClock } = createTestEngine();
+  try {
+    // Direct WorldContext with activity: 'crouching' but zero speed and zero distance delta
+    for (let i = 0; i < 4; i++) {
+      realClock.advanceMs(100);
+      engine.step(
+        0.1,
+        makeWorld({
+          simMs: 1000 + i * 100,
+          activity: 'crouching',
+          gait: 'crouch',
+          speedMps: 0,
+          distMoved: 0,
+          surface: 'gravel',
+        })
+      );
+    }
+    assert.equal(backend.records.filter((r) => r.soundId === 'gravel_walk_loop').length, 0);
+    assert.ok(backend.records.some((r) => r.soundId === 'breathing_rest' && !r.stopped));
+    assert.equal(backend.records.filter((r) => r.soundId === 'breathing_walk').length, 0);
+
+    // Moving while crouching starts gravel_walk_loop, then stopping pauses it
+    for (let i = 0; i < 3; i++) {
+      realClock.advanceMs(100);
+      engine.step(
+        0.1,
+        makeWorld({
+          simMs: 1500 + i * 100,
+          activity: 'crouching',
+          gait: 'crouch',
+          speedMps: 2.5,
+          isMoving: true,
+          distMoved: (i + 1) * 0.25,
+          surface: 'gravel',
+        })
+      );
+    }
+    const gravelLoop = backend.records.find((r) => r.soundId === 'gravel_walk_loop');
+    assert.ok(gravelLoop && !gravelLoop.stopped);
+
+    for (let i = 0; i < 4; i++) {
+      realClock.advanceMs(100);
+      engine.step(
+        0.1,
+        makeWorld({
+          simMs: 1900 + i * 100,
+          activity: 'crouching',
+          gait: 'crouch',
+          speedMps: 0,
+          isMoving: false,
+          distMoved: 0.75,
+          surface: 'gravel',
+        })
+      );
+    }
+    assert.ok(
+      gravelLoop.stopped || engine.getDiagnosticsSnapshot().voices.every((v) => v.soundId !== 'gravel_walk_loop' || v.state !== 'playing')
+    );
+  } finally {
+    engine.dispose();
+  }
+});
+
+test('physical impacts route through one soundscape voice with bus mute/gain, spatial occlusion, and detached fallback', () => {
+  const occludedCollider = { occluded: false };
+  const spatialQuery: SpatialQueryProvider = {
+    findPointOnFeature: () => null,
+    computeOcclusionFactor: () => (occludedCollider.occluded ? 0.8 : 0),
+  };
+  const { engine, backend, realClock } = createTestEngine({ spatialQuery });
+  try {
+    // 1. Single prop collision creates one intended material-specific voice with spatial & bus metadata
+    const nearPos = { x: 2, y: 0.4, z: 0 };
+    const farPos = { x: 24, y: 0.4, z: 0 };
+    engine.step(0.05, makeWorld({ simMs: 100, pos: { x: 0, y: 1.7, z: 0 } }));
+    engine.emitEvent({
+      type: 'object.impact',
+      origin: 'environment',
+      simulationTimestamp: 120,
+      position: nearPos,
+      intensity: 0.85,
+      correlationId: 'prop_fall_1',
+      dedupeKey: 'prop_fall_1',
+      dedupeWindowMs: 120,
+      payload: { material: 'stone', breakable: false, broken: false },
+    });
+    const nearHits = backend.records.filter((r) => r.soundId === 'stone_impact_solid');
+    assert.equal(nearHits.length, 1);
+    assert.equal(nearHits[0].busId, 'objects');
+    assert.equal(nearHits[0].spatialMode, 'world');
+    assert.deepEqual(nearHits[0].initialPosition, nearPos);
+    realClock.advanceMs(50);
+    engine.step(0.05, makeWorld({ simMs: 170, pos: { x: 0, y: 1.7, z: 0 } }));
+    const clearGain = nearHits[0].gainHistory.at(-1) ?? 0;
+    const clearLowpass = nearHits[0].lowpassHistory.at(-1) ?? 20000;
+    assert.ok(clearGain > 0, `Expected non-zero near impact gain, got ${clearGain}`);
+
+    // Occluded distant impact reduces gain and lowpass via spatial acoustics
+    occludedCollider.occluded = true;
+    engine.emitEvent({
+      type: 'object.impact',
+      origin: 'environment',
+      simulationTimestamp: 320,
+      position: farPos,
+      intensity: 0.85,
+      correlationId: 'prop_fall_2',
+      dedupeKey: 'prop_fall_2',
+      dedupeWindowMs: 120,
+      payload: { material: 'stone', breakable: false, broken: false },
+    });
+    const allStoneHits = backend.records.filter((r) => r.soundId === 'stone_impact_solid');
+    assert.equal(allStoneHits.length, 2);
+    assert.deepEqual(allStoneHits[1].initialPosition, farPos);
+    realClock.advanceMs(50);
+    engine.step(0.05, makeWorld({ simMs: 370, pos: { x: 0, y: 1.7, z: 0 } }));
+    assert.ok((allStoneHits[1].lowpassHistory.at(-1) ?? 20000) < clearLowpass);
+
+    // Objects bus gain & mute consistently affect impact voices
+    occludedCollider.occluded = false;
+    engine.mixer.setBusVolume('objects', 0.25);
+    engine.emitEvent({
+      type: 'object.impact',
+      origin: 'environment',
+      simulationTimestamp: 500,
+      position: nearPos,
+      intensity: 0.9,
+      dedupeKey: 'prop_fall_scaled',
+      dedupeWindowMs: 120,
+      payload: { material: 'metal', breakable: false, broken: false },
+    });
+    const scaledMetal = backend.records.find((r) => r.soundId === 'metal_impact_solid');
+    assert.ok(scaledMetal);
+    realClock.advanceMs(50);
+    engine.step(0.05, makeWorld({ simMs: 550, pos: { x: 0, y: 1.7, z: 0 } }));
+    assert.ok((scaledMetal.gainHistory.at(-1) ?? 1) < clearGain);
+
+    engine.mixer.setBusMuted('objects', true);
+    engine.emitEvent({
+      type: 'object.impact',
+      origin: 'environment',
+      simulationTimestamp: 650,
+      position: nearPos,
+      intensity: 0.9,
+      dedupeKey: 'prop_fall_muted',
+      dedupeWindowMs: 120,
+      payload: { material: 'wood', breakable: false, broken: false },
+    });
+    const mutedWood = backend.records.find((r) => r.soundId === 'wood_impact_solid');
+    assert.ok(mutedWood);
+    realClock.advanceMs(50);
+    engine.step(0.05, makeWorld({ simMs: 700, pos: { x: 0, y: 1.7, z: 0 } }));
+    assert.equal(mutedWood.gainHistory.at(-1) ?? 0, 0);
+
+    // 2. SoundEngine fallback only synthesizes when SoundscapeEngine is detached
+    const soundFacade = new SoundEngine();
+    let fallbackSynthCalls = 0;
+    soundFacade.playImpact = () => {
+      fallbackSynthCalls++;
+    };
+    soundFacade.playPhysicalImpactFallback(0.8);
+    assert.equal(fallbackSynthCalls, 1, 'Detached SoundEngine should invoke legacy synth fallback');
+
+    soundFacade.attachSoundscapeEngine(engine, backend as never);
+    soundFacade.playPhysicalImpactFallback(0.8);
+    assert.equal(fallbackSynthCalls, 1, 'Attached SoundEngine must suppress duplicate legacy impact synth');
+  } finally {
+    engine.dispose();
+  }
 });
 
 test('walking and water wading loops resume cleanly after pausing instead of staying stuck on paused', () => {

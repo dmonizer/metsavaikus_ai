@@ -488,9 +488,38 @@ describe('Energy, Locomotion, Calorie Longevity, Poisons & Sleep Caps', () => {
     );
     assert.equal(coldOutcome.coldDuringSleep, true);
 
-    // Direct stepSleepSlice matches preview logic
-    stepSleepSlice(warmFed, 1, 23, 'clear', 0.4, 'warm_house', 0);
-    assert.ok(warmFed.energy > 25);
+    // Direct stepSleepSlice matches preview logic identically for equivalent inputs
+    const invGear = createInventoryFromPacking({ rain_jacket: 1, tent: 1, sleeping_bag: 1 });
+    const simPreviewBase = createInitialSurvivalState();
+    simPreviewBase.energy = 32;
+    simPreviewBase.stomachFullness = 65;
+    simPreviewBase.hydration = 72;
+    simPreviewBase.bodyTempC = 36.1;
+    simPreviewBase.wetness = 35;
+    const expectedPreview = previewSleepOutcome(
+      simPreviewBase,
+      invGear,
+      4,
+      22,
+      'rain',
+      1.8,
+      'tent',
+      0.3
+    );
+    const stepLive = {
+      ...simPreviewBase,
+      poisons: [...simPreviewBase.poisons],
+      deathFactors: [...simPreviewBase.deathFactors],
+    };
+    const steps = Math.max(1, Math.round(4 * 2));
+    const slice = 4 / steps;
+    for (let i = 0; i < steps; i++) {
+      stepSleepSlice(stepLive, slice, (22 + i * slice) % 24, 'rain', 1.8, 'tent', 0.3, 0, 8.5);
+    }
+    assert.equal(Math.round(stepLive.energy), expectedPreview.projectedEnergy);
+    assert.equal(Math.round(stepLive.stomachFullness), expectedPreview.projectedFullness);
+    assert.equal(Math.round(stepLive.hydration), expectedPreview.projectedHydration);
+    assert.equal(Math.round(stepLive.bodyTempC * 10) / 10, expectedPreview.projectedBodyTempC);
   });
 
   it('supports flashlight battery reloading, campfire ignition, and discovery tracking', () => {

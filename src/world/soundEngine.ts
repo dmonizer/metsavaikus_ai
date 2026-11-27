@@ -996,6 +996,17 @@ export class SoundEngine {
     osc.stop(now + 0.16);
   }
 
+  /**
+   * Legacy synth fallback for physical impacts/breaks when the declarative
+   * SoundscapeEngine is unavailable. Callers emitting `object.impact` or
+   * `object.break` must use this rather than calling `playImpact()` directly
+   * so one collision never plays both synth and soundscape voices.
+   */
+  playPhysicalImpactFallback(strength = 1): void {
+    if (this.soundscapeEngine) return;
+    this.playImpact(strength);
+  }
+
   playGatherMushroom(): void {
     if (!this.initialized || !this.ctx || this.muted) return;
     const now = this.ctx.currentTime;

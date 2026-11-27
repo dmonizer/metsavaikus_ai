@@ -149,3 +149,54 @@ test('campfire [F] secondary action invokes throw firewood handler instead of fa
   }
 });
 
+test('pooled point lights update shadows on movement/reassignment without redundant stationary updates', () => {
+  const { scene, props } = makeWorld();
+  try {
+    const lights = scene.children.filter((c): c is THREE.PointLight => c instanceof THREE.PointLight);
+    assert.equal(lights.length, 2);
+
+    const primary = props.getCampfires().find((c) => c.lit)!;
+    assert.ok(primary);
+
+    // First update near lit primary campfire assigns light slots and marks shadow update
+    props.updateDynamicProps(1, primary.x + 1.5, primary.z + 1.5);
+    assert.equal(props.needsLightShadowUpdate(), true);
+    const primaryLight = lights.find(
+      (l) =>
+        l.intensity > 0 &&
+        Math.abs(l.position.x - primary.x) < 0.01 &&
+        Math.abs(l.position.z - primary.z) < 0.01
+    );
+    assert.ok(primaryLight, 'Primary lit campfire should be bound to a pooled PointLight');
+
+    // Clear renderer shadow flags and advance a stationary frame -> must not re-dirty shadows
+    for (const l of lights) l.shadow.needsUpdate = false;
+    props.updateDynamicProps(1.016, primary.x + 1.6, primary.z + 1.6);
+    assert.equal(props.needsLightShadowUpdate(), false);
+
+    // Light a movable storm lantern nearby and move it -> must update light position & mark shadow dirty
+    const lantern = props.dynamicObjects.find(
+      (d) => d.name.includes('Lantern') || (d.getName?.().includes('Lantern') ?? false)
+    )!;
+    assert.ok(lantern);
+    lantern.mesh.position.set(primary.x + 0.5, primary.y + 0.4, primary.z + 0.5);
+    if (lights.every((l) => l.position.distanceTo(lantern.mesh.position) > 0.2)) {
+      lantern.onUse?.();
+    }
+    props.updateDynamicProps(1.032, primary.x + 0.5, primary.z + 0.5);
+    assert.equal(props.needsLightShadowUpdate(), true);
+
+    for (const l of lights) l.shadow.needsUpdate = false;
+    lantern.mesh.position.x += 1.25;
+    props.updateDynamicProps(1.048, lantern.mesh.position.x, lantern.mesh.position.z);
+    assert.equal(props.needsLightShadowUpdate(), true);
+    assert.ok(
+      lights.some((l) => Math.abs(l.position.x - lantern.mesh.position.x) < 0.01),
+      'Moved lit lantern should update assigned pooled PointLight position'
+    );
+  } finally {
+    props.dispose();
+  }
+});
+
+

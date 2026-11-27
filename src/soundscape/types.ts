@@ -516,6 +516,8 @@ export interface WorldContext {
   player: {
     activity: PlayerActivity;
     gait: GaitType | null;
+    crouching?: boolean;
+    isMoving?: boolean;
     speedMps: number;
     stamina: number; // 0..100
     exertion: number; // 0..1

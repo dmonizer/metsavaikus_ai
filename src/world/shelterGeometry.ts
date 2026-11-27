@@ -12,6 +12,8 @@ export interface Footprint {
   temporary?: boolean;
   /** When true, excludes vegetation without acting as an elevated floor or shelter. */
   clearingOnly?: boolean;
+  /** When true, blocks rain/droplets without acting as floor, shelter, or vegetation exclusion. */
+  roofOnly?: boolean;
   /** 'circle' uses halfW as radius; defaults to oriented 'box'. */
   shape?: 'box' | 'circle';
   /** Optional explicit vegetation exclusion margin override (defaults to caller/shader 1.2m). */
@@ -55,20 +57,27 @@ export class ShelterGeometry {
     this.sync();
   }
   remove(id: string) {
-    const index = this.footprints.findIndex((a) => a.id === id);
-    if (index >= 0) {
-      this.areas.splice(index, 1);
+    let removed = false;
+    for (let i = this.areas.length - 1; i >= 0; i--) {
+      if (this.areas[i].id === id) {
+        this.areas.splice(i, 1);
+        removed = true;
+      }
+    }
+    if (removed) {
       this.sync();
     }
   }
   excludesVegetation(x: number, z: number, margin = 1.2): boolean {
-    return this.footprints.some((a) =>
-      containsFootprint(a, x, z, a.vegetationMargin !== undefined ? a.vegetationMargin : margin)
+    return this.footprints.some(
+      (a) =>
+        !a.roofOnly &&
+        containsFootprint(a, x, z, a.vegetationMargin !== undefined ? a.vegetationMargin : margin)
     );
   }
   floorHeight(x: number, z: number, base: number): number {
     for (const a of this.footprints) {
-      if (a.clearingOnly) continue;
+      if (a.clearingOnly || a.roofOnly) continue;
       if (containsFootprint(a, x, z)) base = Math.max(base, a.floorY);
     }
     return base;
@@ -76,10 +85,12 @@ export class ShelterGeometry {
   blocksRain(x: number, y: number, z: number): boolean {
     return this.footprints.some((a) => {
       if (!a.roof || !containsFootprint(a, x, z)) return false;
-      const p = localPoint(a, x, z),
-        axis = a.roof.axis;
-      const extent = axis === 'x' ? a.halfW : a.halfD;
-      return y <= a.roof.eaveY + a.roof.rise * (1 - Math.abs(p[axis]) / extent);
+      const p = localPoint(a, x, z);
+      const slope =
+        a.shape === 'circle'
+          ? Math.hypot(p.x, p.z) / Math.max(0.001, a.halfW)
+          : Math.abs(p[a.roof.axis]) / (a.roof.axis === 'x' ? a.halfW : a.halfD);
+      return y <= a.roof.eaveY + a.roof.rise * (1 - slope);
     });
   }
   private sync() {
@@ -99,7 +110,7 @@ export class ShelterGeometry {
           a.roof?.axis === 'x' ? 1 : 0,
           a.roof ? 1 : 0,
           a.shape === 'circle' ? 1 : 0,
-          a.vegetationMargin !== undefined ? a.vegetationMargin : -1,
+          a.roofOnly ? -2 : a.vegetationMargin !== undefined ? a.vegetationMargin : -1,
         ],
         i * 12
       )
@@ -125,6 +136,7 @@ bool shelterContains(vec3 point, float margin, bool rain) {
     vec4 bounds = texture2D(uShelterData, vec2(1.0 / 6.0, row));
     vec4 frame = texture2D(uShelterData, vec2(0.5, row));
     vec4 roof = texture2D(uShelterData, vec2(5.0 / 6.0, row));
+    if (!rain && roof.w < -1.5) continue;
     vec2 delta = point.xz - bounds.xy;
     vec2 local = vec2(delta.x * frame.x - delta.y * frame.y, delta.x * frame.y + delta.y * frame.x);
     float effMargin = (!rain && roof.w >= -0.5) ? roof.w : margin;
@@ -133,7 +145,9 @@ bool shelterContains(vec3 point, float margin, bool rain) {
       : all(lessThanEqual(abs(local), bounds.zw + vec2(effMargin)));
     if (inside) {
       if (!rain) return true;
-      float slope = roof.x > 0.5 ? abs(local.x) / bounds.z : abs(local.y) / bounds.w;
+      float slope = roof.z > 0.5
+        ? length(local) / max(0.001, bounds.z)
+        : (roof.x > 0.5 ? abs(local.x) / bounds.z : abs(local.y) / bounds.w);
       if (roof.y > 0.5 && point.y <= frame.z + frame.w * (1.0 - slope)) return true;
     }
   }

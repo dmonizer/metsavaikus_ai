@@ -220,3 +220,34 @@ test('campfires exclude woodland foliage in a clean circle without acting as a f
   }
 });
 
+test('intact house overhangs, spring well roofs, and pitched tents block rain and thrown objects', () => {
+  const { props } = makeWorld();
+  try {
+    const village = getActiveBlueprint().villages[0];
+    const house = village.buildings.find((b) => b.decayState === 'intact')!;
+    const hx = village.x + house.offsetX;
+    const hz = village.z + house.offsetZ;
+    const hy = props.shelters.floorHeight(hx, hz, -Infinity) - 0.43;
+
+    // Under eaves overhang outside front wall still blocks rain without extending elevated floor
+    const overhangZ = hz + house.d / 2 + 0.45;
+    assert.equal(props.shelters.blocksRain(hx, hy + 1.5, overhangZ), true);
+    assert.equal(props.shelters.floorHeight(hx, overhangZ, -50), -50);
+
+    // Pitched tent rainfly blocks falling/thrown objects, and packing removes its roof colliders
+    const tent = props.placePlayerTent(-100, -100, Math.PI / 4).tent!;
+    const boxCountWithTent = props.boxColliders.length;
+    const dropOnTent = new THREE.Vector3(tent.x, tent.y + 1.8, tent.z);
+    const dropVel = new THREE.Vector3(0, -16, 0);
+    const hitTent = moveSphere(dropOnTent, dropVel, 0.14, 0.22, props.boxColliders);
+    assert.equal(hitTent, true, 'Object dropped onto pitched tent roof must collide with tent rainfly');
+    assert.ok(dropOnTent.y > tent.y + 0.5, 'Object must bounce off tent roof rather than passing through');
+
+    assert.equal(props.packUpPlayerTent(tent.id), true);
+    assert.ok(props.boxColliders.length < boxCountWithTent, 'Packing tent must remove its roof colliders');
+  } finally {
+    props.dispose();
+  }
+});
+
+

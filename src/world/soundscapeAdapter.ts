@@ -57,6 +57,7 @@ export interface SimulatorSoundscapeInput {
   wetness: number;
   wearingRainJacket: boolean;
   seatedInTent: boolean;
+  isSleeping?: boolean;
   distanceMovedTotal: number;
   nearLitCampfireFactor: number;
   nearestCampfirePos?: Vector3;
@@ -339,20 +340,29 @@ export function buildWorldContextFromSimulator(
       )
     : Infinity;
 
+  const isSleeping = Boolean(input.isSleeping);
+  const isCrouching = Boolean(input.crouching && !input.seatedInTent && !isSleeping);
+  const velocitySpeedMps = Math.hypot(input.listenerVelocity.x, input.listenerVelocity.z);
+  const isActuallyMoving =
+    !input.seatedInTent &&
+    !isSleeping &&
+    Boolean(input.isMoving) &&
+    (input.speedMps > 0.05 || velocitySpeedMps > 0.05);
+
   let activity: PlayerActivity = 'idle';
-  if (input.seatedInTent) activity = 'stationary';
-  else if (input.isSwimming) activity = input.isMoving ? 'swimming' : 'idle';
-  else if (input.isMoving) {
+  if (isSleeping) activity = 'sleeping';
+  else if (input.seatedInTent) activity = 'stationary';
+  else if (input.isSwimming) activity = isActuallyMoving ? 'swimming' : 'idle';
+  else if (isActuallyMoving) {
     if (input.waterDepthM > 0.02 || input.isSwampWading) activity = 'wading';
-    else if (input.crouching) activity = 'crouching';
+    else if (isCrouching) activity = 'crouching';
     else if (input.wantRun) activity = input.exertion > 0.85 ? 'sprinting' : 'running';
     else activity = 'walking';
-  } else if (input.crouching) {
-    activity = 'crouching';
   }
 
-  const gait: GaitType | null =
-    activity === 'swimming'
+  const gait: GaitType | null = !isActuallyMoving
+    ? null
+    : activity === 'swimming'
       ? 'swim'
       : activity === 'wading'
         ? 'wade'
@@ -431,7 +441,9 @@ export function buildWorldContextFromSimulator(
     player: {
       activity,
       gait,
-      speedMps: input.speedMps,
+      crouching: isCrouching,
+      isMoving: isActuallyMoving,
+      speedMps: isActuallyMoving ? input.speedMps : 0,
       stamina: input.stamina,
       exertion: Math.max(0, Math.min(1, input.exertion)),
       tiredness: input.tiredness,
@@ -491,6 +503,8 @@ export function createSimulatorSoundscape(opts?: {
   });
   return { engine, backend, spatialQuery, contextBuilder: new SimulatorSoundscapeContextBuilder(opts?.realClock) };
 }
+
+export type SimulatorSoundscape = ReturnType<typeof createSimulatorSoundscape>;
 
 export function saveSoundscapeSnapshotToStorage(seed: number, engine: SoundscapeEngine): void {
   if (typeof window === 'undefined') return;

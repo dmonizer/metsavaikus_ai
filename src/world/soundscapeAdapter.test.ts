@@ -121,3 +121,84 @@ test('soundscape uses shared surface precedence for boardwalk, water, interiors 
   input.structure = { ...input.structure, quality: 'tent' };
   assert.equal(buildWorldContextFromSimulator(input).player.surfaceMaterial, 'mud');
 });
+
+test('stationary crouching starts no gait loop and keeps resting physiology while crouch-walking plays and pauses cleanly', () => {
+  const clock = new ManualClock();
+  const builder = new SimulatorSoundscapeContextBuilder(clock);
+  const backend = new MockAudioBackend();
+  const engine = new SoundscapeEngine({ config: DEFAULT_SOUNDSCAPE_CONFIG, backend, realClock: clock });
+  try {
+    const input = makeInput();
+    input.crouching = true;
+    input.isMoving = false;
+    input.speedMps = 0;
+
+    // Stationary crouching on forest_floor and gravel must not start gait loops
+    for (let i = 0; i < 6; i++) {
+      clock.advanceMs(100);
+      input.simulationTimeMs += 100;
+      const ctx = builder.build(input);
+      assert.equal(ctx.player.activity, 'idle');
+      assert.equal(ctx.player.gait, null);
+      assert.equal(ctx.player.crouching, true);
+      assert.equal(ctx.player.isMoving, false);
+      engine.step(0.1, ctx);
+    }
+    assert.equal(backend.records.filter((r) => r.soundId === 'forest_floor_walk').length, 0);
+    assert.ok(backend.records.some((r) => r.soundId === 'breathing_rest' && !r.stopped));
+
+    // Crouch-walking on forest_floor starts the crouch gait loop
+    input.isMoving = true;
+    input.speedMps = 2.5;
+    for (let i = 0; i < 5; i++) {
+      clock.advanceMs(100);
+      input.simulationTimeMs += 100;
+      input.distanceMovedTotal += 0.25;
+      const ctx = builder.build(input);
+      assert.equal(ctx.player.activity, 'crouching');
+      assert.equal(ctx.player.gait, 'crouch');
+      engine.step(0.1, ctx);
+    }
+    const forestLoop = backend.records.find((r) => r.soundId === 'forest_floor_walk');
+    assert.ok(forestLoop && !forestLoop.stopped, 'Crouch-walking on forest floor should play gait loop');
+
+    // Stopping while still holding crouch pauses/stops the gait loop and restores resting breathing
+    input.isMoving = false;
+    input.speedMps = 0;
+    for (let i = 0; i < 6; i++) {
+      clock.advanceMs(100);
+      input.simulationTimeMs += 100;
+      engine.step(0.1, builder.build(input));
+    }
+    assert.ok(
+      forestLoop.stopped || engine.getDiagnosticsSnapshot().voices.every((v) => v.soundId !== 'forest_floor_walk' || v.state !== 'playing'),
+      'Stopping while crouching must pause/fade active gait loop'
+    );
+    assert.ok(backend.records.some((r) => r.soundId === 'breathing_rest' && !r.stopped));
+
+    // Stationary crouching on gravel (road) also starts no gait loop
+    const bp = setActiveWorldSeed(2026);
+    const roadSeg = bp.roadSegments.find((r) => !r.isTrail);
+    assert.ok(roadSeg, 'Expected blueprint gravel road segment for surface check');
+    input.listenerPos.x = (roadSeg.ax + roadSeg.bx) * 0.5;
+    input.listenerPos.z = (roadSeg.az + roadSeg.bz) * 0.5;
+    input.crouching = true;
+    input.isMoving = false;
+    input.speedMps = 0;
+    clock.advanceMs(250);
+    input.simulationTimeMs += 250;
+    const gravelCtx = builder.build(input);
+    assert.equal(gravelCtx.player.surfaceMaterial, 'gravel');
+    engine.step(0.25, gravelCtx);
+    assert.equal(backend.records.filter((r) => r.soundId === 'gravel_walk_loop').length, 0);
+
+    // Sleep overrides stale crouch flags cleanly
+    const sleepCtx = buildWorldContextFromSimulator({ ...input, isSleeping: true, crouching: true });
+    assert.equal(sleepCtx.player.activity, 'sleeping');
+    assert.equal(sleepCtx.player.gait, null);
+    assert.equal(sleepCtx.player.crouching, false);
+  } finally {
+    engine.dispose();
+  }
+});
+
