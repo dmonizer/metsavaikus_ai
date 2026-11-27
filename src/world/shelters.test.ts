@@ -251,3 +251,28 @@ test('intact house overhangs, spring well roofs, and pitched tents block rain an
 });
 
 
+
+test('shelter cell ranges conservatively include rotated corners and reindex after packing', () => {
+  const shelters = new ShelterGeometry();
+  const area = {
+    id: 'corner', x: 8, z: -8, halfW: 6, halfD: 4, yaw: Math.PI / 4,
+    floorY: 0, vegetationMargin: 3,
+  };
+  shelters.add({ ...area, id: 'far', x: -180 });
+  shelters.add(area);
+  function check(expectedRow: number) {
+    const grid = shelters.uniforms.uShelterCells.value.image;
+    for (let x = -5; x <= 21; x += 0.5) {
+      for (let z = -21; z <= 5; z += 0.5) {
+        if (!containsFootprint(area, x, z, area.vegetationMargin)) continue;
+        const offset = (Math.floor((z + 600) / 16) * grid.width + Math.floor((x + 600) / 16)) * 2;
+        const ranges = grid.data as Float32Array;
+        assert.ok(ranges[offset] <= expectedRow && expectedRow < ranges[offset + 1]);
+      }
+    }
+  }
+  check(1);
+  shelters.remove('far');
+  check(0);
+  shelters.dispose();
+});

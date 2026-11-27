@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WORLD_HALF, WORLD_SIZE } from './terrainMath';
 import type { ShelterQuality } from '../game/survivalEngine';
 
 export interface Footprint {
@@ -39,9 +40,16 @@ export function containsFootprint(area: Footprint, x: number, z: number, margin 
   return Math.abs(p.x) <= area.halfW + margin && Math.abs(p.z) <= area.halfD + margin;
 }
 
+const CELL_SIZE = 16;
+const GRID_SIZE = Math.ceil(WORLD_SIZE / CELL_SIZE);
+const PLANT_MARGIN = 1.2;
+
 /** Authoritative floor/cover footprints, including runtime placements. Shared CPU and GPU queries. */
 export class ShelterGeometry {
   private readonly areas: Footprint[] = [];
+
+  // Each cell stores the [first, end) interval of potentially intersecting footprint rows.
+  private readonly cellRanges = new Float32Array(GRID_SIZE * GRID_SIZE * 2);
 
   get footprints(): readonly Footprint[] {
     return this.areas;
@@ -51,6 +59,9 @@ export class ShelterGeometry {
       value: new THREE.DataTexture(new Float32Array(12), 3, 1, THREE.RGBAFormat, THREE.FloatType),
     },
     uShelterCount: { value: 0 },
+    uShelterCells: {
+      value: new THREE.DataTexture(this.cellRanges, GRID_SIZE, GRID_SIZE, THREE.RGFormat, THREE.FloatType),
+    },
   };
   add(area: Footprint) {
     this.areas.push(area);
@@ -115,6 +126,24 @@ export class ShelterGeometry {
         i * 12
       )
     );
+    this.cellRanges.fill(0);
+    for (const [i, area] of this.areas.entries()) {
+      // Circumscribe the rotated, expanded box (also conservative for circles and rain).
+      const margin = Math.max(PLANT_MARGIN, area.vegetationMargin ?? 0);
+      const radius = Math.hypot(area.halfW + margin, area.halfD + margin) + 0.001;
+      const cell = (v: number) => Math.floor((v + WORLD_HALF) / CELL_SIZE);
+      const x0 = Math.max(0, cell(area.x - radius));
+      const x1 = Math.min(GRID_SIZE - 1, cell(area.x + radius));
+      const z1 = Math.min(GRID_SIZE - 1, cell(area.z + radius));
+      for (let z = Math.max(0, cell(area.z - radius)); z <= z1; z++) {
+        for (let x = x0; x <= x1; x++) {
+          const off = (z * GRID_SIZE + x) * 2;
+          if (this.cellRanges[off + 1] === 0) this.cellRanges[off] = i;
+          this.cellRanges[off + 1] = i + 1;
+        }
+      }
+    }
+    this.uniforms.uShelterCells.value.needsUpdate = true;
     this.uniforms.uShelterData.value.dispose();
     const tex = new THREE.DataTexture(data, 3, rows, THREE.RGBAFormat, THREE.FloatType);
     tex.needsUpdate = true;
@@ -122,6 +151,7 @@ export class ShelterGeometry {
     this.uniforms.uShelterCount.value = this.footprints.length;
   }
   dispose() {
+    this.uniforms.uShelterCells.value.dispose();
     this.uniforms.uShelterData.value.dispose();
   }
 }
@@ -130,8 +160,15 @@ export class ShelterGeometry {
 export const shelterShader = `
 uniform sampler2D uShelterData;
 uniform int uShelterCount;
+uniform highp sampler2D uShelterCells;
 bool shelterContains(vec3 point, float margin, bool rain) {
-  for (int i = 0; i < uShelterCount; i++) {
+  if (uShelterCount == 0) return false;
+  ivec2 range = ivec2(0, uShelterCount);
+  ivec2 cell = ivec2(floor((point.xz + ${WORLD_HALF.toFixed(1)}) / ${CELL_SIZE.toFixed(1)}));
+  if (margin <= ${PLANT_MARGIN.toFixed(1)} && all(greaterThanEqual(cell, ivec2(0))) && all(lessThan(cell, ivec2(${GRID_SIZE})))) {
+    range = ivec2(texelFetch(uShelterCells, cell, 0).rg);
+  }
+  for (int i = range.x; i < range.y; i++) {
     float row = (float(i) + 0.5) / float(max(uShelterCount, 1));
     vec4 bounds = texture2D(uShelterData, vec2(1.0 / 6.0, row));
     vec4 frame = texture2D(uShelterData, vec2(0.5, row));
@@ -173,7 +210,7 @@ export function excludeShelterVegetation(
       #ifdef USE_INSTANCING
         plantOrigin = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
       #endif
-      vShelterExcluded = shelterContains(plantOrigin, 1.2, false) ? 1.0 : 0.0;
+      vShelterExcluded = shelterContains(plantOrigin, ${PLANT_MARGIN.toFixed(1)}, false) ? 1.0 : 0.0;
     `
     );
     shader.fragmentShader = 'varying float vShelterExcluded;\n' + shader.fragmentShader;

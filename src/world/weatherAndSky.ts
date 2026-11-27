@@ -536,6 +536,7 @@ function createRainStreakSystem(): {
         float profileX = max(0.0, 1.0 - dx * dx);
         float alpha = taperY * profileX * profileX * vFade * uOpacity;
         if (alpha < 0.025) discard;
+        // rain-cover-test
         gl_FragColor = vec4(uColor, alpha);
       }
     `,
@@ -721,7 +722,7 @@ export class WeatherAndSkySystem {
     material.vertexShader = material.vertexShader.replace('gl_Position = projectionMatrix * viewMatrix * vec4(vertexWorld, 1.0);',
       'vRainWorld = vertexWorld;\ngl_Position = projectionMatrix * viewMatrix * vec4(vertexWorld, 1.0);');
     material.fragmentShader = shelterShader + '\nvarying vec3 vRainWorld;\n' + material.fragmentShader;
-    material.fragmentShader = material.fragmentShader.replace('void main() {', 'void main() {\nif (shelterContains(vRainWorld, 0.0, true)) discard;');
+    material.fragmentShader = material.fragmentShader.replace('// rain-cover-test', 'if (shelterContains(vRainWorld, 0.0, true)) discard;');
     material.needsUpdate = true;
   }
 
