@@ -5,11 +5,11 @@ import { ITEM_CATALOG, ItemId, MUSHROOM_TO_ITEM_ID } from '../../game/itemCatalo
 import { getItemName, t } from '../../i18n/i18n';
 import {
   SWAMP_WATER_Y,
+  canPlaceStoneAt,
   distToRoadDetail,
   getActiveBlueprint,
   getSwampFactor,
   getTerrainHeight,
-  roadCenterX,
 } from '../terrainMath';
 import { makeCylPart, prepNonIndexed } from './propMaterials';
 import { InteractiveEntry, PropBuildContext } from './propTypes';
@@ -490,8 +490,19 @@ export function createDynamicPropsSystem(
     spawnLyingStump(v.x - 9.5, v.z + 15.0);
     spawnLyingStump(v.x + 11.5, v.z + 13.5);
   }
-  spawnLyingStump(roadCenterX(0) - 4.4, -0.8);
-  spawnLyingStump(roadCenterX(-8) + 4.8, -8.5);
+  // Starter stumps near spawn road
+  const spawnFwdX = -Math.sin(bp.spawnYaw);
+  const spawnFwdZ = -Math.cos(bp.spawnYaw);
+  const spawnRightX = Math.cos(bp.spawnYaw);
+  const spawnRightZ = -Math.sin(bp.spawnYaw);
+  spawnLyingStump(
+    bp.spawnX + spawnFwdX * 6.5 - spawnRightX * 4.5,
+    bp.spawnZ + spawnFwdZ * 6.5 - spawnRightZ * 4.5
+  );
+  spawnLyingStump(
+    bp.spawnX + spawnFwdX * 14.5 + spawnRightX * 4.8,
+    bp.spawnZ + spawnFwdZ * 14.5 + spawnRightZ * 4.8
+  );
 
   for (const isl of bp.swampIslands) {
     if (isl.hut) {
@@ -502,6 +513,13 @@ export function createDynamicPropsSystem(
       spawnLyingStump(isl.x - 3.6, isl.z - 2.8);
     }
   }
+  for (const fh of bp.forestHuts) {
+    spawnCrate(fh.x + 3.2, fh.z + 1.6, 0.62);
+    if (fh.decayState !== 'ruins') {
+      spawnLantern(fh.x - 2.8, fh.z + 2.0, false);
+    }
+    spawnLyingStump(fh.x - 4.2, fh.z - 3.2);
+  }
   for (let i = 0; i < 55; i++) {
     const lx = (ctx.rand() - 0.5) * 920;
     const lz = (ctx.rand() - 0.5) * 920;
@@ -509,10 +527,11 @@ export function createDynamicPropsSystem(
       spawnLyingStump(lx, lz);
     }
   }
-  for (let i = 0; i < 42; i++) {
+  for (let i = 0; i < 48; i++) {
     const sx = (ctx.rand() - 0.5) * 900;
     const sz = (ctx.rand() - 0.5) * 900;
-    if (getSwampFactor(sx, sz) < 0.3 && distToRoadDetail(sx, sz).dist > 3.5) {
+    // STRICT INVARIANT: peat bog has NO stones — fieldstones only spawn in dry forest
+    if (canPlaceStoneAt(sx, sz, bp) && distToRoadDetail(sx, sz).dist > 3.5) {
       spawnStone(sx, sz);
     }
   }

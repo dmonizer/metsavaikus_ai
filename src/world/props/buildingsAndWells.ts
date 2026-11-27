@@ -838,7 +838,7 @@ export function buildBuildingsAndWells(
     });
   }
 
-  // Build all 4 Procedural Villages
+  // Build all Procedural Villages (3–6 per seed, 1–5 houses each separated by >= 100m)
   for (let vi = 0; vi < bp.villages.length; vi++) {
     const v = bp.villages[vi];
     for (const b of v.buildings) {
@@ -846,33 +846,39 @@ export function buildBuildingsAndWells(
         w: b.w,
         d: b.d,
         h: b.h,
-        roofStyle: b.roofStyle,
-        warmWood: b.warmWood,
-        porch: b.porch,
+        roofStyle: b.roofStyle === 'shingle' ? 'shingle' : 'thatch',
+        warmWood: !b.abandoned && b.decayState === 'intact',
+        porch: !b.abandoned && b.decayState === 'intact',
         abandoned: b.abandoned,
         decayState: b.decayState,
-        name: b.name,
+        name: b.label,
         pantry: b === v.buildings[0],
       });
     }
-    for (const f of v.fences) {
-      buildSplitPoleFence(f.x0, f.z0, f.x1, f.z1);
+    if (!v.abandoned && v.buildings.length > 0) {
+      const b0 = v.buildings[0];
+      const fx = v.x + b0.offsetX;
+      const fz = v.z + b0.offsetZ;
+      buildSplitPoleFence(fx - 9.5, fz - 8.5, fx + 9.5, fz - 8.5);
+      buildSplitPoleFence(fx - 9.5, fz - 8.5, fx - 9.5, fz + 6.5);
     }
-    buildWaterWell(v.x - 4.5, v.z + 9.5, v.name, false);
+    if (v.hasWell) {
+      buildWaterWell(v.x + v.wellOffsetX, v.z + v.wellOffsetZ, v.name, v.abandoned);
+    }
   }
 
-  // Build Abandoned Decay Huts on Elevated Swamp Islands + Usable or Decrepit Wells
+  // Build Abandoned Decay Huts on Large Elevated Swamp Islands + Usable or Decrepit Wells
   for (const isl of bp.swampIslands) {
     if (!isl.hut) continue;
     buildEstonianLogHouse(isl.x, isl.z, isl.hut.rotY, {
       w: isl.hut.w,
       d: isl.hut.d,
       h: isl.hut.h,
-      roofStyle: isl.hut.roofStyle,
+      roofStyle: isl.hut.decayState === 'intact' ? 'shingle' : 'thatch',
       abandoned: true,
       decayState: isl.hut.decayState,
       porch: isl.hut.decayState === 'intact',
-      name: `${isl.name} — ${isl.hut.name}`,
+      name: `${isl.name} — ${isl.hut.label}`,
     });
 
     const wellX = isl.x + Math.cos(isl.hut.rotY + 0.7) * (isl.hut.w * 0.5 + 3.2);
@@ -881,6 +887,40 @@ export function buildBuildingsAndWells(
       const isDecrepit = isl.hut.decayState !== 'intact';
       buildWaterWell(wellX, wellZ, isl.name, isDecrepit);
     }
+  }
+
+  // Build 4–6 Random Abandoned Decrepit Forest Huts (no trails leading to them)
+  for (const fh of bp.forestHuts) {
+    buildEstonianLogHouse(fh.x, fh.z, fh.rotY, {
+      w: fh.w,
+      d: fh.d,
+      h: fh.h,
+      roofStyle: fh.roofStyle === 'shingle' ? 'shingle' : 'thatch',
+      warmWood: false,
+      abandoned: true,
+      decayState: fh.decayState,
+      porch: false,
+      name: fh.name,
+      pantry: false,
+    });
+  }
+
+  // Reserved extensibility dispatch for future large decrepit landmarks
+  // (e.g., manor_house, soviet_block, collective_farm_2story) whose terrain pads & clearings
+  // are already flattened via bp.majorStructures -> bp.buildingPads.
+  for (const site of bp.majorStructures) {
+    buildEstonianLogHouse(site.x, site.z, site.rotY, {
+      w: Math.min(12, site.footprintW),
+      d: Math.min(8, site.footprintD),
+      h: 3.1,
+      roofStyle: 'shingle',
+      warmWood: false,
+      abandoned: site.decayState !== 'intact',
+      decayState: site.decayState,
+      porch: false,
+      name: site.name,
+      pantry: false,
+    });
   }
 
   return { buildEstonianLogHouse };

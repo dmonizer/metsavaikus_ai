@@ -25,8 +25,10 @@ import {
   getActiveBlueprint,
   getBiomeInfo,
   getDistanceToNearestVillage,
+  getNearestWaterFeatureDistances,
   getSwampFactor,
   getTerrainHeight,
+  getWaterSurfaceAt,
   SWAMP_WATER_Y,
 } from './terrainMath';
 import type { WeatherId } from './weatherAndSky';
@@ -94,25 +96,26 @@ function mapWeatherType(w: WeatherId): WeatherType {
   return 'clear';
 }
 
-function estimateWaterDistanceM(x: number, z: number): number {
-  if (getTerrainHeight(x, z) <= SWAMP_WATER_Y + 0.04) return 0;
+function estimateWaterDistances(x: number, z: number): {
+  waterDistM: number;
+  streamDistM: number;
+  bogDistM: number;
+} {
   const bp = getActiveBlueprint();
-  const roughBogEdge = Math.max(0, Math.hypot(x - bp.bogCenterX, z - bp.bogCenterZ) - bp.bogRadius);
-  if (roughBogEdge > 140) return roughBogEdge;
-
-  // Quick 8-direction probe across nearby shoreline rings
-  const rings = [12, 28, 52, 85, 115];
-  for (const r of rings) {
-    for (let i = 0; i < 8; i++) {
-      const ang = (i / 8) * Math.PI * 2;
-      const sx = x + Math.cos(ang) * r;
-      const sz = z + Math.sin(ang) * r;
-      if (getTerrainHeight(sx, sz) <= SWAMP_WATER_Y + 0.04) {
-        return r;
-      }
-    }
+  const here = getWaterSurfaceAt(x, z, bp);
+  const feats = getNearestWaterFeatureDistances(x, z, bp);
+  if (here.hasWater) {
+    return {
+      waterDistM: 0,
+      streamDistM: here.kind === 'stream' ? 0 : feats.streamM,
+      bogDistM: here.kind === 'bog' ? 0 : feats.bogPoolM,
+    };
   }
-  return Math.max(25, roughBogEdge);
+  return {
+    waterDistM: feats.waterM,
+    streamDistM: feats.streamM,
+    bogDistM: feats.bogPoolM,
+  };
 }
 
 function computeBiomeComposition(x: number, z: number): Partial<Record<BiomeId, number>> {
@@ -157,22 +160,26 @@ export class WorldSpatialQueryProvider implements SpatialQueryProvider {
     const hi = Math.max(lo + 4, maxDistM);
 
     if (feature === 'water' || feature === 'bog' || feature === 'river') {
+      const bp = getActiveBlueprint();
       for (let attempt = 0; attempt < 24; attempt++) {
         const ang = rngNext() * Math.PI * 2;
         const dist = lo + rngNext() * (hi - lo);
         const px = listenerPos.x + Math.cos(ang) * dist;
         const pz = listenerPos.z + Math.sin(ang) * dist;
-        const h = getTerrainHeight(px, pz);
-        const swamp = getSwampFactor(px, pz);
-        if (h <= SWAMP_WATER_Y + 0.12 || (feature === 'bog' && swamp > 0.45)) {
+        const h = getTerrainHeight(px, pz, bp);
+        const wAt = getWaterSurfaceAt(px, pz, bp, h);
+        const swamp = getSwampFactor(px, pz, bp);
+        if (
+          wAt.hasWater ||
+          (feature === 'bog' && swamp > 0.45)
+        ) {
           return {
-            position: { x: px, y: Math.max(h, SWAMP_WATER_Y), z: pz },
+            position: { x: px, y: wAt.hasWater ? wAt.waterY : Math.max(h, SWAMP_WATER_Y), z: pz },
             featureFound: true,
           };
         }
       }
       // Fallback toward bog center clamped into [lo, hi]
-      const bp = getActiveBlueprint();
       const dx = bp.bogCenterX - listenerPos.x;
       const dz = bp.bogCenterZ - listenerPos.z;
       const d = Math.hypot(dx, dz);
@@ -180,8 +187,8 @@ export class WorldSpatialQueryProvider implements SpatialQueryProvider {
         const clamped = Math.max(lo, Math.min(hi, d));
         const px = listenerPos.x + (dx / d) * clamped;
         const pz = listenerPos.z + (dz / d) * clamped;
-        const h = getTerrainHeight(px, pz);
-        if (h <= SWAMP_WATER_Y + 0.25 || getSwampFactor(px, pz) > 0.35) {
+        const h = getTerrainHeight(px, pz, bp);
+        if (h <= SWAMP_WATER_Y + 0.25 || getSwampFactor(px, pz, bp) > 0.35) {
           return {
             position: { x: px, y: Math.max(h, SWAMP_WATER_Y), z: pz },
             featureFound: true,
@@ -265,16 +272,21 @@ interface SpatialEnvironmentSample {
   roadInfo: ReturnType<typeof distToRoadDetail>;
   villageDist: number;
   waterDistM: number;
+  streamDistM: number;
+  bogDistM: number;
   swampFactor: number;
   biomeComposition: Partial<Record<BiomeId, number>>;
 }
 
 function sampleSpatialEnvironment(x: number, z: number): SpatialEnvironmentSample {
+  const waterDists = estimateWaterDistances(x, z);
   return {
     biomeId: normalizeBiomeId(getBiomeInfo(x, z).id),
     roadInfo: distToRoadDetail(x, z),
     villageDist: getDistanceToNearestVillage(x, z).dist,
-    waterDistM: estimateWaterDistanceM(x, z),
+    waterDistM: waterDists.waterDistM,
+    streamDistM: waterDists.streamDistM,
+    bogDistM: waterDists.bogDistM,
     swampFactor: getSwampFactor(x, z),
     biomeComposition: computeBiomeComposition(x, z),
   };
@@ -419,8 +431,8 @@ export function buildWorldContextFromSimulator(
       regionId: `estonia_baltic_${biomeId}`,
       biomeComposition: { ...spatial.biomeComposition },
       featureDistances: {
-        riverM: waterDistM,
-        bogM: Math.max(0, spatial.swampFactor > 0.3 ? 0 : waterDistM),
+        riverM: Math.min(spatial.streamDistM, waterDistM),
+        bogM: Math.max(0, spatial.swampFactor > 0.3 ? 0 : spatial.bogDistM),
         waterM: waterDistM,
         roadM: roadInfo.dist,
         villageM: villageDist,

@@ -1093,11 +1093,19 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       if (curPhase === 'title' || curPhase === 'packing') {
         titleOrbit += dt * 0.08;
-        const camX = player.spawnX + Math.sin(titleOrbit) * 18;
-        const camZ = 14 + Math.cos(titleOrbit) * 7;
+        const fwdX = -Math.sin(player.spawnYaw);
+        const fwdZ = -Math.cos(player.spawnYaw);
+        const rightX = Math.cos(player.spawnYaw);
+        const rightZ = -Math.sin(player.spawnYaw);
+        const orbitSide = Math.sin(titleOrbit) * 18;
+        const orbitBack = 8 + Math.cos(titleOrbit) * 7;
+        const camX = player.spawnX + rightX * orbitSide - fwdX * orbitBack;
+        const camZ = player.spawnZ + rightZ * orbitSide - fwdZ * orbitBack;
         const camY = getTerrainHeight(camX, camZ) + 6.5;
+        const lookX = player.spawnX + fwdX * 28 + rightX * 2;
+        const lookZ = player.spawnZ + fwdZ * 28 + rightZ * 2;
         camera.position.set(camX, camY, camZ);
-        camera.lookAt(player.spawnX + 2, getTerrainHeight(player.spawnX + 2, -22) + 2.2, -22);
+        camera.lookAt(lookX, getTerrainHeight(lookX, lookZ) + 2.2, lookZ);
         camera.updateMatrixWorld();
       } else if (curPhase === 'playing' && debugCtrl.debugSimPaused) {
         camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
@@ -2056,7 +2064,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           const bx = (bw.minX + bw.maxX) * 0.5;
           const bz = (bw.minZ + bw.maxZ) * 0.5;
           player.pos.set(bx, bw.y, bz);
-          player.yaw = Math.atan2(-(activeBp.bogCenterX - bx), -(activeBp.bogCenterZ - bz));
+          const aimTarget = activeBp.bogPools[0] ?? { x: activeBp.bogCenterX, z: activeBp.bogCenterZ };
+          player.yaw = Math.atan2(-(aimTarget.x - bx), -(aimTarget.z - bz));
           player.pitch = -0.14;
         } else {
           const camXRaw = searchParams.get('camX');

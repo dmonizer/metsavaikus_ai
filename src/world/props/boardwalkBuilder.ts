@@ -45,22 +45,34 @@ export function buildSignpostAndBoardwalk(
     });
   }
 
+  const fwdX = -Math.sin(bp.spawnYaw);
+  const fwdZ = -Math.cos(bp.spawnYaw);
+  const rightX = Math.cos(bp.spawnYaw);
+  const rightZ = -Math.sin(bp.spawnYaw);
+  const mainSignX = bp.spawnX + fwdX * 11.5 - rightX * 3.8;
+  const mainSignZ = bp.spawnZ + fwdZ * 11.5 - rightZ * 3.8;
   createSignpost(
-    -3.8,
-    -5.5,
-    0.3,
+    mainSignX,
+    mainSignZ,
+    bp.spawnYaw + 0.25,
     () => t('prop.signpostMainTitle'),
     () => t('prop.signpostMainMsg', { village: bp.villages[0].name })
   );
 
-  const trailStart = {
-    x: bp.bogCenterX - bp.bogRadius * 0.72,
-    z: bp.bogCenterZ - bp.bogRadius * 0.44,
-  };
+  const firstLink = bp.boardwalkLinks[0];
+  const trailStart = firstLink
+    ? { x: firstLink.ax, z: firstLink.az }
+    : {
+        x: bp.bogCenterX - bp.bogRadius * 0.55,
+        z: bp.bogCenterZ - bp.bogRadius * 0.35,
+      };
+  const bogSignAngle = firstLink
+    ? Math.atan2(firstLink.bx - firstLink.ax, firstLink.bz - firstLink.az)
+    : -0.7;
   createSignpost(
-    trailStart.x - 2.5,
-    trailStart.z - 2.0,
-    -0.7,
+    trailStart.x - Math.cos(bogSignAngle) * 2.2,
+    trailStart.z + Math.sin(bogSignAngle) * 2.2,
+    bogSignAngle - 0.5,
     () => t('prop.signpostBogTitle'),
     () => t('prop.signpostBogMsg')
   );
@@ -139,19 +151,8 @@ export function buildSignpostAndBoardwalk(
     }
   }
 
-  const linkedIslands = bp.swampIslands.filter((isl) => isl.linkedByBoardwalk);
-  let curX = trailStart.x;
-  let curZ = trailStart.z;
-  for (const isl of linkedIslands) {
-    const dirX = isl.x - curX;
-    const dirZ = isl.z - curZ;
-    const dist = Math.hypot(dirX, dirZ);
-    const stopR = Math.max(4, isl.radius * 0.62);
-    const tx = dist > stopR ? isl.x - (dirX / dist) * stopR : isl.x;
-    const tz = dist > stopR ? isl.z - (dirZ / dist) * stopR : isl.z;
-    appendBoardwalkPath(curX, curZ, tx, tz);
-    curX = tx;
-    curZ = tz;
+  for (const link of bp.boardwalkLinks) {
+    appendBoardwalkPath(link.ax, link.az, link.bx, link.bz);
   }
 
   if (allSegs.length > 0) {

@@ -30,7 +30,7 @@ import {
   getBiomeInfo,
   getSwampFactor,
   getTerrainHeight,
-  roadCenterX,
+  getWaterSurfaceAt,
   SWAMP_WATER_Y,
   WORLD_HALF,
 } from '../../world/terrainMath';
@@ -78,8 +78,9 @@ export interface PlayerControllerDeps {
 }
 
 export class PlayerController {
-  readonly spawnZ = 6;
-  readonly spawnX = roadCenterX(6);
+  spawnZ = 6;
+  spawnX = 0;
+  spawnYaw = 0.05;
 
   readonly pos: THREE.Vector3;
   readonly vel = new THREE.Vector3();
@@ -109,6 +110,7 @@ export class PlayerController {
   lastIsSwampWading = false;
   lastOnBoardwalk = false;
   lastWaterDepthM = 0;
+  lastWaterY = SWAMP_WATER_Y;
   lastLocomotion: LocomotionState = 'idle';
 
   seatedTent: TentInfo | null = null;
@@ -120,6 +122,11 @@ export class PlayerController {
   vomitLurchTimer = 0;
 
   constructor(private readonly deps: PlayerControllerDeps) {
+    const bp = getActiveBlueprint();
+    this.spawnX = bp.spawnX;
+    this.spawnZ = bp.spawnZ;
+    this.spawnYaw = bp.spawnYaw;
+    this.yaw = bp.spawnYaw;
     this.pos = new THREE.Vector3(this.spawnX, getTerrainHeight(this.spawnX, this.spawnZ), this.spawnZ);
     this.fallPeakY = this.pos.y;
   }
@@ -245,11 +252,16 @@ export class PlayerController {
   }
 
   resetForRestart(stopHard = true): void {
+    const bp = getActiveBlueprint();
+    this.spawnX = bp.spawnX;
+    this.spawnZ = bp.spawnZ;
+    this.spawnYaw = bp.spawnYaw;
     this.pos.set(this.spawnX, getTerrainHeight(this.spawnX, this.spawnZ), this.spawnZ);
     this.vel.set(0, 0, 0);
-    this.yaw = 0.05;
+    this.yaw = this.spawnYaw;
     this.pitch = -0.04;
     this.currentEye = this.eyeHeight;
+    this.lastWaterY = SWAMP_WATER_Y;
     if (this.carrying) this.dropCarried(0);
     this.seatedTent = null;
     this.totalDistanceMoved = 0;
@@ -435,9 +447,7 @@ export class PlayerController {
     const rawGroundY = getTerrainHeight(this.pos.x, this.pos.z);
     const curSurfaceY = this.getSurfaceHeightAt(this.pos.x, this.pos.z);
     const activeBpNow = getActiveBlueprint();
-    const inWaterBasin =
-      Math.hypot(this.pos.x - activeBpNow.bogCenterX, this.pos.z - activeBpNow.bogCenterZ) <=
-      activeBpNow.bogRadius + 28;
+    const curWater = getWaterSurfaceAt(this.pos.x, this.pos.z, activeBpNow, rawGroundY);
     const waterState = evaluatePlayerWaterState({
       rawGroundY,
       surfaceY: curSurfaceY,
@@ -447,7 +457,8 @@ export class PlayerController {
       wasSwimming: this.lastIsSwimming,
       eyeHeight: this.eyeHeight,
       crouchEyeHeight: this.crouchEyeHeight,
-      inWaterBasin,
+      inWaterBasin: curWater.hasWater,
+      waterY: curWater.waterY,
     });
     const wasSwimming = this.lastIsSwimming;
     const waterDepth = waterState.waterDepth;
@@ -564,9 +575,9 @@ export class PlayerController {
     const newOnBoardwalk = this.isOnBoardwalk(this.pos.x, this.pos.z);
     const newRawGroundY = getTerrainHeight(this.pos.x, this.pos.z);
     const newSurfaceY = this.getSurfaceHeightAt(this.pos.x, this.pos.z);
-    const newInBasin =
-      Math.hypot(this.pos.x - activeBpNow.bogCenterX, this.pos.z - activeBpNow.bogCenterZ) <=
-      activeBpNow.bogRadius + 28;
+    const postWater = getWaterSurfaceAt(this.pos.x, this.pos.z, activeBpNow, newRawGroundY);
+    const activeWaterY = postWater.hasWater ? postWater.waterY : SWAMP_WATER_Y;
+    this.lastWaterY = activeWaterY;
     const postWaterState = evaluatePlayerWaterState({
       rawGroundY: newRawGroundY,
       surfaceY: newSurfaceY,
@@ -576,7 +587,8 @@ export class PlayerController {
       wasSwimming: isSwimming,
       eyeHeight: this.eyeHeight,
       crouchEyeHeight: this.crouchEyeHeight,
-      inWaterBasin: newInBasin,
+      inWaterBasin: postWater.hasWater,
+      waterY: activeWaterY,
     });
 
     const minFloorY = postWaterState.minFloorY;
@@ -584,9 +596,9 @@ export class PlayerController {
     if (
       postWaterState.isInWater &&
       !this.waterFallEmitted &&
-      (this.pos.y <= SWAMP_WATER_Y + 0.08 || this.pos.y <= minFloorY)
+      (this.pos.y <= activeWaterY + 0.08 || this.pos.y <= minFloorY)
     ) {
-      const dropToWaterM = Math.max(0, this.fallPeakY - SWAMP_WATER_Y);
+      const dropToWaterM = Math.max(0, this.fallPeakY - activeWaterY);
       if (dropToWaterM >= 0.2 || (!this.prevInWater && preLandVelY < -1.6) || this.fallFromJump) {
         const distanceM = Math.max(0.2, Math.round(dropToWaterM * 100) / 100);
         const impactSpeed = Math.max(Math.abs(preLandVelY), Math.sqrt(2 * 16.5 * distanceM));
@@ -594,7 +606,7 @@ export class PlayerController {
           type: 'player.fall',
           origin: 'player',
           simulationTimestamp: simClockMs,
-          position: { x: this.pos.x, y: SWAMP_WATER_Y, z: this.pos.z },
+          position: { x: this.pos.x, y: activeWaterY, z: this.pos.z },
           intensity: THREE.MathUtils.clamp(0.48 + distanceM * 0.45, 0.48, 1.35),
           payload: {
             distanceM,
@@ -740,7 +752,7 @@ export class PlayerController {
 
     const rawCamY = this.pos.y + this.currentEye + bobY + shiverY;
     const safeCamY = postWaterState.isInWater
-      ? Math.max(SWAMP_WATER_Y + SWIM_EYE_ABOVE_WATER - 0.05, rawCamY)
+      ? Math.max(activeWaterY + SWIM_EYE_ABOVE_WATER - 0.05, rawCamY)
       : rawCamY;
 
     camera.position.set(this.pos.x + shiverX, safeCamY, this.pos.z);

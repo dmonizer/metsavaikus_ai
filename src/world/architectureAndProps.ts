@@ -25,6 +25,7 @@ import { ShelterGeometry } from './shelterGeometry';
 import { SoundEngine } from './soundEngine';
 import { BoxCollider } from './spatialPhysics';
 import { clamp, getActiveBlueprint, getTerrainHeight, SWAMP_WATER_Y } from './terrainMath';
+import { createFreshwaterSystem } from './freshwaterMeshes';
 import { createReflectiveBogWater } from './waterSurface';
 import { SkyFrameState, WeatherId } from './weatherAndSky';
 import { HutDecayState } from './worldBlueprint';
@@ -230,11 +231,36 @@ export function buildArchitectureAndProps(
     return entry;
   }
 
-  // Wind-Responsive Planar-Reflective Peat-Bog Water & Morning Mist Layers
-  const waterRadius = bp.bogRadius + 28;
+  // Wind-Responsive Planar-Reflective Peat-Bog Water tightly enclosing bp.bogPools
+  let bogWaterX = bp.bogCenterX;
+  let bogWaterZ = bp.bogCenterZ;
+  let waterRadius = Math.min(230, bp.bogRadius + 24);
+  if (bp.bogPools.length > 0) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (const pool of bp.bogPools) {
+      const pr = Math.max(pool.rx, pool.rz) * 1.15;
+      if (pool.x - pr < minX) minX = pool.x - pr;
+      if (pool.x + pr > maxX) maxX = pool.x + pr;
+      if (pool.z - pr < minZ) minZ = pool.z - pr;
+      if (pool.z + pr > maxZ) maxZ = pool.z + pr;
+    }
+    bogWaterX = (minX + maxX) * 0.5;
+    bogWaterZ = (minZ + maxZ) * 0.5;
+    let maxExtent = 48;
+    for (const pool of bp.bogPools) {
+      const pr = Math.max(pool.rx, pool.rz) * 1.15;
+      const d = Math.hypot(pool.x - bogWaterX, pool.z - bogWaterZ) + pr;
+      if (d > maxExtent) maxExtent = d;
+    }
+    waterRadius = maxExtent + 24;
+  }
+
   const bogWater = createReflectiveBogWater(
-    bp.bogCenterX,
-    bp.bogCenterZ,
+    bogWaterX,
+    bogWaterZ,
     waterRadius,
     isSoftwareGl,
     isLowPowerGpu
@@ -245,6 +271,10 @@ export function buildArchitectureAndProps(
   swampWater.userData.debugMeta = { waterY: SWAMP_WATER_Y, radius: waterRadius };
   resources.addComposite(swampWater, bogWater);
 
+  // Non-bog freshwater lakes and downhill streams
+  const freshwaterSystem = createFreshwaterSystem(bp.lakes, bp.streams);
+  resources.addComposite(freshwaterSystem.group, freshwaterSystem);
+
   const mistGeo = new THREE.PlaneGeometry(12, 12);
   mistGeo.rotateX(-Math.PI / 2);
   const mistMat = new THREE.MeshBasicMaterial({
@@ -253,16 +283,28 @@ export function buildArchitectureAndProps(
     opacity: 0.26,
     depthWrite: false,
   });
-  const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, 6);
+  const mistCount = Math.max(6, Math.min(10, bp.bogPools.length * 2));
+  const mistInst = new THREE.InstancedMesh(mistGeo, mistMat, mistCount);
   const mistDummy = new THREE.Object3D();
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2 + rand() * 0.45;
-    const rad = 20 + rand() * (bp.bogRadius * 0.68);
-    mistDummy.position.set(
-      bp.bogCenterX + Math.cos(a) * rad,
-      SWAMP_WATER_Y + 0.36 + rand() * 0.42,
-      bp.bogCenterZ + Math.sin(a) * rad
-    );
+  for (let i = 0; i < mistCount; i++) {
+    if (bp.bogPools.length > 0) {
+      const pool = bp.bogPools[i % bp.bogPools.length];
+      const a = rand() * Math.PI * 2;
+      const rFrac = rand() * 0.62;
+      mistDummy.position.set(
+        pool.x + Math.cos(a) * pool.rx * rFrac,
+        SWAMP_WATER_Y + 0.36 + rand() * 0.42,
+        pool.z + Math.sin(a) * pool.rz * rFrac
+      );
+    } else {
+      const a = (i / mistCount) * Math.PI * 2 + rand() * 0.45;
+      const rad = 20 + rand() * (waterRadius * 0.65);
+      mistDummy.position.set(
+        bogWaterX + Math.cos(a) * rad,
+        SWAMP_WATER_Y + 0.36 + rand() * 0.42,
+        bogWaterZ + Math.sin(a) * rad
+      );
+    }
     mistDummy.rotation.set(0, rand() * Math.PI, 0);
     mistDummy.scale.set(0.85 + rand() * 0.4, 1, 0.85 + rand() * 0.4);
     mistDummy.updateMatrix();
@@ -462,27 +504,28 @@ export function buildArchitectureAndProps(
       lightShadowsDirty = false;
 
       // Distance + frustum cull bog water & mist
-      const bogDx = camX - bp.bogCenterX;
-      const bogDz = camZ - bp.bogCenterZ;
+      const bogDx = camX - bogWaterX;
+      const bogDz = camZ - bogWaterZ;
       const bogDistSq = bogDx * bogDx + bogDz * bogDz;
       const bogVisLimit = waterRadius + maxRenderDist + 16;
       let nearBog = bogDistSq <= bogVisLimit * bogVisLimit;
       if (nearBog && frustumPlanes && bogDistSq > (waterRadius + 10) * (waterRadius + 10)) {
         nearBog = sphereIntersectsFrustum(
           frustumPlanes,
-          bp.bogCenterX,
+          bogWaterX,
           SWAMP_WATER_Y,
-          bp.bogCenterZ,
+          bogWaterZ,
           waterRadius + 6
         );
       }
       swampWater.visible = nearBog;
       const isPrecip = weather === 'rain' || weather === 'storm';
-      mistInst.visible = !isPrecip && nearBog && bogDistSq <= (bp.bogRadius + 75) * (bp.bogRadius + 75);
+      mistInst.visible = !isPrecip && nearBog && bogDistSq <= (waterRadius + 75) * (waterRadius + 75);
 
       if (nearBog) {
         bogWater.updateUniforms(elapsed, skyState, weather as WeatherId | undefined);
       }
+      freshwaterSystem.updateUniforms(elapsed, skyState);
       if (skyState) {
         const duskGlow = THREE.MathUtils.clamp((0.86 - skyState.dayFactor) / 0.36, 0, 1);
         assets.activeWinMat.emissiveIntensity = 0.02 + duskGlow * 1.65;
@@ -583,7 +626,7 @@ export function buildArchitectureAndProps(
     spawnCampfireAt: campfiresSys.spawnCampfireAt,
     spawnPickupItemAt: dynamicProps.spawnPickupItemAt,
     getInspectableMeshes: () => {
-      const out: THREE.Object3D[] = [swampWater];
+      const out: THREE.Object3D[] = [swampWater, ...freshwaterSystem.meshes];
       const seen = new Set<THREE.Object3D>(out);
       for (let i = 0; i < structureNodes.length; i++) {
         const obj = structureNodes[i].obj;

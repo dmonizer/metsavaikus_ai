@@ -6,13 +6,16 @@ import {
   CHUNK_SIZE,
   SWAMP_WATER_Y,
   WORLD_HALF,
+  canPlaceStoneAt,
   distToRoadDetail,
   getActiveBlueprint,
   getDistanceToNearestVillage,
+  getNearestBuildingPad,
   getNearestSwampIsland,
   getSwampFactor,
   getTerrainHeight,
   getThicketFactor,
+  getWaterSurfaceAt,
   isDryLandForPlanting,
   smoothNoise,
 } from '../terrainMath';
@@ -132,19 +135,21 @@ export function bakeVegetationChunk(
     if (Math.abs(tx) > WORLD_HALF - 4 || Math.abs(tz) > WORLD_HALF - 4) continue;
     if (distToRoadDetail(tx, tz).dist < 4.2) continue;
 
-    const nearV = getDistanceToNearestVillage(tx, tz);
-    if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.72) continue;
+    const nearPad = getNearestBuildingPad(tx, tz, bp);
+    if (nearPad.pad && nearPad.dist < nearPad.pad.clearingRadius * 0.72) continue;
+    const nearV = getDistanceToNearestVillage(tx, tz, bp);
     if (isInsideBuilding(tx, tz)) continue;
 
-    const thicket = getThicketFactor(tx, tz);
-    const isl = getNearestSwampIsland(tx, tz);
+    const thicket = getThicketFactor(tx, tz, bp);
+    const isl = getNearestSwampIsland(tx, tz, bp);
     const onIsland = isl.island !== null && isl.islandMask > 0.42;
-    const swamp = onIsland ? 0 : getSwampFactor(tx, tz);
-    const y = getTerrainHeight(tx, tz);
+    const swamp = onIsland ? 0 : getSwampFactor(tx, tz, bp);
+    const y = getTerrainHeight(tx, tz, bp);
 
     if (swamp > 0.35) {
-      if (isDryLandForPlanting(tx, tz, 0.24, 1.1) && rand() < 0.45) {
-        const s = 0.65 + rand() * 0.6;
+      // Flatter peat bog plain dotted with small stunted Estonian bog pines (rabamänd)
+      if (isDryLandForPlanting(tx, tz, 0.14, 0.9, bp) && rand() < 0.62) {
+        const s = 0.5 + rand() * 0.56;
         bogPine.push({
           x: tx,
           y: y - 0.06,
@@ -160,7 +165,7 @@ export function bakeVegetationChunk(
       continue;
     }
 
-    if (!isDryLandForPlanting(tx, tz, 0.34, 1.5)) continue;
+    if (!isDryLandForPlanting(tx, tz, 0.34, 1.5, bp)) continue;
     if (onIsland && isl.island!.hut && isl.dist < 6.8) continue;
 
     const groveNoise = smoothNoise(tx * 0.032, tz * 0.032);
@@ -184,11 +189,11 @@ export function bakeVegetationChunk(
       pine.push(rec);
       colliders.push({ x: tx, z: tz, r: 0.26 * s });
     } else {
-      const roadInfo = distToRoadDetail(tx, tz);
+      const roadInfo = distToRoadDetail(tx, tz, bp);
       const gladeNoise = smoothNoise(tx * 0.048 + 3.1, tz * 0.048 - 2.7);
       const openness = computeOpennessFactor(
         nearV.dist,
-        nearV.village ? nearV.village.clearingRadius : 0,
+        nearV.clearingRadius,
         roadInfo.dist,
         roadInfo.isTrail,
         swamp,
@@ -271,12 +276,12 @@ export function bakeVegetationChunk(
       const tx = minX + rand() * CHUNK_SIZE;
       const tz = minZ + rand() * CHUNK_SIZE;
       if (distToRoadDetail(tx, tz).dist < 3.6) continue;
-      const nearV = getDistanceToNearestVillage(tx, tz);
-      if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.7) continue;
+      const nearPad = getNearestBuildingPad(tx, tz, bp);
+      if (nearPad.pad && nearPad.dist < nearPad.pad.clearingRadius * 0.7) continue;
       if (isInsideBuilding(tx, tz)) continue;
-      if (getSwampFactor(tx, tz) > 0.36) continue;
-      if (!isDryLandForPlanting(tx, tz, 0.32, 1.35)) continue;
-      const ty = getTerrainHeight(tx, tz);
+      if (getSwampFactor(tx, tz, bp) > 0.36) continue;
+      if (!isDryLandForPlanting(tx, tz, 0.32, 1.35, bp)) continue;
+      const ty = getTerrainHeight(tx, tz, bp);
       const s = 0.85 + rand() * 0.55;
       if (i % 2 === 0) {
         spruce.push({
@@ -348,12 +353,14 @@ export function bakeVegetationChunk(
     if (distToRoadDetail(gx, gz).dist < 2.1) continue;
     if (isInsideBuilding(gx, gz)) continue;
 
-    const gy = getTerrainHeight(gx, gz);
+    const gy = getTerrainHeight(gx, gz, bp);
     if (gy < SWAMP_WATER_Y - 0.12) continue;
+    const waterAt = getWaterSurfaceAt(gx, gz, bp, gy);
+    if (waterAt.hasWater && waterAt.kind !== 'bog') continue;
 
-    const isl = getNearestSwampIsland(gx, gz);
+    const isl = getNearestSwampIsland(gx, gz, bp);
     const onIsland = isl.island !== null && isl.islandMask > 0.35;
-    const swamp = onIsland ? 0 : getSwampFactor(gx, gz);
+    const swamp = onIsland ? 0 : getSwampFactor(gx, gz, bp);
     const patch = smoothNoise(gx * 0.09, gz * 0.09);
 
     if (swamp > 0.36) {
@@ -428,11 +435,11 @@ export function bakeVegetationChunk(
     const dz = minZ + rand() * CHUNK_SIZE;
     if (distToRoadDetail(dx, dz).dist < 4.4) continue;
     if (isInsideBuilding(dx, dz)) continue;
-    const nearV = getDistanceToNearestVillage(dx, dz);
-    if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.7) continue;
-    if (getSwampFactor(dx, dz) > 0.32) continue;
-    if (!isDryLandForPlanting(dx, dz, 0.24, 1.15)) continue;
-    const dy = getTerrainHeight(dx, dz);
+    const nearPad = getNearestBuildingPad(dx, dz, bp);
+    if (nearPad.pad && nearPad.dist < nearPad.pad.clearingRadius * 0.7) continue;
+    if (getSwampFactor(dx, dz, bp) > 0.32) continue;
+    if (!isDryLandForPlanting(dx, dz, 0.24, 1.15, bp)) continue;
+    const dy = getTerrainHeight(dx, dz, bp);
     const scale = 0.75 + rand() * 0.55;
     const rotY = rand() * Math.PI * 2;
     const rCol = 0.72 + rand() * 0.2;
@@ -456,12 +463,15 @@ export function bakeVegetationChunk(
   for (let i = 0; i < 5; i++) {
     const bx = minX + rand() * CHUNK_SIZE;
     const bz = minZ + rand() * CHUNK_SIZE;
-    if (distToRoadDetail(bx, bz).dist < 4.5) continue;
+    if (distToRoadDetail(bx, bz, bp).dist < 4.5) continue;
     if (isInsideBuilding(bx, bz)) continue;
-    const nearV = getDistanceToNearestVillage(bx, bz);
-    if (nearV.village && nearV.dist < nearV.village.clearingRadius * 0.68) continue;
-    const by = getTerrainHeight(bx, bz);
+    const nearPad = getNearestBuildingPad(bx, bz, bp);
+    if (nearPad.pad && nearPad.dist < nearPad.pad.clearingRadius * 0.68) continue;
+    // STRICT INVARIANT: peat bog has NO stones/boulders — stones only exist in forest/dry land
+    if (!canPlaceStoneAt(bx, bz, bp)) continue;
+    const by = getTerrainHeight(bx, bz, bp);
     if (by < SWAMP_WATER_Y + 0.18) continue;
+    if (getWaterSurfaceAt(bx, bz, bp, by).hasWater) continue;
     const s = 0.56 + rand() * 0.96;
     const isOutcrop = rand() < 0.45;
     const rec: InstanceRecord = {

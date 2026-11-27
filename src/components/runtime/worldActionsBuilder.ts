@@ -37,7 +37,7 @@ import type { MinimapRenderer } from '../../world/minimapMath';
 import type { FogOfWarMap } from '../../world/minimapMath';
 import type { SoundEngine } from '../../world/soundEngine';
 import { saveSoundscapeSnapshotToStorage, SimulatorSoundscape } from '../../world/soundscapeAdapter';
-import { getTerrainHeight, SWAMP_WATER_Y } from '../../world/terrainMath';
+import { getTerrainHeight, getWaterSurfaceAt } from '../../world/terrainMath';
 import type { WeatherAndSkySystem, WeatherId } from '../../world/weatherAndSky';
 import type { WorldActions, WorldCallbacks } from '../worldRuntimeContracts';
 import type { DebugController } from './debugController';
@@ -500,7 +500,8 @@ export function buildWorldActions(deps: WorldActionsBuilderDeps): WorldActions {
       }
       const { player } = deps;
       const groundY = getTerrainHeight(player.pos.x, player.pos.z);
-      if (groundY <= SWAMP_WATER_Y + 0.08) {
+      const waterAt = getWaterSurfaceAt(player.pos.x, player.pos.z, undefined, groundY);
+      if (waterAt.hasWater || groundY <= waterAt.waterY + 0.08 && waterAt.kind !== 'none') {
         deps.getCallbacks().onToast(t('toast.cannotSleepInWater'));
         return;
       }

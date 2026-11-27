@@ -20,9 +20,9 @@ import {
   distToRoadDetail,
   getActiveBlueprint,
   getDistanceToNearestVillage,
-  getNearestSwampIsland,
-  getSwampFactor,
   getTerrainHeight,
+  getWaterSurfaceAt,
+  sampleTerrainSurface,
   smoothNoise,
 } from '../terrainMath';
 import {
@@ -80,7 +80,13 @@ export function bakeGrassTile(
     return Math.hypot(tileCx - area.x, tileCz - area.z) <= reach;
   });
 
-  const randSeed = getActiveBlueprint().seed | 0;
+  const bp = getActiveBlueprint();
+  const randSeed = bp.seed | 0;
+  const tileOverlapsFreshwater =
+    bp.lakes.some((lk) => maxX >= lk.minX && minX <= lk.maxX && maxZ >= lk.minZ && minZ <= lk.maxZ) ||
+    bp.streams.some((st) => maxX >= st.minX && minX <= st.maxX && maxZ >= st.minZ && minZ <= st.maxZ);
+  const tileCenterVillage = getDistanceToNearestVillage(tileCx, tileCz, bp);
+  const tileNearVillage = tileCenterVillage.dist < tileCenterVillage.clearingRadius + 36;
   fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 13, bladeScratch.points);
   fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 41, shortScratch.points);
   fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 73, mossScratch.points);
@@ -103,29 +109,31 @@ export function bakeGrassTile(
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.2))) continue;
 
-    const roadInfo = distToRoadDetail(px, pz);
+    const roadInfo = distToRoadDetail(px, pz, bp);
     const vergeJitter =
       (smoothNoise(px * 0.42, pz * 0.42) * 0.65 + smoothNoise(px * 1.15, pz * 1.15) * 0.35) * 2 - 1;
     const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4, false);
     if (!verge.keep) continue;
 
-    const py = getTerrainHeight(px, pz);
+    const surf = sampleTerrainSurface(px, pz, bp);
+    const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.12) continue;
+    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
 
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
 
-    const isl = getNearestSwampIsland(px, pz);
-    const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
-    const nearVillage = getDistanceToNearestVillage(px, pz);
+    const islandMask = surf.islandMask;
+    const swamp = islandMask > 0.35 ? 0 : surf.swamp;
+    const nearVillage = tileNearVillage ? getDistanceToNearestVillage(px, pz, bp) : tileCenterVillage;
     const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
     const openness = computeOpennessFactor(
       nearVillage.dist,
-      nearVillage.village?.clearingRadius ?? 0,
+      nearVillage.clearingRadius,
       roadInfo.dist,
       roadInfo.isTrail,
       swamp,
-      isl.islandMask,
+      islandMask,
       gladeNoise
     );
     const patchNoise = smoothNoise(px * 0.11, pz * 0.11);
@@ -174,7 +182,7 @@ export function bakeGrassTile(
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.1))) continue;
 
-    const roadInfo = distToRoadDetail(px, pz);
+    const roadInfo = distToRoadDetail(px, pz, bp);
     const vergeJitter =
       (smoothNoise(px * 0.45 + 3.1, pz * 0.45 - 2.4) * 0.65 +
         smoothNoise(px * 1.25 - 1.7, pz * 1.25 + 4.2) * 0.35) *
@@ -183,23 +191,25 @@ export function bakeGrassTile(
     const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4);
     if (!verge.keep) continue;
 
-    const py = getTerrainHeight(px, pz);
+    const surf = sampleTerrainSurface(px, pz, bp);
+    const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.1) continue;
+    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
 
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
 
-    const isl = getNearestSwampIsland(px, pz);
-    const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
-    const nearVillage = getDistanceToNearestVillage(px, pz);
+    const islandMask = surf.islandMask;
+    const swamp = islandMask > 0.35 ? 0 : surf.swamp;
+    const nearVillage = tileNearVillage ? getDistanceToNearestVillage(px, pz, bp) : tileCenterVillage;
     const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
     const openness = computeOpennessFactor(
       nearVillage.dist,
-      nearVillage.village?.clearingRadius ?? 0,
+      nearVillage.clearingRadius,
       roadInfo.dist,
       roadInfo.isTrail,
       swamp,
-      isl.islandMask,
+      islandMask,
       gladeNoise
     );
     const patchNoise = smoothNoise(px * 0.14 + 4.7, pz * 0.14 - 3.3);
@@ -248,7 +258,7 @@ export function bakeGrassTile(
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.1))) continue;
 
-    const roadInfo = distToRoadDetail(px, pz);
+    const roadInfo = distToRoadDetail(px, pz, bp);
     const vergeJitter =
       (smoothNoise(px * 0.4 - 6.2, pz * 0.4 + 2.1) * 0.65 +
         smoothNoise(px * 1.1 + 3.8, pz * 1.1 - 5.1) * 0.35) *
@@ -257,20 +267,22 @@ export function bakeGrassTile(
     const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4);
     if (!verge.keep) continue;
 
-    const py = getTerrainHeight(px, pz);
+    const surf = sampleTerrainSurface(px, pz, bp);
+    const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.08) continue;
+    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
 
-    const isl = getNearestSwampIsland(px, pz);
-    const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
-    const nearVillage = getDistanceToNearestVillage(px, pz);
+    const islandMask = surf.islandMask;
+    const swamp = islandMask > 0.35 ? 0 : surf.swamp;
+    const nearVillage = tileNearVillage ? getDistanceToNearestVillage(px, pz, bp) : tileCenterVillage;
     const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
     const openness = computeOpennessFactor(
       nearVillage.dist,
-      nearVillage.village?.clearingRadius ?? 0,
+      nearVillage.clearingRadius,
       roadInfo.dist,
       roadInfo.isTrail,
       swamp,
-      isl.islandMask,
+      islandMask,
       gladeNoise
     );
 
@@ -334,28 +346,30 @@ export function bakeGrassTile(
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.35))) continue;
 
-    const roadInfo = distToRoadDetail(px, pz);
+    const roadInfo = distToRoadDetail(px, pz, bp);
     const vergeJitter =
       (smoothNoise(px * 0.38, pz * 0.38) * 0.65 + smoothNoise(px * 1.05, pz * 1.05) * 0.35) * 2 - 1;
     const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4, true);
     if (!verge.keep) continue;
 
-    const py = getTerrainHeight(px, pz);
+    const surf = sampleTerrainSurface(px, pz, bp);
+    const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.16) continue;
+    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
 
-    const isl = getNearestSwampIsland(px, pz);
-    const swamp = isl.islandMask > 0.35 ? 0 : getSwampFactor(px, pz);
+    const islandMask = surf.islandMask;
+    const swamp = islandMask > 0.35 ? 0 : surf.swamp;
     if (swamp > 0.42) continue;
 
-    const nearVillage = getDistanceToNearestVillage(px, pz);
+    const nearVillage = tileNearVillage ? getDistanceToNearestVillage(px, pz, bp) : tileCenterVillage;
     const gladeNoise = smoothNoise(px * 0.045 - 5.3, pz * 0.045 + 3.7);
     const openness = computeOpennessFactor(
       nearVillage.dist,
-      nearVillage.village?.clearingRadius ?? 0,
+      nearVillage.clearingRadius,
       roadInfo.dist,
       roadInfo.isTrail,
       swamp,
-      isl.islandMask,
+      islandMask,
       gladeNoise
     );
 

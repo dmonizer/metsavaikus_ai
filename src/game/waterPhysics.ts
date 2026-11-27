@@ -15,8 +15,10 @@ export interface WaterPlayerInput {
   wasSwimming: boolean;
   eyeHeight: number;
   crouchEyeHeight: number;
-  /** False when player is outside the bog water basin (dry forest valleys below SWAMP_WATER_Y). */
+  /** False when player is outside any water body (dry forest valleys below SWAMP_WATER_Y). */
   inWaterBasin?: boolean;
+  /** Local water surface elevation in meters (defaults to SWAMP_WATER_Y). */
+  waterY?: number;
 }
 
 export interface WaterPlayerState {
@@ -48,10 +50,11 @@ export function evaluatePlayerWaterState(input: WaterPlayerInput): WaterPlayerSt
     eyeHeight,
     crouchEyeHeight,
     inWaterBasin = true,
+    waterY = SWAMP_WATER_Y,
   } = input;
 
   const waterDepth =
-    onBoardwalk || !inWaterBasin ? 0 : Math.max(0, SWAMP_WATER_Y - rawGroundY);
+    onBoardwalk || !inWaterBasin ? 0 : Math.max(0, waterY - rawGroundY);
   const swimThreshold = wasSwimming ? SWIM_EXIT_DEPTH : SWIM_ENTER_DEPTH;
   const isSwimming = !onBoardwalk && waterDepth >= swimThreshold;
   const isInWater = !onBoardwalk && waterDepth > SHALLOW_WATER_MIN_DEPTH;
@@ -65,13 +68,13 @@ export function evaluatePlayerWaterState(input: WaterPlayerInput): WaterPlayerSt
   // Feet follow real underwater bed down to swimming depth; when swimming, float buoyantly
   // so the player's eyes sit close to the water surface (SWIM_EYE_ABOVE_WATER).
   const minFloorY = isSwimming
-    ? Math.max(surfaceY, SWAMP_WATER_Y - SWIM_FLOAT_FLOOR_BELOW_WATER)
+    ? Math.max(surfaceY, waterY - SWIM_FLOAT_FLOOR_BELOW_WATER)
     : surfaceY;
 
   let targetEyeHeight: number;
   if (isSwimming) {
-    // Camera Y = minFloorY + targetEyeHeight = SWAMP_WATER_Y + SWIM_EYE_ABOVE_WATER
-    targetEyeHeight = SWAMP_WATER_Y + SWIM_EYE_ABOVE_WATER - minFloorY;
+    // Camera Y = minFloorY + targetEyeHeight = waterY + SWIM_EYE_ABOVE_WATER
+    targetEyeHeight = waterY + SWIM_EYE_ABOVE_WATER - minFloorY;
   } else {
     const baseEye = crouching ? crouchEyeHeight : eyeHeight;
     if (isWadingWater) {
@@ -80,14 +83,14 @@ export function evaluatePlayerWaterState(input: WaterPlayerInput): WaterPlayerSt
       const depthFrac = Math.min(1, Math.max(0, waterDepth / SWIM_ENTER_DEPTH));
       const wadingEye = baseEye - depthFrac * depthFrac * 0.2;
       // Never let crouching submerge the camera below swimming eye height while wading
-      const minSafeEye = SWAMP_WATER_Y + SWIM_EYE_ABOVE_WATER - minFloorY;
+      const minSafeEye = waterY + SWIM_EYE_ABOVE_WATER - minFloorY;
       targetEyeHeight = Math.max(minSafeEye, wadingEye);
     } else {
       targetEyeHeight = baseEye;
     }
   }
 
-  const eyeAboveWater = minFloorY + targetEyeHeight - SWAMP_WATER_Y;
+  const eyeAboveWater = minFloorY + targetEyeHeight - waterY;
 
   let speedMultiplier = 1.0;
   if (isSwimming) {
@@ -148,6 +151,8 @@ export interface BogWaterFocusInput {
   isSegmentBlocked?: (hitX: number, hitY: number, hitZ: number) => boolean;
   /** Maximum 3D ray distance from camera to the aimed water point (default 9.0m). */
   maxAimDistance?: number;
+  /** Optional unified water sampler supporting bog pools, freshwater lakes, and downhill streams. */
+  getWaterSurfaceAt?: (x: number, z: number) => { hasWater: boolean; waterY: number; depth: number };
 }
 
 const SHORE_EDGE_RADII = [0.85, 1.55, 2.25];
@@ -202,6 +207,7 @@ export function evaluateBogWaterFocusTarget(input: BogWaterFocusInput): boolean 
     getSurfaceHeightAt,
     isSegmentBlocked,
     maxAimDistance = 9.0,
+    getWaterSurfaceAt,
   } = input;
 
   // 1. Stance & position guard: must be standing on shore next to water or in shallow water (not swimming)
@@ -209,65 +215,79 @@ export function evaluateBogWaterFocusTarget(input: BogWaterFocusInput): boolean 
 
   const visibleWaterRadius = Math.max(1, waterRadius - 1.5);
   const visibleWaterRadiusSq = visibleWaterRadius * visibleWaterRadius;
-  const pDx = playerX - bogCenterX;
-  const pDz = playerZ - bogCenterZ;
-  if (pDx * pDx + pDz * pDz > waterRadius * waterRadius) return false;
 
+  // Unified water query when provided (supports bog pools + elevated freshwater lakes + streams)
+  const checkVisibleWater = (x: number, z: number): { ok: boolean; waterY: number } => {
+    if (getWaterSurfaceAt) {
+      const w = getWaterSurfaceAt(x, z);
+      if (!w.hasWater || w.depth < WATER_VISIBLE_MIN_DEPTH) return { ok: false, waterY: SWAMP_WATER_Y };
+      if (getSurfaceHeightAt(x, z) > w.waterY - 0.01) return { ok: false, waterY: w.waterY };
+      return { ok: true, waterY: w.waterY };
+    }
+    const ok = hasVisibleBogWaterAt(
+      x,
+      z,
+      bogCenterX,
+      bogCenterZ,
+      visibleWaterRadiusSq,
+      getTerrainHeightAt,
+      getSurfaceHeightAt
+    );
+    return { ok, waterY: SWAMP_WATER_Y };
+  };
+
+  if (!getWaterSurfaceAt) {
+    const pDx = playerX - bogCenterX;
+    const pDz = playerZ - bogCenterZ;
+    if (pDx * pDx + pDz * pDz > waterRadius * waterRadius) return false;
+  }
+
+  let localWaterY = SWAMP_WATER_Y;
   const standingInShallowWater = waterDepth > WATER_VISIBLE_MIN_DEPTH;
+  if (standingInShallowWater && getWaterSurfaceAt) {
+    const pw = getWaterSurfaceAt(playerX, playerZ);
+    if (pw.hasWater) localWaterY = pw.waterY;
+  }
   if (!standingInShallowWater) {
-    if (rawGroundY > SWAMP_WATER_Y + 0.95) return false;
     let nextToWater = false;
     for (let rIdx = 0; rIdx < SHORE_EDGE_RADII.length && !nextToWater; rIdx++) {
       const r = SHORE_EDGE_RADII[rIdx];
       for (let i = 0; i < SHORE_EDGE_ANGLES; i++) {
         const ang = (i / SHORE_EDGE_ANGLES) * Math.PI * 2;
-        if (
-          hasVisibleBogWaterAt(
-            playerX + Math.cos(ang) * r,
-            playerZ + Math.sin(ang) * r,
-            bogCenterX,
-            bogCenterZ,
-            visibleWaterRadiusSq,
-            getTerrainHeightAt,
-            getSurfaceHeightAt
-          )
-        ) {
+        const sample = checkVisibleWater(
+          playerX + Math.cos(ang) * r,
+          playerZ + Math.sin(ang) * r
+        );
+        if (sample.ok) {
+          localWaterY = sample.waterY;
           nextToWater = true;
           break;
         }
       }
     }
     if (!nextToWater) return false;
+    if (rawGroundY > localWaterY + 0.95) return false;
   }
 
-  // 2. Crosshair dot raycast onto the horizontal bog water plane (y = SWAMP_WATER_Y)
-  if (camY <= SWAMP_WATER_Y + 0.01) return false;
-  // Looking horizontally or upward at the sky/trees above the lake cannot hit the water surface
+  // 2. Crosshair dot raycast onto the local water surface plane (y = localWaterY)
+  if (camY <= localWaterY + 0.01) return false;
+  // Looking horizontally or upward at the sky/trees above the water cannot hit the water surface
   if (dirY >= -0.02) return false;
 
-  const tWater = (SWAMP_WATER_Y - camY) / dirY;
+  const tWater = (localWaterY - camY) / dirY;
   if (tWater <= 0.08 || tWater > maxAimDistance) return false;
 
   const hitX = camX + dirX * tWater;
   const hitZ = camZ + dirZ * tWater;
 
   // The water-plane hit point itself must be visible open water (not underground beneath shore/boardwalk)
-  if (
-    !hasVisibleBogWaterAt(
-      hitX,
-      hitZ,
-      bogCenterX,
-      bogCenterZ,
-      visibleWaterRadiusSq,
-      getTerrainHeightAt,
-      getSurfaceHeightAt
-    )
-  ) {
+  const hitWater = checkVisibleWater(hitX, hitZ);
+  if (!hitWater.ok) {
     return false;
   }
 
   // When standing on shore (not wading), ensure the aimed water actually starts near the player
-  // along the aim direction rather than aiming across a wide stretch of dry bog shore to a separate pool.
+  // along the aim direction rather than aiming across a wide stretch of dry shore to a separate pool.
   if (!standingInShallowWater) {
     const horizDist = Math.hypot(hitX - playerX, hitZ - playerZ);
     if (horizDist > 3.5) {
@@ -276,17 +296,7 @@ export function evaluateBogWaterFocusTarget(input: BogWaterFocusInput): boolean 
       const hz = (hitZ - playerZ) * invH;
       let reachesWaterNearby = false;
       for (let d = 0.6; d <= 3.5; d += 0.45) {
-        if (
-          hasVisibleBogWaterAt(
-            playerX + hx * d,
-            playerZ + hz * d,
-            bogCenterX,
-            bogCenterZ,
-            visibleWaterRadiusSq,
-            getTerrainHeightAt,
-            getSurfaceHeightAt
-          )
-        ) {
+        if (checkVisibleWater(playerX + hx * d, playerZ + hz * d).ok) {
           reachesWaterNearby = true;
           break;
         }
@@ -310,7 +320,7 @@ export function evaluateBogWaterFocusTarget(input: BogWaterFocusInput): boolean 
   }
 
   // 4. Optional solid prop/wall occlusion check
-  if (isSegmentBlocked && isSegmentBlocked(hitX, SWAMP_WATER_Y, hitZ)) {
+  if (isSegmentBlocked && isSegmentBlocked(hitX, localWaterY, hitZ)) {
     return false;
   }
 

@@ -5,7 +5,7 @@ import {
   getSwampFactor,
   getTerrainHeight,
   getThicketFactor,
-  roadCenterX,
+  getWaterSurfaceAt,
   SWAMP_WATER_Y,
   WORLD_HALF,
   WORLD_SIZE,
@@ -99,53 +99,78 @@ export function buildMinimapTerrainPixels(
       const hRight = getTerrainHeight(wx + stepMeters, wz, bp);
       const hDown = getTerrainHeight(wx, wz + stepMeters, bp);
 
-      // Subtle NW hillshade
-      const slope = (h - hRight) * 0.45 + (h - hDown) * 0.45;
-      const shade = clamp(1 + slope * 0.14, 0.72, 1.24);
+      // Subtle NW hillshade scaled for 20-40m Estonian moraine hills
+      const slope = (h - hRight) * 0.42 + (h - hDown) * 0.42;
+      const shade = clamp(1 + slope * 0.12, 0.7, 1.26);
 
       const isl = getNearestSwampIsland(wx, wz, bp);
       const onIsland = isl.island !== null && isl.islandMask > 0.38;
-      const swamp = onIsland ? 0 : getSwampFactor(wx, wz, undefined, bp);
+      const swamp = onIsland ? 0 : getSwampFactor(wx, wz, bp);
       const thicket = getThicketFactor(wx, wz);
+      const water = getWaterSurfaceAt(wx, wz, bp, h);
 
       let r = 56;
       let g = 88;
       let b = 44;
 
-      if (h < SWAMP_WATER_Y + 0.03) {
-        // Dark reflective bog pool water
-        const depth = clamp((SWAMP_WATER_Y - h) * 1.8, 0, 1);
-        r = 25 - depth * 6;
-        g = 49 - depth * 9;
-        b = 58 - depth * 6;
+      if (water.hasWater) {
+        if (water.kind === 'lake') {
+          const depth = clamp(water.depth * 0.42, 0, 1);
+          r = 46 - depth * 16;
+          g = 112 - depth * 32;
+          b = 138 - depth * 24;
+        } else if (water.kind === 'stream') {
+          r = 56;
+          g = 124;
+          b = 148;
+        } else {
+          // Dark reflective bog pool water (laugastik)
+          const depth = clamp((SWAMP_WATER_Y - h) * 1.6, 0, 1);
+          r = 25 - depth * 7;
+          g = 51 - depth * 11;
+          b = 60 - depth * 8;
+        }
       } else if (swamp > 0.35 && !onIsland) {
-        // Sphagnum peat bog & heather
-        r = 74 + swamp * 16;
-        g = 84 - swamp * 4;
-        b = 42;
+        // Expansive flat sphagnum peat bog plain
+        r = 86 + swamp * 16;
+        g = 86 - swamp * 3;
+        b = 45;
       } else if (onIsland) {
         // Raised dry bog island
-        r = 72;
-        g = 94;
-        b = 48;
+        r = 70;
+        g = 98;
+        b = 49;
       } else if (thicket > 0.56) {
-        // Dense spruce thicket
+        // Dense spruce thicket with mild elevation lift on hillsides
         const t = clamp((thicket - 0.56) / 0.44, 0, 1);
-        r = 52 - t * 22;
-        g = 84 - t * 28;
-        b = 42 - t * 14;
+        const elevLift = clamp((h - 4) * 0.45, 0, 14);
+        r = 52 - t * 22 + elevLift * 0.65;
+        g = 84 - t * 28 + elevLift * 0.7;
+        b = 42 - t * 14 + elevLift * 0.4;
       } else {
-        // Birch / meadow countryside with elevation warmth
-        const elevBoost = clamp((h - 1.5) * 2.2, -8, 14);
-        r = 58 + elevBoost * 0.7;
-        g = 92 + elevBoost * 0.9;
-        b = 46 + elevBoost * 0.4;
+        // Birch / pine / upland countryside with clear 20-40m elevation hypsometry
+        const elevBoost = clamp((h - 1.5) * 1.15, -6, 30);
+        r = 58 + elevBoost * 0.95;
+        g = 91 + elevBoost * 0.75;
+        b = 46 + elevBoost * 0.42;
       }
 
+      // Crisp 6m topographic contour lines across dry hills & ridges
+      let contourMult = 1.0;
+      if (!water.hasWater && swamp < 0.35 && h > 1.5) {
+        const band = Math.floor(h / 6);
+        const bandRight = Math.floor(hRight / 6);
+        const bandDown = Math.floor(hDown / 6);
+        if (band !== bandRight || band !== bandDown) {
+          contourMult = 0.84;
+        }
+      }
+
+      const finalShade = water.hasWater ? 1.0 : shade * contourMult;
       const idx = (py * size + px) * 4;
-      data[idx] = clamp(Math.round(r * shade), 0, 255);
-      data[idx + 1] = clamp(Math.round(g * shade), 0, 255);
-      data[idx + 2] = clamp(Math.round(b * shade), 0, 255);
+      data[idx] = clamp(Math.round(r * finalShade), 0, 255);
+      data[idx + 1] = clamp(Math.round(g * finalShade), 0, 255);
+      data[idx + 2] = clamp(Math.round(b * finalShade), 0, 255);
       data[idx + 3] = 255;
     }
   }
@@ -376,26 +401,46 @@ export function createMinimapRenderer(
     bCtx.stroke();
   }
 
-  // Draw winding main gravel road
+  // Draw flowing downhill streams cleanly on top of terrain raster
   bCtx.lineCap = 'round';
   bCtx.lineJoin = 'round';
-  bCtx.strokeStyle = '#d7be92';
-  bCtx.lineWidth = 7.0;
-  bCtx.beginPath();
-  for (let z = -WORLD_HALF + 8; z <= WORLD_HALF - 8; z += 8) {
-    const x = roadCenterX(z, bp);
-    const pt = worldToBaseMapPixel(x, z, BASE_MAP_PX);
-    if (z === -WORLD_HALF + 8) bCtx.moveTo(pt.px, pt.pz);
-    else bCtx.lineTo(pt.px, pt.pz);
+  for (const stream of bp.streams) {
+    if (stream.points.length < 2) continue;
+    bCtx.strokeStyle = 'rgba(66, 152, 184, 0.88)';
+    bCtx.lineWidth = Math.max(2.2, (stream.points[Math.floor(stream.points.length * 0.5)].halfWidth * 2 / WORLD_SIZE) * BASE_MAP_PX + 1.2);
+    bCtx.beginPath();
+    for (let i = 0; i < stream.points.length; i++) {
+      const pt = worldToBaseMapPixel(stream.points[i].x, stream.points[i].z, BASE_MAP_PX);
+      if (i === 0) bCtx.moveTo(pt.px, pt.pz);
+      else bCtx.lineTo(pt.px, pt.pz);
+    }
+    bCtx.stroke();
   }
-  bCtx.stroke();
 
-  // Draw spur roads and forest trails
+  // Draw forest trails first, then main gravel roads on top (supports any road topology)
   for (const seg of bp.roadSegments) {
+    if (!seg.isTrail) continue;
     const a = worldToBaseMapPixel(seg.ax, seg.az, BASE_MAP_PX);
     const b = worldToBaseMapPixel(seg.bx, seg.bz, BASE_MAP_PX);
-    bCtx.strokeStyle = seg.isTrail ? '#b69c73' : '#d7be92';
-    bCtx.lineWidth = seg.isTrail ? 3.8 : 5.6;
+    bCtx.strokeStyle = '#b69c73';
+    bCtx.lineWidth = 3.4;
+    bCtx.beginPath();
+    bCtx.moveTo(a.px, a.pz);
+    bCtx.lineTo(b.px, b.pz);
+    bCtx.stroke();
+  }
+  for (const seg of bp.roadSegments) {
+    if (seg.isTrail) continue;
+    const a = worldToBaseMapPixel(seg.ax, seg.az, BASE_MAP_PX);
+    const b = worldToBaseMapPixel(seg.bx, seg.bz, BASE_MAP_PX);
+    bCtx.strokeStyle = 'rgba(34, 28, 20, 0.42)';
+    bCtx.lineWidth = seg.isMainRoad ? 8.2 : 6.8;
+    bCtx.beginPath();
+    bCtx.moveTo(a.px, a.pz);
+    bCtx.lineTo(b.px, b.pz);
+    bCtx.stroke();
+    bCtx.strokeStyle = '#dcc598';
+    bCtx.lineWidth = seg.isMainRoad ? 6.2 : 4.8;
     bCtx.beginPath();
     bCtx.moveTo(a.px, a.pz);
     bCtx.lineTo(b.px, b.pz);
@@ -415,23 +460,29 @@ export function createMinimapRenderer(
     );
   }
 
-  // Draw village clearing tints and building footprints
+  // Draw per-house village clearings and all spread-out village building footprints
   for (const v of bp.villages) {
-    const vc = worldToBaseMapPixel(v.x, v.z, BASE_MAP_PX);
-    const clearR = (v.clearingRadius / WORLD_SIZE) * BASE_MAP_PX;
-    bCtx.fillStyle = 'rgba(182, 192, 130, 0.36)';
-    bCtx.beginPath();
-    bCtx.arc(vc.px, vc.pz, clearR, 0, Math.PI * 2);
-    bCtx.fill();
-
     for (const bld of v.buildings) {
-      const bpPos = worldToBaseMapPixel(v.x + bld.offsetX, v.z + bld.offsetZ, BASE_MAP_PX);
+      const hx = v.x + bld.offsetX;
+      const hz = v.z + bld.offsetZ;
+      const bpPos = worldToBaseMapPixel(hx, hz, BASE_MAP_PX);
+      const clearR = (bld.clearingRadius / WORLD_SIZE) * BASE_MAP_PX;
+      bCtx.fillStyle = 'rgba(182, 192, 130, 0.34)';
+      bCtx.beginPath();
+      bCtx.arc(bpPos.px, bpPos.pz, clearR, 0, Math.PI * 2);
+      bCtx.fill();
+
       const wPx = Math.max(5.0, (bld.w / WORLD_SIZE) * BASE_MAP_PX);
       const dPx = Math.max(4.0, (bld.d / WORLD_SIZE) * BASE_MAP_PX);
       bCtx.save();
       bCtx.translate(bpPos.px, bpPos.pz);
       bCtx.rotate(-bld.rotY);
-      bCtx.fillStyle = bld.abandoned ? '#b2b0a4' : '#f0ca8a';
+      bCtx.fillStyle =
+        bld.decayState === 'ruins'
+          ? '#979488'
+          : bld.abandoned
+            ? '#bcb6a6'
+            : '#f0ca8a';
       bCtx.strokeStyle = 'rgba(24, 22, 16, 0.88)';
       bCtx.lineWidth = 1.2;
       bCtx.fillRect(-wPx * 0.5, -dPx * 0.5, wPx, dPx);
@@ -450,7 +501,26 @@ export function createMinimapRenderer(
     bCtx.translate(hp.px, hp.pz);
     bCtx.rotate(-isl.hut.rotY);
     bCtx.fillStyle = isl.hut.decayState === 'ruins' ? '#a5a092' : '#ddb078';
+    bCtx.strokeStyle = 'rgba(24, 22, 16, 0.8)';
+    bCtx.lineWidth = 1;
     bCtx.fillRect(-wPx * 0.5, -dPx * 0.5, wPx, dPx);
+    bCtx.strokeRect(-wPx * 0.5, -dPx * 0.5, wPx, dPx);
+    bCtx.restore();
+  }
+
+  // Draw trail-less abandoned decrepit forest huts
+  for (const fh of bp.forestHuts) {
+    const fp = worldToBaseMapPixel(fh.x, fh.z, BASE_MAP_PX);
+    const wPx = Math.max(4.4, (fh.w / WORLD_SIZE) * BASE_MAP_PX);
+    const dPx = Math.max(3.6, (fh.d / WORLD_SIZE) * BASE_MAP_PX);
+    bCtx.save();
+    bCtx.translate(fp.px, fp.pz);
+    bCtx.rotate(-fh.rotY);
+    bCtx.fillStyle = fh.decayState === 'ruins' ? '#928d82' : '#baa88c';
+    bCtx.strokeStyle = 'rgba(20, 18, 14, 0.85)';
+    bCtx.lineWidth = 1.1;
+    bCtx.fillRect(-wPx * 0.5, -dPx * 0.5, wPx, dPx);
+    bCtx.strokeRect(-wPx * 0.5, -dPx * 0.5, wPx, dPx);
     bCtx.restore();
   }
 
@@ -940,6 +1010,15 @@ export function createMinimapRenderer(
         ctx.restore();
       }
 
+      const placedLabels: Array<{ x0: number; y0: number; x1: number; y1: number }> = [];
+      const overlapsLabel = (x0: number, y0: number, x1: number, y1: number): boolean => {
+        for (let i = 0; i < placedLabels.length; i++) {
+          const b = placedLabels[i];
+          if (x0 < b.x1 && x1 > b.x0 && y0 < b.y1 && y1 > b.y0) return true;
+        }
+        return false;
+      };
+
       // Draw discovered Village labels (hidden under fog until explored!)
       ctx.textAlign = 'center';
       ctx.textBaseline = 'bottom';
@@ -947,33 +1026,96 @@ export function createMinimapRenderer(
         const revealed = !fogOfWar || fogOfWar.isExploredAt(v.x, v.z, 110);
         if (!revealed) continue;
         const vp = worldToScreen(v.x, v.z);
-        const labelY = vp.sy - Math.max(10, (v.clearingRadius * 0.45) * pxPerMeter);
+        const baseOffset = Math.max(10, v.clearingRadius * 0.45 * pxPerMeter);
 
         ctx.font = '600 11px ui-sans-serif, system-ui, -apple-system, sans-serif';
         const textW = ctx.measureText(v.name).width;
-        ctx.fillStyle = 'rgba(10, 15, 11, 0.76)';
-        ctx.fillRect(vp.sx - textW * 0.5 - 5, labelY - 14, textW + 10, 16);
+        const boxW = textW + 10;
+        const boxH = 16;
+        // Try above village first, then below, then shifted further if crowded
+        const candidateYs = [
+          vp.sy - baseOffset,
+          vp.sy + baseOffset + boxH,
+          vp.sy - baseOffset - boxH - 3,
+          vp.sy + baseOffset + boxH * 2 + 3,
+        ];
+        let labelY = candidateYs[0];
+        for (const cy of candidateYs) {
+          if (!overlapsLabel(vp.sx - boxW * 0.5 - 2, cy - boxH - 1, vp.sx + boxW * 0.5 + 2, cy + 3)) {
+            labelY = cy;
+            break;
+          }
+        }
+        placedLabels.push({
+          x0: vp.sx - boxW * 0.5 - 2,
+          y0: labelY - boxH - 1,
+          x1: vp.sx + boxW * 0.5 + 2,
+          y1: labelY + 3,
+        });
+
+        ctx.fillStyle = 'rgba(10, 15, 11, 0.78)';
+        ctx.fillRect(vp.sx - boxW * 0.5, labelY - 14, boxW, boxH);
         ctx.strokeStyle = v.abandoned
           ? 'rgba(182, 178, 162, 0.35)'
           : 'rgba(235, 200, 132, 0.45)';
         ctx.lineWidth = 1;
-        ctx.strokeRect(vp.sx - textW * 0.5 - 5, labelY - 14, textW + 10, 16);
+        ctx.strokeRect(vp.sx - boxW * 0.5, labelY - 14, boxW, boxH);
 
         ctx.fillStyle = v.abandoned ? '#d4d0c2' : '#f4ddb0';
         ctx.fillText(v.name, vp.sx, labelY - 2);
       }
 
-      // Draw discovered Swamp Island labels
-      for (const isl of bp.swampIslands) {
+      // Draw discovered Freshwater Lake labels
+      for (const lk of bp.lakes) {
+        const revealed = !fogOfWar || fogOfWar.isExploredAt(lk.x, lk.z, 100);
+        if (!revealed) continue;
+        const lp = worldToScreen(lk.x, lk.z);
+        ctx.save();
+        ctx.font = 'italic 600 11px Georgia, "Times New Roman", serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const lw = ctx.measureText(lk.name).width + 6;
+        const ly = overlapsLabel(lp.sx - lw * 0.5, lp.sy - 8, lp.sx + lw * 0.5, lp.sy + 8)
+          ? lp.sy + 14
+          : lp.sy;
+        placedLabels.push({ x0: lp.sx - lw * 0.5, y0: ly - 8, x1: lp.sx + lw * 0.5, y1: ly + 8 });
+        ctx.fillStyle = 'rgba(8, 16, 20, 0.78)';
+        ctx.fillText(lk.name, lp.sx + 1, ly + 1);
+        ctx.fillStyle = '#9dd4e4';
+        ctx.fillText(lk.name, lp.sx, ly);
+        ctx.restore();
+      }
+
+      // Draw discovered Swamp Island labels (prioritize hut islands & larger islands, avoid overlap)
+      const sortedIslands = [...bp.swampIslands].sort((a, b) => {
+        if (Boolean(a.hut) !== Boolean(b.hut)) return a.hut ? -1 : 1;
+        return b.radius - a.radius;
+      });
+      for (const isl of sortedIslands) {
+        if (!isl.hut && isl.radius < 22) continue;
         const revealed = !fogOfWar || fogOfWar.isExploredAt(isl.x, isl.z, 110);
         if (!revealed) continue;
         const ip = worldToScreen(isl.x, isl.z);
         const shortName = isl.name.split(' (')[0];
         ctx.font = '500 10px ui-sans-serif, system-ui, -apple-system, sans-serif';
+        const iw = ctx.measureText(shortName).width + 6;
+        let labelY = ip.sy - 8;
+        if (overlapsLabel(ip.sx - iw * 0.5, labelY - 11, ip.sx + iw * 0.5, labelY + 2)) {
+          labelY = ip.sy + 14;
+          if (overlapsLabel(ip.sx - iw * 0.5, labelY - 11, ip.sx + iw * 0.5, labelY + 2)) {
+            continue;
+          }
+        }
+        placedLabels.push({
+          x0: ip.sx - iw * 0.5,
+          y0: labelY - 11,
+          x1: ip.sx + iw * 0.5,
+          y1: labelY + 2,
+        });
         ctx.fillStyle = 'rgba(10, 15, 11, 0.72)';
-        ctx.fillText(shortName, ip.sx + 1, ip.sy - 7);
+        ctx.fillText(shortName, ip.sx + 1, labelY + 1);
         ctx.fillStyle = '#c5d9bd';
-        ctx.fillText(shortName, ip.sx, ip.sy - 8);
+        ctx.fillText(shortName, ip.sx, labelY);
       }
 
       // Draw discovered Campfire markers

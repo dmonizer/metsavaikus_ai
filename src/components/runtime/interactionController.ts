@@ -22,7 +22,7 @@ import { selectUnobstructedInteractiveHit } from '../../world/interactionTargeti
 import type { SoundEngine } from '../../world/soundEngine';
 import type { SimulatorSoundscape } from '../../world/soundscapeAdapter';
 import { findNearestColliderObstructionDistance, moveSphere, sweepSphere } from '../../world/spatialPhysics';
-import { getActiveBlueprint, getTerrainHeight, SWAMP_WATER_Y } from '../../world/terrainMath';
+import { getActiveBlueprint, getTerrainHeight, getWaterSurfaceAt } from '../../world/terrainMath';
 import type { GamePhase } from '../worldRuntimeContracts';
 import type { PlayerController } from './playerController';
 
@@ -178,10 +178,8 @@ export class InteractionController {
       const waterRadius = bp.bogRadius + 28;
       const onBoardwalkNow = player.isOnBoardwalk(player.pos.x, player.pos.z);
       const rawGroundYNow = getTerrainHeight(player.pos.x, player.pos.z);
-      const inWaterBasinNow =
-        Math.hypot(player.pos.x - bp.bogCenterX, player.pos.z - bp.bogCenterZ) <= waterRadius;
-      const waterDepthNow =
-        onBoardwalkNow || !inWaterBasinNow ? 0 : Math.max(0, SWAMP_WATER_Y - rawGroundYNow);
+      const waterNow = getWaterSurfaceAt(player.pos.x, player.pos.z, bp, rawGroundYNow);
+      const waterDepthNow = onBoardwalkNow || !waterNow.hasWater ? 0 : waterNow.depth;
       const swimThreshold = player.lastIsSwimming ? SWIM_EXIT_DEPTH : SWIM_ENTER_DEPTH;
       const isSwimmingNow = !onBoardwalkNow && waterDepthNow >= swimThreshold;
       const colliders = propsCtx.boxColliders;
@@ -205,6 +203,7 @@ export class InteractionController {
         waterRadius,
         getTerrainHeightAt: getTerrainHeight,
         getSurfaceHeightAt: (x, z) => player.getSurfaceHeightAt(x, z),
+        getWaterSurfaceAt: (x, z) => getWaterSurfaceAt(x, z, bp),
         isSegmentBlocked: (hitX, hitY, hitZ) => {
           _waterAimHit.set(hitX, hitY, hitZ);
           for (let i = 0; i < colliders.length; i++) {
@@ -521,11 +520,11 @@ export class InteractionController {
       obj.mesh.rotation.y += obj.angVel.y * dt;
       obj.mesh.rotation.z += obj.angVel.z * dt;
 
+      const objSurfY = player.getSurfaceHeightAt(obj.mesh.position.x, obj.mesh.position.z);
+      const objWater = getWaterSurfaceAt(obj.mesh.position.x, obj.mesh.position.z);
       const floorY =
-        Math.max(
-          player.getSurfaceHeightAt(obj.mesh.position.x, obj.mesh.position.z),
-          SWAMP_WATER_Y - 0.15
-        ) + obj.onGroundYOffset;
+        Math.max(objSurfY, objWater.hasWater ? objWater.waterY - 0.15 : -999) +
+        obj.onGroundYOffset;
       if (obj.mesh.position.y <= floorY) {
         if (obj.vel.y < -2.2) {
           const impactIntensity = Math.min(1.0, Math.abs(obj.vel.y) / 8);

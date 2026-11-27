@@ -3,6 +3,8 @@ import {
   evaluateTerrainFromNoise,
   fbm,
   getDistanceToNearestVillage,
+  getLakeSampleAt,
+  getStreamSampleAt,
   getSwampFactor,
   getTerrainHeight,
   clamp,
@@ -582,6 +584,32 @@ export class ComputeEngine {
             r = lerp(r, 0.058, 0.32);
             g = lerp(g, 0.068, 0.32);
             b = lerp(b, 0.028, 0.32);
+          }
+
+          // Sandy/pebble shore & dark bed for non-bog freshwater lakes
+          const lakeAt = getLakeSampleAt(x, z);
+          if (lakeAt && lakeAt.normDist < 1.14) {
+            const wetMix = clamp((1.14 - lakeAt.normDist) / 0.2, 0, 1);
+            const depth = Math.max(0, lakeAt.lake.waterY - y);
+            const deepMix = clamp(depth / 1.8, 0, 1);
+            const sandR = lerp(0.145, 0.032, deepMix);
+            const sandG = lerp(0.132, 0.048, deepMix);
+            const sandB = lerp(0.088, 0.038, deepMix);
+            r = lerp(r, sandR, wetMix * 0.85);
+            g = lerp(g, sandG, wetMix * 0.85);
+            b = lerp(b, sandB, wetMix * 0.85);
+          }
+
+          // Damp stone/silt bank & channel bed for downhill forest streams
+          const streamAt = getStreamSampleAt(x, z);
+          if (streamAt && streamAt.dist < streamAt.halfWidth + 2.2) {
+            const stMix = clamp((streamAt.halfWidth + 2.2 - streamAt.dist) / 2.2, 0, 1);
+            const bedR = lerp(0.068, 0.042, nCol);
+            const bedG = lerp(0.066, 0.045, nCol);
+            const bedB = lerp(0.052, 0.036, nCol);
+            r = lerp(r, bedR, stMix * 0.82);
+            g = lerp(g, bedG, stMix * 0.82);
+            b = lerp(b, bedB, stMix * 0.82);
           }
         }
 

@@ -339,12 +339,30 @@ export class TerrainChunkManager {
     const minX = vcx * CHUNK_SIZE;
     const minZ = vcz * CHUNK_SIZE;
     const bp = getActiveBlueprint();
-    const chunkCenterX = minX + CHUNK_SIZE * 0.5;
-    const chunkCenterZ = minZ + CHUNK_SIZE * 0.5;
-    const isBogShoreLod0 =
-      lod === 0 &&
-      Math.hypot(chunkCenterX - bp.bogCenterX, chunkCenterZ - bp.bogCenterZ) <=
-        bp.bogRadius + CHUNK_SIZE * 1.1;
+    const maxX = minX + CHUNK_SIZE;
+    const maxZ = minZ + CHUNK_SIZE;
+    let isShoreDetailLod0 = false;
+    if (lod === 0) {
+      for (let i = 0; i < bp.bogPools.length && !isShoreDetailLod0; i++) {
+        const p = bp.bogPools[i];
+        if (maxX >= p.minX - 6 && minX <= p.maxX + 6 && maxZ >= p.minZ - 6 && minZ <= p.maxZ + 6) {
+          isShoreDetailLod0 = true;
+        }
+      }
+      for (let i = 0; i < bp.lakes.length && !isShoreDetailLod0; i++) {
+        const lk = bp.lakes[i];
+        if (maxX >= lk.minX && minX <= lk.maxX && maxZ >= lk.minZ && minZ <= lk.maxZ) {
+          isShoreDetailLod0 = true;
+        }
+      }
+      for (let i = 0; i < bp.streams.length && !isShoreDetailLod0; i++) {
+        const st = bp.streams[i];
+        if (maxX >= st.minX && minX <= st.maxX && maxZ >= st.minZ && minZ <= st.maxZ) {
+          isShoreDetailLod0 = true;
+        }
+      }
+    }
+    const isBogShoreLod0 = isShoreDetailLod0;
     const segs = isBogShoreLod0 ? SHORE_LOD0_SEGS : LOD_SEGS[lod];
     const vertCount = (segs + 1) * (segs + 1);
     const positions = new Float32Array(vertCount * 3);
@@ -373,9 +391,10 @@ export class TerrainChunkManager {
         const bogW = isl.islandMask > 0.45 ? 0 : clamp((rawSwamp - 0.14) / 0.52, 0, 1);
 
         const nearV = getDistanceToNearestVillage(wx, wz);
+        const clearR = nearV.clearingRadius || 18;
         const villageClearing =
           nearV.village !== null
-            ? clamp(1 - (nearV.dist - nearV.village.clearingRadius * 0.55) / (nearV.village.clearingRadius * 0.65), 0, 1)
+            ? clamp(1 - (nearV.dist - clearR * 0.55) / (clearR * 0.65), 0, 1)
             : 0;
         const meadowW = clamp(Math.max(villageClearing, (1 - bogW) * 0.18), 0, 1);
         const forestW = clamp(1 - Math.max(villageClearing * 0.85, bogW), 0, 1);

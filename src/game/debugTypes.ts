@@ -188,7 +188,17 @@ export function buildSpawnCatalog(): SpawnCatalogEntry[] {
 export interface TeleportLocation {
   id: string;
   label: string;
-  kind: 'village' | 'island' | 'bog' | 'homestead' | 'mushroom' | 'picked';
+  kind:
+    | 'village'
+    | 'island'
+    | 'bog'
+    | 'homestead'
+    | 'mushroom'
+    | 'picked'
+    | 'lake'
+    | 'stream'
+    | 'hill'
+    | 'forest_hut';
   x: number;
   z: number;
 }

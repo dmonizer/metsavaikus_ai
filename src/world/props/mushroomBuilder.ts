@@ -15,7 +15,8 @@ import {
   getNearestSwampIsland,
   getSwampFactor,
   getTerrainHeight,
-  roadCenterX,
+  getWaterSurfaceAt,
+  isDryLandForPlanting,
 } from '../terrainMath';
 import { prepNonIndexed } from './propMaterials';
 import { InteractiveEntry, PropBuildContext } from './propTypes';
@@ -702,24 +703,33 @@ export function createMushroomSystem(ctx: PropBuildContext): MushroomSystem {
       const rad = 4.2 + ctx.rand() * Math.max(2, isl.radius - 5.5);
       const mx = isl.x + Math.cos(a) * rad;
       const mz = isl.z + Math.sin(a) * rad;
-      if (getTerrainHeight(mx, mz) > SWAMP_WATER_Y + 0.18) {
+      if (getTerrainHeight(mx, mz) > SWAMP_WATER_Y + 0.18 && !getWaterSurfaceAt(mx, mz, bp).hasWater) {
         spawnMushroom(mx, mz, pickWeightedSpecies());
       }
     }
   }
 
   let heroMushroomPos: { x: number; z: number } | null = null;
-  const gladeZ = 24.5;
-  const gladeBaseX = roadCenterX(gladeZ) - 11.5;
+  const fwdX = -Math.sin(bp.spawnYaw);
+  const fwdZ = -Math.cos(bp.spawnYaw);
+  const rightX = Math.cos(bp.spawnYaw);
+  const rightZ = -Math.sin(bp.spawnYaw);
+  // Anchor starter glade just behind and off to the forest side of the spawn road
+  const gladeBaseX = bp.spawnX - fwdX * 18.5 - rightX * 11.5;
+  const gladeBaseZ = bp.spawnZ - fwdZ * 18.5 - rightZ * 11.5;
   const starterOffsets: Array<[number, number, MushroomSpecies]> = [
-    [gladeBaseX, gladeZ, 'punakarbseseen'],
-    [gladeBaseX + 0.68, gladeZ - 0.35, 'valgekarbseseen'],
-    [gladeBaseX - 0.72, gladeZ - 0.48, 'kivipuravik'],
-    [gladeBaseX + 0.25, gladeZ - 0.95, 'kukeseen'],
-    [gladeBaseX - 1.35, gladeZ + 0.4, 'kuuseriisikas'],
+    [gladeBaseX, gladeBaseZ, 'punakarbseseen'],
+    [gladeBaseX + 0.68, gladeBaseZ - 0.35, 'valgekarbseseen'],
+    [gladeBaseX - 0.72, gladeBaseZ - 0.48, 'kivipuravik'],
+    [gladeBaseX + 0.25, gladeBaseZ - 0.95, 'kukeseen'],
+    [gladeBaseX - 1.35, gladeBaseZ + 0.4, 'kuuseriisikas'],
   ];
   for (const [ox, oz, sp] of starterOffsets) {
-    if (getDistanceToNearestVillage(ox, oz).dist >= 28 && distToRoadDetail(ox, oz).dist > 3.5) {
+    if (
+      getDistanceToNearestVillage(ox, oz).dist >= 22 &&
+      distToRoadDetail(ox, oz).dist > 3.5 &&
+      isDryLandForPlanting(ox, oz, 0.25, 0.5, bp)
+    ) {
       spawnMushroom(ox, oz, sp);
       if (sp === 'punakarbseseen') {
         heroMushroomPos = { x: ox, z: oz };
@@ -729,7 +739,7 @@ export function createMushroomSystem(ctx: PropBuildContext): MushroomSystem {
 
   let placed = 0;
   let attempts = 0;
-  while (placed < 240 && attempts < 1400) {
+  while (placed < 240 && attempts < 1800) {
     attempts++;
     const mx = (ctx.rand() - 0.5) * (WORLD_HALF * 1.9);
     const mz = (ctx.rand() - 0.5) * (WORLD_HALF * 1.9);
@@ -739,6 +749,7 @@ export function createMushroomSystem(ctx: PropBuildContext): MushroomSystem {
     if (getSwampFactor(mx, mz) > 0.28 && isl.islandMask < 0.4) continue;
     if (distToRoadDetail(mx, mz).dist < 3.6) continue;
     if (getTerrainHeight(mx, mz) < SWAMP_WATER_Y + 0.16) continue;
+    if (getWaterSurfaceAt(mx, mz, bp).hasWater) continue;
 
     spawnMushroom(mx, mz, placed < 7 ? allSpecies[placed] : pickWeightedSpecies());
     placed++;

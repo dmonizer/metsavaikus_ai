@@ -57,6 +57,7 @@ import {
   getSwampFactor,
   getTerrainHeight,
   getThicketFactor,
+  getWaterSurfaceAt,
   SWAMP_WATER_Y,
   WORLD_HALF,
 } from '../../world/terrainMath';
@@ -310,10 +311,10 @@ export class DebugController {
     x: number,
     z: number
   ): Array<{ id: string; label: string; weight: number }> {
-    const { village, dist: vDist } = getDistanceToNearestVillage(x, z);
+    const { village, dist: vDist, clearingRadius: vClearR } = getDistanceToNearestVillage(x, z);
     const vWeight =
-      village && vDist < village.clearingRadius + 16
-        ? THREE.MathUtils.clamp(1 - (vDist - village.clearingRadius * 0.5) / 26, 0, 1)
+      village && vDist < vClearR + 16
+        ? THREE.MathUtils.clamp(1 - (vDist - vClearR * 0.5) / 26, 0, 1)
         : 0;
     const isl = getNearestSwampIsland(x, z);
     const islWeight = isl.island ? isl.islandMask : 0;
@@ -385,9 +386,9 @@ export class DebugController {
     const slopeDeg = (Math.atan(grad) * 180) / Math.PI;
 
     const bp = getActiveBlueprint();
-    const inWaterBasin =
-      Math.hypot(pt.x - bp.bogCenterX, pt.z - bp.bogCenterZ) <= bp.bogRadius + 28;
-    const waterDepthM = inWaterBasin ? Math.max(0, SWAMP_WATER_Y - terrainY) : 0;
+    const waterSample = getWaterSurfaceAt(pt.x, pt.z, bp, terrainY);
+    const inWaterBasin = waterSample.hasWater;
+    const waterDepthM = waterSample.hasWater ? waterSample.depth : 0;
     const onBw = this.deps.player.isOnBoardwalk(pt.x, pt.z);
     const swamp = getSwampFactor(pt.x, pt.z);
     const roadDist = distToRoadDetail(pt.x, pt.z).dist;
@@ -516,21 +517,73 @@ export class DebugController {
     const propsCtx = this.deps.getPropsCtx();
     const locs: TeleportLocation[] = [
       { id: 'homestead', label: 'Start Homestead Road', kind: 'homestead', x: player.spawnX, z: player.spawnZ },
-      { id: 'bog_lake', label: 'Kõrgesoo Bog Lake Center', kind: 'bog', x: bp.bogCenterX, z: bp.bogCenterZ },
+      { id: 'bog_lake', label: 'Kõrgesoo Bog Center', kind: 'bog', x: bp.bogCenterX, z: bp.bogCenterZ },
     ];
+    if (bp.bogPools.length > 0) {
+      const p0 = bp.bogPools[0];
+      locs.push({
+        id: 'bog_pool_0',
+        label: 'Bog Lake Pool (Laugas)',
+        kind: 'bog',
+        x: p0.x,
+        z: p0.z,
+      });
+    }
     bp.villages.forEach((v, idx) => {
       locs.push({
         id: `village_${idx}`,
-        label: v.estonianLabel,
+        label: `${v.estonianLabel} (${v.buildings.length}h)`,
         kind: 'village',
         x: v.x,
         z: v.z,
       });
     });
+    bp.lakes.forEach((lk, idx) => {
+      locs.push({
+        id: `lake_${idx}`,
+        label: `${lk.name} (Lake)`,
+        kind: 'lake',
+        x: lk.x + lk.rx + 6,
+        z: lk.z,
+      });
+    });
+    bp.streams.forEach((st, idx) => {
+      const mid = st.points[Math.floor(st.points.length * 0.45)];
+      if (mid) {
+        locs.push({
+          id: `stream_${idx}`,
+          label: `${st.name} (Stream)`,
+          kind: 'stream',
+          x: mid.x + 3.5,
+          z: mid.z,
+        });
+      }
+    });
+    if (bp.hillMassifs.length > 0) {
+      const highestHill = bp.hillMassifs.reduce((best, cur) =>
+        cur.height > best.height ? cur : best
+      );
+      locs.push({
+        id: 'hill_peak',
+        label: `High Moraine Hill (+${Math.round(highestHill.height)}m)`,
+        kind: 'hill',
+        x: highestHill.x,
+        z: highestHill.z,
+      });
+    }
+    bp.forestHuts.forEach((fh, idx) => {
+      locs.push({
+        id: `forest_hut_${idx}`,
+        label: `${fh.name} (${fh.decayState})`,
+        kind: 'forest_hut',
+        x: fh.x + 8,
+        z: fh.z + 8,
+      });
+    });
     bp.swampIslands.forEach((isl, idx) => {
       locs.push({
         id: `island_${idx}`,
-        label: isl.name,
+        label: isl.hut ? `${isl.name} (Hut)` : isl.name,
         kind: 'island',
         x: isl.x,
         z: isl.z,
@@ -1226,19 +1279,22 @@ export class DebugController {
       setWindForTest: (wind: number | null) => {
         this.deps.weatherSky.windOverride = wind;
       },
-      getWaterStateForTest: () => ({
-        x: this.deps.player.pos.x,
-        y: this.deps.player.pos.y,
-        z: this.deps.player.pos.z,
-        cameraY: this.deps.camera.position.y,
-        waterY: SWAMP_WATER_Y,
-        eyeAboveWater: this.deps.camera.position.y - SWAMP_WATER_Y,
-        waterDepth: this.deps.player.lastWaterDepthM,
-        isSwimming: this.deps.player.lastIsSwimming,
-        isSwampWading: this.deps.player.lastIsSwampWading,
-        onBoardwalk: this.deps.player.lastOnBoardwalk,
-        windStrength: this.deps.getLastWindStrength(),
-      }),
+      getWaterStateForTest: () => {
+        const wY = this.deps.player.lastWaterY ?? SWAMP_WATER_Y;
+        return {
+          x: this.deps.player.pos.x,
+          y: this.deps.player.pos.y,
+          z: this.deps.player.pos.z,
+          cameraY: this.deps.camera.position.y,
+          waterY: wY,
+          eyeAboveWater: this.deps.camera.position.y - wY,
+          waterDepth: this.deps.player.lastWaterDepthM,
+          isSwimming: this.deps.player.lastIsSwimming,
+          isSwampWading: this.deps.player.lastIsSwampWading,
+          onBoardwalk: this.deps.player.lastOnBoardwalk,
+          windStrength: this.deps.getLastWindStrength(),
+        };
+      },
       setHourForTest: (hour: number) => {
         this.deps.weatherSky.timeOfDay = ((hour % 24) + 24) % 24;
         this.deps.onPushSurvivalSnapshot();

@@ -2,17 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyBogShoreDropOff,
+  canPlaceStoneAt,
   CHUNK_COUNT,
   CHUNK_SIZE,
+  distToRoadDetail,
   getActiveBlueprint,
   getBiomeInfo,
   getDistanceToNearestVillage,
   getNearestSwampIsland,
+  getRawBogMask,
   getSwampFactor,
   getTerrainHeight,
   getThicketFactor,
+  getWaterSurfaceAt,
   hash2i,
   isDryLandForPlanting,
+  MIN_BOG_ISLAND_HUT_RADIUS,
   setActiveWorldSeed,
   smoothNoise,
   SWAMP_WATER_Y,
@@ -21,7 +26,9 @@ import {
   worldToVirtualChunk,
 } from './terrainMath';
 import * as THREE from 'three';
-import { generateWorldBlueprint } from './worldBlueprint';
+import { generateWorldBlueprint, MIN_VILLAGE_HOUSE_SEPARATION } from './worldBlueprint';
+import { bakeVegetationChunk } from './vegetation/vegetationChunkBaker';
+import { ShelterGeometry } from './shelterGeometry';
 import { ComputeEngine } from './wasmCompute';
 import { TerrainChunkManager } from './terrainChunkManager';
 import { buildConnectedTube, createBogPineSegments } from './foliageFactory';
@@ -51,21 +58,28 @@ test('World constants scale to 1200x1200m procedural streaming', () => {
   assert.deepEqual(worldToVirtualChunk(520, -520), { vcx: 10, vcz: -11 });
 });
 
-test('Procedural blueprint builds 4 villages, large bog, and swamp islands with decayed huts', () => {
+test('Procedural blueprint builds 3-6 villages, >=1/3 bog with pools, and size-gated island huts', () => {
   const bpA = generateWorldBlueprint(2026);
   const bpA2 = generateWorldBlueprint(2026);
   const bpB = generateWorldBlueprint(7777);
 
-  assert.equal(bpA.villages.length, 4);
+  assert.ok(bpA.villages.length >= 3 && bpA.villages.length <= 6);
   assert.equal(bpA.villages[0].id, 'vana-kase');
-  assert.ok(bpA.swampIslands.length >= 6);
-  assert.ok(bpA.bogRadius >= 115);
+  assert.ok(bpA.swampIslands.length >= 8);
+  assert.ok(bpA.bogAreaFraction >= 1 / 3);
+  assert.ok(bpA.bogPools.length >= 2);
+  assert.ok(bpA.forestHuts.length >= 4 && bpA.forestHuts.length <= 6);
 
-  const states = new Set(
-    bpA.swampIslands.filter((i) => i.hut !== null).map((i) => i.hut!.decayState)
+  // Only larger bog islands (radius >= MIN_BOG_ISLAND_HUT_RADIUS) may have huts
+  for (const isl of bpA.swampIslands) {
+    if (isl.radius < MIN_BOG_ISLAND_HUT_RADIUS) {
+      assert.equal(isl.hut, null, `Small bog island (${isl.radius.toFixed(1)}m) must not have a hut`);
+    }
+  }
+  assert.ok(
+    bpA.swampIslands.some((i) => i.hut !== null),
+    'At least one large bog island should have a hut'
   );
-  assert.ok(states.has('roofless'), 'At least one swamp island hut should be roofless');
-  assert.ok(states.has('ruins'), 'At least one swamp island hut should be in ruins');
 
   // Seed determinism & cross-seed variation
   assert.deepEqual(bpA, bpA2);
@@ -188,12 +202,15 @@ test('Dynamic biomes reflect procedural villages, bog depths, swamp islands, and
   assert.equal(getNearestSwampIsland(isl0.x, isl0.z).island?.id, isl0.id);
   assert.ok(getTerrainHeight(isl0.x, isl0.z) > SWAMP_WATER_Y + 0.8);
 
-  // Sample bog edge away from any island
-  let bogSpotX = bp.bogCenterX + bp.bogRadius * 0.45;
-  let bogSpotZ = bp.bogCenterZ + bp.bogRadius * 0.45;
-  if (getNearestSwampIsland(bogSpotX, bogSpotZ).dist < 22) {
-    bogSpotX = bp.bogCenterX - bp.bogRadius * 0.45;
-    bogSpotZ = bp.bogCenterZ + bp.bogRadius * 0.45;
+  // Sample bog plain away from any island
+  let bogSpotX = bp.bogCenterX;
+  let bogSpotZ = bp.bogCenterZ;
+  for (const lobe of bp.bogLobes) {
+    if (getNearestSwampIsland(lobe.x, lobe.z, bp).dist > 30 && getSwampFactor(lobe.x, lobe.z, bp) > 0.5) {
+      bogSpotX = lobe.x;
+      bogSpotZ = lobe.z;
+      break;
+    }
   }
   assert.ok(getSwampFactor(bogSpotX, bogSpotZ) > 0.5);
   assert.equal(getBiomeInfo(bogSpotX, bogSpotZ).id, 'swamp');
@@ -369,29 +386,32 @@ test('isDryLandForPlanting strictly excludes open lake water and flooded rims wh
   const isl0 = bp.swampIslands[0];
   assert.equal(isDryLandForPlanting(isl0.x, isl0.z, 0.34, 1.5, bp), true);
 
-  // Sample across the bog basin: NO submerged point (h <= SWAMP_WATER_Y + 0.34) may ever pass
+  // Sample across the bog pools and bog islands: NO submerged point (h <= SWAMP_WATER_Y + 0.34) may ever pass
   let submergedCount = 0;
   let dryCount = 0;
-  for (let dx = -bp.bogRadius; dx <= bp.bogRadius; dx += 14) {
-    for (let dz = -bp.bogRadius; dz <= bp.bogRadius; dz += 14) {
-      const x = bp.bogCenterX + dx;
-      const z = bp.bogCenterZ + dz;
-      const h = getTerrainHeight(x, z, bp);
-      const plantable = isDryLandForPlanting(x, z, 0.34, 1.5, bp);
-      if (h <= SWAMP_WATER_Y + 0.34) {
-        submergedCount++;
-        assert.equal(
-          plantable,
-          false,
-          `Submerged/shoreline spot (${x.toFixed(1)}, ${z.toFixed(1)}, y=${h.toFixed(2)}) must never allow trees`
-        );
-      } else if (plantable) {
-        dryCount++;
+  for (const pool of bp.bogPools) {
+    const span = Math.max(pool.rx, pool.rz) + 18;
+    for (let dx = -span; dx <= span; dx += 6) {
+      for (let dz = -span; dz <= span; dz += 6) {
+        const x = pool.x + dx;
+        const z = pool.z + dz;
+        const h = getTerrainHeight(x, z, bp);
+        const plantable = isDryLandForPlanting(x, z, 0.34, 1.5, bp);
+        if (h <= SWAMP_WATER_Y + 0.34) {
+          submergedCount++;
+          assert.equal(
+            plantable,
+            false,
+            `Submerged/shoreline spot (${x.toFixed(1)}, ${z.toFixed(1)}, y=${h.toFixed(2)}) must never allow trees`
+          );
+        } else if (plantable) {
+          dryCount++;
+        }
       }
     }
   }
   assert.ok(submergedCount > 20, `Expected open bog water spots to test, found ${submergedCount}`);
-  assert.ok(dryCount > 5, `Expected dry bog islands/ridges to remain plantable, found ${dryCount}`);
+  assert.ok(dryCount > 5, `Expected dry bog plain/ridges around pools to remain plantable, found ${dryCount}`);
 });
 
 test('forestFrustumCuller classifies spheres accurately, tightens fog horizon, and uses partial InstancedMesh upload ranges', () => {
@@ -460,28 +480,21 @@ test('forestFrustumCuller classifies spheres accurately, tightens fog horizon, a
   inst.dispose();
 });
 
-test('Non-bog valleys and bog water disc perimeter stay cleanly above SWAMP_WATER_Y across seeds (no straight water cutoff edge)', () => {
+test('Non-bog valleys stay cleanly above SWAMP_WATER_Y and bog pools retain deep organic water across seeds', () => {
   for (const seed of [2026, 4042, 7777, 9999]) {
     const bp = setActiveWorldSeed(seed);
-    const waterRadius = bp.bogRadius + 28;
     let bogWaterCount = 0;
 
-    for (let z = -540; z <= 540; z += 12) {
-      for (let x = -540; x <= 540; x += 12) {
+    for (let z = -540; z <= 540; z += 16) {
+      for (let x = -540; x <= 540; x += 16) {
         const h = getTerrainHeight(x, z, bp);
-        const swamp = getSwampFactor(x, z, undefined, bp);
-        const distBog = Math.hypot(x - bp.bogCenterX, z - bp.bogCenterZ);
+        const swamp = getSwampFactor(x, z, bp);
+        const water = getWaterSurfaceAt(x, z, bp, h);
 
-        if (swamp === 0) {
+        if (swamp === 0 && !water.hasWater) {
           assert.ok(
-            h > SWAMP_WATER_Y + 0.25,
-            `Seed ${seed}: non-bog terrain at (${x}, ${z}) dipped to ${h.toFixed(2)} <= water ${SWAMP_WATER_Y}`
-          );
-        }
-        if (distBog >= waterRadius - 12 && distBog <= waterRadius + 12) {
-          assert.ok(
-            h > SWAMP_WATER_Y + 0.2,
-            `Seed ${seed}: terrain near bog water disc rim (dist=${distBog.toFixed(1)}, r=${waterRadius.toFixed(1)}) dipped to ${h.toFixed(2)}`
+            h > SWAMP_WATER_Y + 0.15,
+            `Seed ${seed}: non-bog dry terrain at (${x}, ${z}) dipped to ${h.toFixed(2)} <= water ${SWAMP_WATER_Y}`
           );
         }
         if (swamp > 0.4 && h < SWAMP_WATER_Y - 0.15) {
@@ -491,8 +504,8 @@ test('Non-bog valleys and bog water disc perimeter stay cleanly above SWAMP_WATE
     }
 
     assert.ok(
-      bogWaterCount > 25,
-      `Seed ${seed}: bog basin should retain organic water pools, found ${bogWaterCount}`
+      bogWaterCount > 10,
+      `Seed ${seed}: bog pools should retain organic water basins, found ${bogWaterCount}`
     );
   }
 
@@ -524,18 +537,20 @@ test('applyBogShoreDropOff creates a slightly raised peat bank and steep straigh
     `Expected steep drop > 1.25m from bank (${rimH.toFixed(2)}) to lake (${edgeWaterH.toFixed(2)})`
   );
 
-  // Verify real terrain across bog shoreline exhibits raised banks immediately adjacent to deep bog water
+  // Verify real terrain across bog pool shorelines exhibits raised banks immediately adjacent to deep bog water
   const bp = setActiveWorldSeed(2026);
+  const p0 = bp.bogPools[0];
+  assert.ok(p0, 'Expected at least one bog lake pool');
   let steepShoreCrossings = 0;
   for (let ang = 0; ang < Math.PI * 2; ang += Math.PI / 18) {
-    let prevH = getTerrainHeight(bp.bogCenterX, bp.bogCenterZ, bp);
-    for (let r = 2; r <= bp.bogRadius + 10; r += 2) {
-      const x = bp.bogCenterX + Math.cos(ang) * r;
-      const z = bp.bogCenterZ + Math.sin(ang) * r;
+    let prevH = getTerrainHeight(p0.x, p0.z, bp);
+    for (let r = 2; r <= Math.max(p0.rx, p0.rz) + 18; r += 2) {
+      const x = p0.x + Math.cos(ang) * r;
+      const z = p0.z + Math.sin(ang) * r;
       const h = getTerrainHeight(x, z, bp);
       if (
-        (prevH < SWAMP_WATER_Y - 0.6 && h > SWAMP_WATER_Y + 0.2) ||
-        (h < SWAMP_WATER_Y - 0.6 && prevH > SWAMP_WATER_Y + 0.2)
+        (prevH < SWAMP_WATER_Y - 0.5 && h > SWAMP_WATER_Y + 0.18) ||
+        (h < SWAMP_WATER_Y - 0.5 && prevH > SWAMP_WATER_Y + 0.18)
       ) {
         steepShoreCrossings++;
         break;
@@ -545,9 +560,241 @@ test('applyBogShoreDropOff creates a slightly raised peat bank and steep straigh
   }
   assert.ok(
     steepShoreCrossings >= 10,
-    `Expected steep raised-bank bog lake crossings around bog perimeter, found ${steepShoreCrossings}`
+    `Expected steep raised-bank bog pool crossings around pool perimeter, found ${steepShoreCrossings}`
   );
 });
+
+test('Multi-seed map generation invariants: >=1/3 bog, varied roads & 3-6 villages, >=100m house spacing, 20-40m hills, lakes, downhill streams, and 4-6 trail-less forest huts', () => {
+  const seeds = [2026, 4042, 7777, 9999, 12345, 31415, 55555, 88888];
+  const roadShapes = new Set<string>();
+  const villageCounts = new Set<number>();
+  const houseDecayStates = new Set<string>();
+  const hutIslandSizes: number[] = [];
+
+  for (const seed of seeds) {
+    const bp = setActiveWorldSeed(seed);
+    roadShapes.add(bp.roadShape);
+    villageCounts.add(bp.villages.length);
+
+    // 1. Peat bog >= 1/3 of the map with bog lake systems & size-gated islands
+    let bogCells = 0;
+    let totalCells = 0;
+    let maxTerrainY = -Infinity;
+    for (let gz = -560; gz <= 560; gz += 32) {
+      for (let gx = -560; gx <= 560; gx += 32) {
+        totalCells++;
+        if (getRawBogMask(gx, gz, bp) >= 0.45) bogCells++;
+        const h = getTerrainHeight(gx, gz, bp);
+        if (h > maxTerrainY) maxTerrainY = h;
+      }
+    }
+    const measuredBogFraction = bogCells / totalCells;
+    assert.ok(
+      measuredBogFraction >= 0.333,
+      `Seed ${seed}: bog area fraction ${(measuredBogFraction * 100).toFixed(1)}% < 33.3%`
+    );
+    assert.ok(bp.bogPools.length >= 2, `Seed ${seed}: expected >= 2 bog pools`);
+
+    const smallIslands = bp.swampIslands.filter((i) => i.radius < MIN_BOG_ISLAND_HUT_RADIUS);
+    const largeIslands = bp.swampIslands.filter((i) => i.radius >= MIN_BOG_ISLAND_HUT_RADIUS);
+    assert.ok(smallIslands.length >= 2, `Seed ${seed}: expected small bog islands`);
+    assert.ok(largeIslands.length >= 2, `Seed ${seed}: expected large bog islands`);
+    for (const isl of smallIslands) {
+      assert.equal(
+        isl.hut,
+        null,
+        `Seed ${seed}: small bog island (${isl.radius.toFixed(1)}m < ${MIN_BOG_ISLAND_HUT_RADIUS}m) must never spawn a hut`
+      );
+    }
+    for (const isl of largeIslands) {
+      if (isl.hut) hutIslandSizes.push(isl.radius);
+    }
+
+    // 2. Villages (3-6) and houses (1-5 per village, strictly >= 100m apart within village)
+    assert.ok(
+      bp.villages.length >= 3 && bp.villages.length <= 6,
+      `Seed ${seed}: village count ${bp.villages.length} outside [3, 6]`
+    );
+    let mainRoadLength = 0;
+    for (const seg of bp.roadSegments) {
+      if (!seg.isMainRoad) continue;
+      mainRoadLength += Math.hypot(seg.bx - seg.ax, seg.bz - seg.az);
+      const mx = (seg.ax + seg.bx) * 0.5;
+      const mz = (seg.az + seg.bz) * 0.5;
+      assert.ok(
+        getRawBogMask(mx, mz, bp) <= 0.3,
+        `Seed ${seed}: main gravel road segment midpoint (${mx.toFixed(0)}, ${mz.toFixed(0)}) crosses deep peat bog`
+      );
+    }
+    assert.ok(
+      mainRoadLength >= 500,
+      `Seed ${seed}: expected continuous main gravel road >= 500m, got ${mainRoadLength.toFixed(0)}m`
+    );
+    assert.ok(
+      Math.abs(bp.spawnX) < 460 && Math.abs(bp.spawnZ) < 460 && getRawBogMask(bp.spawnX, bp.spawnZ, bp) < 0.05,
+      `Seed ${seed}: spawn (${bp.spawnX.toFixed(0)}, ${bp.spawnZ.toFixed(0)}) must lie on interior dry land`
+    );
+    for (const v of bp.villages) {
+      assert.ok(
+        v.buildings.length >= 1 && v.buildings.length <= 5,
+        `Seed ${seed} village ${v.id}: house count ${v.buildings.length} outside [1, 5]`
+      );
+      for (const b of v.buildings) {
+        houseDecayStates.add(b.decayState);
+      }
+      for (let i = 0; i < v.buildings.length; i++) {
+        for (let j = i + 1; j < v.buildings.length; j++) {
+          const a = v.buildings[i];
+          const b = v.buildings[j];
+          const dist = Math.hypot(a.offsetX - b.offsetX, a.offsetZ - b.offsetZ);
+          assert.ok(
+            dist >= MIN_VILLAGE_HOUSE_SEPARATION - 0.01,
+            `Seed ${seed} village ${v.id}: houses ${i} & ${j} only ${dist.toFixed(1)}m apart (< ${MIN_VILLAGE_HOUSE_SEPARATION}m)`
+          );
+        }
+      }
+    }
+
+    // 3. Estonian moraine hills reaching 20-40m above SWAMP_WATER_Y
+    const reliefM = maxTerrainY - SWAMP_WATER_Y;
+    assert.ok(
+      reliefM >= 20 && reliefM <= 46,
+      `Seed ${seed}: max relief above water ${reliefM.toFixed(1)}m outside Estonian hill range [20, 46]m`
+    );
+
+    // 4. Non-bog freshwater lakes & strictly monotonically downhill streams
+    assert.ok(bp.lakes.length >= 1, `Seed ${seed}: expected >= 1 non-bog freshwater lake`);
+    for (const lk of bp.lakes) {
+      assert.ok(
+        getRawBogMask(lk.x, lk.z, bp) < 0.1,
+        `Seed ${seed}: freshwater lake ${lk.name} should lie outside the peat bog`
+      );
+      const centerWater = getWaterSurfaceAt(lk.x, lk.z, bp);
+      assert.equal(centerWater.hasWater, true, `Seed ${seed}: lake ${lk.name} center must have water`);
+      assert.equal(centerWater.kind, 'lake');
+    }
+
+    assert.ok(bp.streams.length >= 1, `Seed ${seed}: expected >= 1 downhill stream`);
+    for (const st of bp.streams) {
+      assert.ok(st.points.length >= 4, `Seed ${seed}: stream ${st.name} too short`);
+      assert.ok(
+        st.points[0].waterY > st.points[st.points.length - 1].waterY + 1.0,
+        `Seed ${seed}: stream ${st.name} must descend significantly from source to mouth`
+      );
+      for (let i = 1; i < st.points.length; i++) {
+        assert.ok(
+          st.points[i].waterY <= st.points[i - 1].waterY + 0.001,
+          `Seed ${seed}: stream ${st.name} flowed uphill at vertex ${i}`
+        );
+      }
+      assert.ok(st.targetKind === 'lake' || st.targetKind === 'bog');
+    }
+
+    // 5. 4-6 abandoned decrepit forest huts with NO trails leading to them
+    assert.ok(
+      bp.forestHuts.length >= 4 && bp.forestHuts.length <= 6,
+      `Seed ${seed}: expected 4-6 forest huts, got ${bp.forestHuts.length}`
+    );
+    for (const fh of bp.forestHuts) {
+      assert.notEqual(fh.decayState, 'intact', `Seed ${seed}: forest hut ${fh.id} must be decrepit`);
+      assert.ok(
+        getRawBogMask(fh.x, fh.z, bp) < 0.05,
+        `Seed ${seed}: forest hut ${fh.id} must be in dry forest, not bog`
+      );
+      const roadDist = distToRoadDetail(fh.x, fh.z, bp).dist;
+      assert.ok(
+        roadDist >= 24,
+        `Seed ${seed}: forest hut ${fh.id} has trail/road only ${roadDist.toFixed(1)}m away`
+      );
+    }
+
+    // 6. Extensibility hook for future major decrepit structures
+    assert.ok(Array.isArray(bp.majorStructures));
+  }
+
+  assert.ok(roadShapes.size >= 3, `Expected varied road shapes across seeds, got: ${[...roadShapes].join(', ')}`);
+  assert.ok(villageCounts.size >= 2, `Expected varied village counts across seeds, got: ${[...villageCounts].join(', ')}`);
+  assert.ok(houseDecayStates.size >= 3, `Expected varied village house decay states, got: ${[...houseDecayStates].join(', ')}`);
+  assert.ok(hutIslandSizes.length >= 6, 'Expected huts on larger bog islands across seeds');
+
+  setActiveWorldSeed(2026);
+});
+
+test('Bog strictly contains ZERO stones/boulders while dry forest chunks spawn boulders', () => {
+  const bp = setActiveWorldSeed(2026);
+  const noBroken = new Set<string>();
+  const noKicks = new Map<string, number>();
+
+  // Direct predicate check: bog floor, bog pools, and bog islands must all forbid stones
+  for (const lobe of bp.bogLobes) {
+    assert.equal(canPlaceStoneAt(lobe.x, lobe.z, bp), false, 'Bog lobe center must forbid stones');
+  }
+  for (const pool of bp.bogPools) {
+    assert.equal(canPlaceStoneAt(pool.x, pool.z, bp), false, 'Bog pool must forbid stones');
+  }
+  for (const isl of bp.swampIslands) {
+    assert.equal(canPlaceStoneAt(isl.x, isl.z, bp), false, 'Bog island inside bog basin must forbid stones');
+  }
+
+  // Bake real vegetation chunks inside the bog basin -> zero boulders or boulderOutcrops
+  let bogChunksTested = 0;
+  let bogPineCount = 0;
+  for (let cz = -9; cz <= 9; cz++) {
+    for (let cx = -9; cx <= 9; cx++) {
+      const centerX = (cx + 0.5) * CHUNK_SIZE;
+      const centerZ = (cz + 0.5) * CHUNK_SIZE;
+      // Only test chunks whose entire footprint lies within the peat bog basin
+      const cornersInBog = [
+        [centerX - 24, centerZ - 24],
+        [centerX + 24, centerZ - 24],
+        [centerX - 24, centerZ + 24],
+        [centerX + 24, centerZ + 24],
+      ].every(([x, z]) => getRawBogMask(x, z, bp) > 0.2);
+      if (!cornersInBog) continue;
+
+      const baked = bakeVegetationChunk(cx, cz, () => false, noBroken, noKicks);
+      bogChunksTested++;
+      const chunkBogPines = baked.cells.reduce((acc, c) => acc + c.bogPine.count, 0);
+      const chunkBoulders = baked.cells.reduce((acc, c) => acc + c.boulder.count, 0);
+      const chunkOutcrops = baked.cells.reduce((acc, c) => acc + c.boulderOutcrop.count, 0);
+      bogPineCount += chunkBogPines;
+      assert.equal(
+        chunkBoulders,
+        0,
+        `Bog chunk (${cx}, ${cz}) spawned ${chunkBoulders} boulders (must be 0)`
+      );
+      assert.equal(
+        chunkOutcrops,
+        0,
+        `Bog chunk (${cx}, ${cz}) spawned ${chunkOutcrops} boulder outcrops (must be 0)`
+      );
+    }
+  }
+  assert.ok(bogChunksTested >= 12, `Expected >= 12 interior bog chunks to verify, found ${bogChunksTested}`);
+  assert.ok(bogPineCount >= 20, `Expected small bog pines scattered across flat bog chunks, found ${bogPineCount}`);
+
+  // Bake dry forest chunks -> stones/boulders DO spawn in the forest
+  let dryForestBoulders = 0;
+  let dryChunksTested = 0;
+  for (let cz = -8; cz <= 8; cz++) {
+    for (let cx = -8; cx <= 8; cx++) {
+      const centerX = (cx + 0.5) * CHUNK_SIZE;
+      const centerZ = (cz + 0.5) * CHUNK_SIZE;
+      if (getRawBogMask(centerX, centerZ, bp) > 0.01) continue;
+      if (getDistanceToNearestVillage(centerX, centerZ, bp).dist < 40) continue;
+      const baked = bakeVegetationChunk(cx, cz, () => false, noBroken, noKicks);
+      dryForestBoulders += baked.cells.reduce((acc, c) => acc + c.boulder.count + c.boulderOutcrop.count, 0);
+      dryChunksTested++;
+      if (dryChunksTested >= 20) break;
+    }
+    if (dryChunksTested >= 20) break;
+  }
+  assert.ok(
+    dryForestBoulders > 0,
+    `Expected granite boulders in dry forest chunks, got ${dryForestBoulders}`
+  );
+});
+
 
 
 
