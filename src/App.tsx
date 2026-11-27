@@ -81,6 +81,10 @@ function getInitialPhase(): GamePhase {
   return 'title';
 }
 
+function pickRandomWorldSeed(): number {
+  return 1000 + Math.floor(Math.random() * 89000);
+}
+
 function getInitialSeed(): number {
   if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search);
@@ -90,7 +94,7 @@ function getInitialSeed(): number {
       if (Number.isFinite(parsed) && parsed !== 0) return Math.floor(parsed);
     }
   }
-  return 2026;
+  return pickRandomWorldSeed();
 }
 
 const RESOLUTION_STORAGE_KEY = 'metsavaikus_resolution_scale';
@@ -499,7 +503,7 @@ export default function App() {
   }, []);
 
   const handleNewProceduralMap = useCallback(() => {
-    const nextSeed = 1000 + Math.floor(Math.random() * 89000);
+    const nextSeed = pickRandomWorldSeed();
     setWorldError(null);
     setWorldSeed(nextSeed);
     setBasket(createEmptyBasket());
