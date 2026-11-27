@@ -27,7 +27,9 @@ import {
   SpawnCategory,
 } from '../game/debugTypes';
 import { ITEM_CATALOG, ItemId, WaterQuality } from '../game/itemCatalog';
+import { PERF_CAPTURE_SECONDS } from '../game/perfCapture';
 import { DEFAULT_WEIGHT_THRESHOLDS } from '../game/survivalEngine';
+import { useLanguage } from '../i18n/i18n';
 import type { WeatherId } from '../world/weatherAndSky';
 
 interface DebugConsoleOverlayProps {
@@ -87,6 +89,7 @@ export const DebugConsoleOverlay: React.FC<DebugConsoleOverlayProps> = ({
   actions,
   onClose,
 }) => {
+  const { t } = useLanguage();
   const [tab, setTab] = useState<DebugTab>('inspector');
   const [spawnFilter, setSpawnFilter] = useState('');
   const [spawnCat, setSpawnCat] = useState<'all' | SpawnCategory>('all');
@@ -98,6 +101,7 @@ export const DebugConsoleOverlay: React.FC<DebugConsoleOverlayProps> = ({
   const [tpX, setTpX] = useState('0');
   const [tpZ, setTpZ] = useState('0');
   const [copiedDump, setCopiedDump] = useState(false);
+  const [captureCopyResult, setCaptureCopyResult] = useState<'copied' | 'failed' | null>(null);
 
   const filteredSpawn = useMemo(() => {
     const q = spawnFilter.trim().toLowerCase();
@@ -159,6 +163,21 @@ export const DebugConsoleOverlay: React.FC<DebugConsoleOverlayProps> = ({
     }
     setCopiedDump(true);
     window.setTimeout(() => setCopiedDump(false), 1800);
+  };
+
+  const capture = snapshot.perfCapture;
+  const toggleCapture = () => {
+    setCaptureCopyResult(null);
+    if (capture.recording) actions.stopPerfCapture();
+    else actions.startPerfCapture();
+  };
+  const copyCapture = async () => {
+    try {
+      await navigator.clipboard.writeText(actions.dumpPerfCaptureText());
+      setCaptureCopyResult('copied');
+    } catch {
+      setCaptureCopyResult('failed');
+    }
   };
 
   const perf = snapshot.perf;
@@ -1208,6 +1227,57 @@ export const DebugConsoleOverlay: React.FC<DebugConsoleOverlayProps> = ({
         {/* ================= PERFORMANCE GRAPHS TAB ================= */}
         {tab === 'perf' && (
           <div className="space-y-3">
+            <div className="rounded-md bg-[#0f1712] border border-white/10 p-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-[#9ec79f]">
+                  {t('perf.focusedCapture')}
+                </span>
+                <span role="status" data-testid="perf-capture-status" className="font-mono text-[10.5px] text-[#b8cbb7]">
+                  {capture.recording
+                    ? t('perf.recording', { seconds: capture.seconds.toFixed(1), limit: PERF_CAPTURE_SECONDS })
+                    : capture.frames > 0
+                      ? t('perf.captured', { frames: capture.frames, seconds: capture.seconds.toFixed(1) })
+                      : ''}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#9eb39d]">
+                {t('perf.captureHelp', { seconds: PERF_CAPTURE_SECONDS })}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleCapture}
+                  data-testid="perf-capture-toggle"
+                  className="px-2.5 py-1.5 rounded bg-[#1d2e23] border border-emerald-500/35 text-[11px] cursor-pointer"
+                >
+                  {capture.recording ? t('perf.stopCapture') : t('perf.startCapture')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyCapture()}
+                  disabled={capture.recording || capture.frames === 0}
+                  data-testid="perf-capture-copy"
+                  className="px-2.5 py-1.5 rounded bg-[#1d2e23] border border-white/12 text-[11px] cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                >
+                  {captureCopyResult === 'copied' ? t('perf.copiedCapture') : t('perf.copyCapture')}
+                </button>
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-[#b8cbb7]">
+                  <input
+                    type="checkbox"
+                    checked={snapshot.perfReflectionsEnabled}
+                    disabled={capture.recording}
+                    onChange={event => actions.setPerfReflectionsEnabled(event.currentTarget.checked)}
+                    data-testid="perf-reflection-toggle"
+                    className="accent-emerald-500"
+                  />
+                  {t('perf.bogReflections')}
+                </label>
+              </div>
+              {captureCopyResult === 'failed' && (
+                <p role="status" className="text-[11px] text-amber-300">{t('perf.copyFailed')}</p>
+              )}
+            </div>
+
             {perf ? (
               <>
                 <div className="rounded-md bg-[#0f1712] border border-white/10 p-3 flex items-center justify-between gap-2">

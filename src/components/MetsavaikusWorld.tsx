@@ -602,6 +602,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       keysHeld,
       keysJustPressed,
     });
+    const { perfCapture } = debugCtrl;
 
     const unsubscribeSoundEvents = soundscape.engine.subscribeEvents((ev) => {
       const p = (ev.payload ?? {}) as Record<string, unknown>;
@@ -906,6 +907,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       keysJustPressed.clear();
       mouseDragging = false;
       lastTime = performance.now();
+      perfCapture.breakInterval();
     };
 
     const onResize = () => {
@@ -1048,6 +1050,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
       const curPhase = phaseRef.current;
       const isSimFrozen = curPhase === 'playing' && debugCtrl.debugSimPaused;
+      const captureFrame = perfCapture.active && curPhase === 'playing' && !isSimFrozen &&
+        !uiModalOpen && !debugPanelOpen && !diagnosticsOpen && !document.hidden;
+      if (!captureFrame && perfCapture.active) perfCapture.breakInterval();
       if (!isSimFrozen && curPhase !== 'paused' && curPhase !== 'collapsed') {
         simElapsed += dt;
       }
@@ -1077,6 +1082,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       let terrainMs = 0;
       let vegMs = 0;
       let minimapMs = 0;
+      let soundscapeMs = 0;
+      let soundscapeSaveMs = 0;
       let skyTimeLabel = '';
       let skyWindStrength = 0;
       let skyTimeScale = 1;
@@ -1257,6 +1264,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           !isSimFrozen &&
           (curPhase === 'playing' || curPhase === 'sleeping' || curPhase === 'collapsing')
         ) {
+          const audioStart = captureFrame ? performance.now() : 0;
           const curBiomeId = getBiomeInfo(player.pos.x, player.pos.z).id;
           sound.updateSpatialAmbience(dt, {
             listenerX: camera.position.x,
@@ -1366,10 +1374,13 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
               muted: isMuted,
             })
           );
+          if (captureFrame) soundscapeMs = performance.now() - audioStart;
 
           if (elapsed - lastSnapshotSaveSec >= 12) {
+            const saveStart = captureFrame ? performance.now() : 0;
             lastSnapshotSaveSec = elapsed;
             saveSoundscapeSnapshotToStorage(worldSeed, soundscape.engine);
+            if (captureFrame) soundscapeSaveMs = performance.now() - saveStart;
           }
           void lastWeatherIntensity;
         } else if (diagnosticsOpen || isSimFrozen) {
@@ -1459,6 +1470,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         }
 
         if (terrainMgr && vegetation) {
+          const terrainStart = performance.now();
           terrainMgr.setLightingState(
             skyInfo.dayFactor,
             simElapsed,
@@ -1473,7 +1485,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             qualityCtrl.smoothedQuality.terrainLod1Dist
           );
           const tp2 = performance.now();
-          terrainMs = tp2 - tp1;
+          terrainMs = tp2 - terrainStart;
 
           vegQualityOpts.lod0Dist = qualityCtrl.smoothedQuality.treeLod0Dist;
           vegQualityOpts.lod1Dist = qualityCtrl.smoothedQuality.treeLod1Dist;
@@ -1518,6 +1530,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           const tp4 = performance.now();
           propsMs += tp4 - tp3;
         } else {
+          const propsStart = performance.now();
           propsCtx?.updateDynamicProps(
             simElapsed,
             camera.position.x,
@@ -1528,7 +1541,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             weatherSky.currentWeather,
             qualityCtrl.smoothedQuality.mushroomDist
           );
-          propsMs += performance.now() - tp1;
+          propsMs += performance.now() - propsStart;
         }
 
         if (propsCtx?.needsLightShadowUpdate()) renderer.shadowMap.needsUpdate = true;
@@ -1638,7 +1651,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       }
 
       const tr0 = performance.now();
-      propsCtx?.renderWaterReflection(renderer, scene, camera);
+      const reflected = propsCtx?.renderWaterReflection(renderer, scene, camera, debugCtrl.perfReflectionsEnabled) ?? false;
+      const mainRenderStart = captureFrame ? performance.now() : 0;
       renderer.render(scene, camera);
       const tr1 = performance.now();
       renderer.domElement.dataset.ready = 'true';
@@ -1648,6 +1662,35 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       const tickCpuMs = tr1 - now;
       const externalWaitMs = Math.max(0, rawDtMs - prevTickCpuMs);
       prevTickCpuMs = tickCpuMs;
+
+      if (captureFrame) {
+        perfCapture.record(now, {
+          tick: tickCpuMs,
+          mainRender: tr1 - mainRenderStart,
+          reflection: mainRenderStart - tr0,
+          terrain: terrainMs,
+          vegetation: vegMs,
+          soundscape: soundscapeMs,
+          soundscapeSave: soundscapeSaveMs,
+        }, reflected, {
+          backbufferPx: [renderer.domElement.width, renderer.domElement.height],
+          pixelRatio: qualityCtrl.currentDpr,
+          quality: qualityCtrl.governor.getProfile().name,
+          position: [player.pos.x, player.pos.y, player.pos.z],
+          yawDeg: THREE.MathUtils.radToDeg(player.yaw),
+          pitchDeg: THREE.MathUtils.radToDeg(player.pitch),
+          weather: weatherSky.currentWeather,
+          hour: weatherSky.timeOfDay,
+          reflectionsEnabled: debugCtrl.perfReflectionsEnabled,
+          waterVisible: propsCtx?.isWaterVisible() ?? false,
+          sunShadow: weatherSky.isSunCastingShadow,
+          audioContext: sound.getAudioContext()?.state ?? 'uninitialized',
+          calls: renderer.info.render.calls,
+          triangles: renderer.info.render.triangles,
+          trees: vegStats.treesRendered,
+          grass: vegetation?.grassCount ?? 0,
+        });
+      }
 
       const qualityTransition = qualityCtrl.governor.observe({
         nowMs: tr1,

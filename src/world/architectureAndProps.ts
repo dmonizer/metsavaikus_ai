@@ -544,9 +544,8 @@ export function buildArchitectureAndProps(
       centerZ: bogWater.centerZ,
       radius: bogWater.radius,
     }),
-    renderWaterReflection: (renderer, renderScene, cam) => {
-      bogWater.renderReflection(renderer, renderScene, cam);
-    },
+    renderWaterReflection: (renderer, renderScene, cam, enabled) =>
+      bogWater.renderReflection(renderer, renderScene, cam, enabled),
     spawnMushroomAt: (x: number, z: number, species: MushroomSpecies) => {
       mushroomSystem.spawnMushroom(x, z, species);
       lightShadowsDirty = true;

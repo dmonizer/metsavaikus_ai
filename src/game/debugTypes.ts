@@ -12,6 +12,7 @@ import {
 import type { DynamicFloraKind } from '../world/foliageFactory';
 import type { WeatherId } from '../world/weatherAndSky';
 import type { HutDecayState } from '../world/worldBlueprint';
+import type { PerfCaptureStatus } from './perfCapture';
 
 export interface DebugTargetHit {
   layer: string;
@@ -223,6 +224,8 @@ export interface DebugSnapshot {
   pickedHit: DebugTargetHit | null;
   events: DebugEventEntry[];
   perf: DebugPerfSnapshot | null;
+  perfCapture: PerfCaptureStatus;
+  perfReflectionsEnabled: boolean;
   teleportLocations: TeleportLocation[];
 }
 
@@ -285,4 +288,8 @@ export interface DebugActions {
   clearEvents: () => void;
   emitDebugEvent: (type: string, payload?: Record<string, unknown>, intensity?: number) => void;
   dumpPerfText: () => string;
+  startPerfCapture: () => void;
+  stopPerfCapture: () => void;
+  dumpPerfCaptureText: () => string;
+  setPerfReflectionsEnabled: (enabled: boolean) => void;
 }

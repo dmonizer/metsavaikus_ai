@@ -10,6 +10,7 @@ This directory holds mostly renderer-independent domain rules. The caller in `co
 - `keyboardInput.ts`: shared keyboard ownership/default-cancellation policy; only bound game controls are claimed during active play, preserving native UI controls, browser modifiers, IME and pointer-lock Escape. `npm run test:keyboard` verifies trusted input and Firefox quick find in an isolated profile.
 - `frameTiming.ts`: bounded elapsed-time policy (250ms maximum per frame) and physics substeps (at most 1/60s). It discards longer stalls without retaining catch-up debt; zero/invalid deltas do not advance time.
 - `perfLogger.ts`: bounded performance reports and frame diagnostics consumed by the runtime/debug surface.
+- `perfCapture.ts`: opt-in gameplay captures with frame-time percentiles and slowest frames. Align each frame interval with the preceding tick's wall timings. Keep debug panel, pause, and background gaps out of captures.
 
 Shared geometry/collision belongs in [../world/AGENTS.md](../world/AGENTS.md), rather than being reimplemented in gameplay actions. Translate displayed results through [../i18n/AGENTS.md](../i18n/AGENTS.md).
 

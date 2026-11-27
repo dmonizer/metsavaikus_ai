@@ -1864,6 +1864,11 @@ export class WorldVegetationSystem {
     };
   }
 
+  get grassCount(): number {
+    return this.grassBladeMesh.count + this.shortGrassMesh.count +
+      this.mossCarpetMesh.count + this.tallUndergrowthMesh.count;
+  }
+
   consumeDiagnostics(): {
     chunkCacheSize: number;
     chunkBakes: number;
@@ -1879,11 +1884,7 @@ export class WorldVegetationSystem {
       chunkEvictions: this.diagChunkEvictions,
       visRebuilds: this.diagVisRebuilds,
       grassRebuilds: this.diagGrassRebuilds,
-      grassCount:
-        this.grassBladeMesh.count +
-        this.shortGrassMesh.count +
-        this.mossCarpetMesh.count +
-        this.tallUndergrowthMesh.count,
+      grassCount: this.grassCount,
       colliderCells: this.colliderGrid.size,
     };
     this.diagChunkBakes = 0;

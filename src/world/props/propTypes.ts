@@ -237,8 +237,9 @@ export interface WorldPropsContext {
   renderWaterReflection: (
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
-    camera: THREE.PerspectiveCamera
-  ) => void;
+    camera: THREE.PerspectiveCamera,
+    enabled: boolean
+  ) => boolean;
   spawnMushroomAt: (
     x: number,
     z: number,

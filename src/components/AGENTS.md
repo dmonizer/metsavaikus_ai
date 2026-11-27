@@ -26,7 +26,7 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
 - `SleepAndHearthModals.tsx`: sleep preview/selection and campfire actions (lazy-loaded).
 - `FullMapModal.tsx`: expanded navigation map; `CollapseOverlay.tsx`: collapse presentation (lazy-loaded).
 - `SoundscapeDiagnosticsOverlay.tsx`: F9 diagnostics, auditioning, and config reload (lazy-loaded).
-- `DebugConsoleOverlay.tsx`, `DebugOverlayHud.tsx`: F8 debug inspector HUD and console (lazy-loaded).
+- `DebugConsoleOverlay.tsx`, `DebugOverlayHud.tsx`: F8 debug inspector HUD and console (lazy-loaded). The Perf tab records focused captures during active play with the panel closed and exposes the Bog reflections switch for comparison runs.
 - `LazyChunkBoundary.tsx`: React error boundary + Suspense fallback for lazy chunks.
 - `ItemArtwork.tsx`: shared item presentation; `LanguageSwitcher.tsx`: language control; `src/index.css`: shared styles.
 

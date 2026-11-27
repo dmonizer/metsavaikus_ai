@@ -36,3 +36,5 @@ Keep pooled point-light counts and shader variants stable. Invalidate shadow map
 ## Verification
 
 Run relevant colocated tests for terrain, spatial physics, shelters, vegetation geometry/scattering, and game water behavior. Use `npm run test:rendering` for GPU shelter/shader changes, then lint/build. Use runtime performance counters from `game/perfLogger.ts` and quality diagnostics to measure changes; source-level opportunities alone do not establish FPS gains.
+
+For reflection comparisons, `waterSurface.ts` uses the sky fallback when the F8 Perf reflection pass is disabled. Its render method reports whether the pass ran. Read live grass counts without consuming streaming diagnostics when gathering focused perf samples.

@@ -12,8 +12,9 @@ export interface ReflectiveWaterController {
   renderReflection: (
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
-    mainCamera: THREE.PerspectiveCamera
-  ) => void;
+    mainCamera: THREE.PerspectiveCamera,
+    enabled: boolean
+  ) => boolean;
   dispose: () => void;
 }
 
@@ -520,16 +521,21 @@ export function createReflectiveBogWater(
     renderReflection: (
       renderer: THREE.WebGLRenderer,
       scene: THREE.Scene,
-      mainCamera: THREE.PerspectiveCamera
+      mainCamera: THREE.PerspectiveCamera,
+      enabled: boolean
     ) => {
-      if (!mesh.visible) return;
+      if (!enabled) {
+        waterMat.uniforms.uHasReflection.value = 0.0;
+        return false;
+      }
+      if (!mesh.visible) return false;
       mainCamera.getWorldPosition(camWorldPos);
       if (camWorldPos.y <= SWAMP_WATER_Y + 0.03) {
         waterMat.uniforms.uHasReflection.value = 0.0;
-        return;
+        return false;
       }
       if (isSoftwareGl && (reflFrame++ & 1) === 1 && waterMat.uniforms.uHasReflection.value > 0.5) {
-        return;
+        return false;
       }
 
       mainCamera.getWorldDirection(camForward);
@@ -598,6 +604,7 @@ export function createReflectiveBogWater(
       renderer.xr.enabled = prevXrEnabled;
       mesh.visible = true;
       waterMat.uniforms.uHasReflection.value = 1.0;
+      return true;
     },
     dispose: () => {
       smoothDepthTex.dispose();

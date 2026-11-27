@@ -23,6 +23,7 @@ import {
   removeStackItem,
 } from '../../game/itemCatalog';
 import { classifyBottleneck, FpsDropLogger, FramePerfSample } from '../../game/perfLogger';
+import { PerfCapture } from '../../game/perfCapture';
 import {
   classifyHypothermia,
   createPoisonEffect,
@@ -271,12 +272,15 @@ export class DebugController {
   pickedHit: DebugTargetHit | null = null;
   readonly debugEvents: DebugEventEntry[] = [];
   readonly perfHistory: DebugPerfPoint[] = [];
+  readonly perfCapture: PerfCapture;
+  perfReflectionsEnabled = true;
 
   private nextDebugEventId = 1;
   private readonly inspectRaycaster = new THREE.Raycaster();
   readonly actions: DebugActions;
 
   constructor(private readonly deps: DebugControllerDeps) {
+    this.perfCapture = new PerfCapture(deps.worldSeed, deps.perfSample.gpuRenderer ?? 'unknown');
     this.selectedSpawnId = this.spawnCatalog[0]?.id ?? 'mushroom:kukeseen';
     this.inspectRaycaster.far = 140;
     this.actions = this.buildDebugActions();
@@ -632,6 +636,8 @@ export class DebugController {
       pickedHit: this.pickedHit,
       events: this.debugEvents.slice(),
       perf: this.buildPerfSnapshot(),
+      perfCapture: this.perfCapture.getStatus(),
+      perfReflectionsEnabled: this.perfReflectionsEnabled,
       teleportLocations: this.getTeleportLocations(),
     };
   }
@@ -936,6 +942,12 @@ export class DebugController {
         return this.deps.perfLogger.dumpText(
           this.deps.getHasLivePerfSample() ? this.deps.perfSample : undefined
         );
+      },
+      startPerfCapture: () => this.perfCapture.start(),
+      stopPerfCapture: () => this.perfCapture.stop(),
+      dumpPerfCaptureText: () => this.perfCapture.dumpText(),
+      setPerfReflectionsEnabled: (enabled) => {
+        if (!this.perfCapture.active) this.perfReflectionsEnabled = enabled;
       },
     };
   }
