@@ -198,8 +198,12 @@ export function evaluateTerrainFromNoise(
   // Village clearings flattened gently for log homesteads
   for (let i = 0; i < bp.villages.length; i++) {
     const v = bp.villages[i];
-    const dV = Math.hypot(x - v.x, z - v.z);
-    if (dV < v.clearingRadius + 24) {
+    const dx = x - v.x;
+    const dz = z - v.z;
+    const reach = v.clearingRadius + 24;
+    if (Math.abs(dx) >= reach || Math.abs(dz) >= reach) continue;
+    const dV = Math.hypot(dx, dz);
+    if (dV < reach) {
       const flat = clamp(1 - (dV - v.clearingRadius * 0.72) / 22, 0, 1);
       h = lerp(h, v.flattenHeight, flat * 0.88);
     }
@@ -229,8 +233,12 @@ export function evaluateTerrainFromNoise(
   let targetIslandH = h;
   for (let i = 0; i < bp.swampIslands.length; i++) {
     const isl = bp.swampIslands[i];
-    const d = Math.hypot(x - isl.x, z - isl.z);
-    if (d < isl.radius * 1.25) {
+    const dx = x - isl.x;
+    const dz = z - isl.z;
+    const reach = isl.radius * 1.25;
+    if (Math.abs(dx) >= reach || Math.abs(dz) >= reach) continue;
+    const d = Math.hypot(dx, dz);
+    if (d < reach) {
       const smooth = clamp(1 - (d - isl.radius * 0.45) / (isl.radius * 0.72), 0, 1);
       const shaped = smooth * smooth * (3 - 2 * smooth);
       if (shaped > islandMask) {

@@ -21,3 +21,9 @@ Run `node --import tsx scripts/bench-world-streaming.mjs` for 30 measured seed-2
 Each synchronous baker layer reuses double-precision sample coordinates, random values, Halton terms, and temporary matrix/color arrays. Cached tiles own their final shuffled buffers. This removes 2,060 sample-object allocations and 156,560 bytes of temporary matrix/color allocation per bake after initialization. The geometry hash matched entry 2 exactly.
 
 Isolated sample generation for 50 tiles (all four layers, 30 timed batches) fell from 19.64 to 11.21 ms median. Whole-tile results varied. Three paired 60-tile runs with an 8 MiB V8 semi-space reported 63–64 GC events before and 61–62 after, with overlapping total GC times. Default-heap experiments also varied with nursery sizing. A reduction in browser GC pauses remains unverified. Type check, production build and 199 tests passed.
+
+## 4. Bound terrain height modifiers
+
+Village clearings and swamp islands affect height only inside their individual radii. Axis checks eliminate distant features before evaluating their Euclidean distance. The original radial falloff still runs for every potential contributor, including overlapping clearings and islands. This benefits all terrain-height consumers, including the four normal taps outside the WASM noise kernel.
+
+Streaming benchmark medians immediately before/after were 11.22 → 7.74 ms per detailed terrain fill and 5.34 → 4.03 ms per uncached grass tile. The combined output hash and road checksum matched entry 2. Type check, build and 199 tests passed.
