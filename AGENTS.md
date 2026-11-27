@@ -25,3 +25,5 @@ Use `package.json` as the command reference. `npm test` runs colocated Node/tsx 
 Keep the asset-copy behavior in `vite.config.ts`: root-relative source asset URLs depend on it in production. Existing soundscape design and extension references are indexed in [docs/soundscape/README.md](docs/soundscape/README.md); verify historical delivery statements against the current code.
 
 When replacing procedural sound assets with recordings, follow the asset ID and reference rules in [src/config/soundscape/AGENTS.md](src/config/soundscape/AGENTS.md).
+
+Performance investigations and implementation measurements are tracked in [docs/perf_findings.md](docs/perf_findings.md) and [docs/perf-ledger.md](docs/perf-ledger.md).
