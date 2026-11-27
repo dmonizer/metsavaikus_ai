@@ -45,3 +45,7 @@ Removed the per-vertex depth attribute and its terrain sampling. The fragment sh
 ## Outstanding measurements
 
 The target GPU was unavailable locally. The CPU harness and SwiftShader image fixtures establish output parity on the sampled inputs. Hardware frame-time percentiles, per-pass GPU time, upload bandwidth and shader first-use stalls still need a repeatable hardware capture. Whole-chunk worker/WASM generation, partial instance uploads, shader prewarming and narrower shadow invalidation remain open experiments.
+
+## Boardwalk visibility correction
+
+The long deck batch used an 18 m structure sphere at the bog center, while sleepers used native instance culling. A fixed camera on the southeast leg of seed 2026 reproduced the missing deck when facing SE. Both batches now use the trail's full bounds for fog distance and native per-camera instance culling. The Chrome rendering fixture checks deck pixels in both directions from the same spot.

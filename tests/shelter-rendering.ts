@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ShelterGeometry, excludeShelterVegetation } from '../src/world/shelterGeometry';
+import { extractFrustumPlanes } from '../src/world/forestFrustumCuller';
 import { ComputeEngine } from '../src/world/wasmCompute';
 import { TerrainChunkManager } from '../src/world/terrainChunkManager';
 import { WeatherAndSkySystem } from '../src/world/weatherAndSky';
@@ -198,12 +199,31 @@ async function verify() {
   const shoreWind = shorelineHash(7, 1.8);
   terrain.dispose();
   depth.dispose();
+  // Stand on the southeast leg and turn in place. Isolate deck pixels from the sleepers and scenery.
+  const trailWorld = new THREE.Scene();
+  const trailProps = buildArchitectureAndProps(trailWorld, textures, {} as SoundEngine, () => {}, true);
+  const deck = trailWorld.children.find(node => node.userData.debugName === 'Swamp Boardwalk Planks')!;
+  const deckScene = new THREE.Scene();
+  deckScene.background = new THREE.Color(0);
+  deckScene.add(deck, new THREE.AmbientLight(0xffffff, 1));
+  const zone = trailProps.boardwalkZones[Math.floor(trailProps.boardwalkZones.length * 0.64)];
+  const trailCamera = new THREE.PerspectiveCamera(70, 1, 0.1, 250);
+  trailCamera.position.set(zone.cx!, zone.y + 1.65, zone.cz!);
+  function deckLuminance(direction: number) {
+    trailCamera.lookAt(zone.cx! + direction, trailCamera.position.y - 0.65, zone.cz! + direction);
+    const planes = extractFrustumPlanes(trailCamera, new Float32Array(24));
+    trailProps.updateDynamicProps(0, zone.cx!, zone.cz!, undefined, planes, 110);
+    return luminance(deckScene, trailCamera);
+  }
+  const deckNW = deckLuminance(-1);
+  const deckSE = deckLuminance(1);
+  trailProps.dispose();
   texture.dispose();
   weather.dispose();
   shelters.dispose();
   renderer.dispose();
   const result = {
-    shoreCalm, shoreWind, waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
+    deckNW, deckSE, shoreCalm, shoreWind, waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
     grassBefore,
     grassPitched,
     grassPacked,
@@ -223,6 +243,7 @@ async function verify() {
   check(propsMemoryAfter.textures === propsMemoryBaseline.textures, 'Prop texture/shadow memory must return to baseline');
   check(restartMemoryCounts.every(count => count.geometries === propsMemoryBaseline.geometries &&
     count.textures === propsMemoryBaseline.textures), 'Restarts must release rendered geometries and shadow textures');
+  check(deckNW > 0 && deckSE > 0, 'Boardwalk deck must render facing NW and SE');
   check(shoreCalm !== shoreWind, 'The two shoreline states must produce different pixels');
   check(!skyReflection, 'Looking above the lake must skip the mirror pass');
   check(waterDrawn && downReflection && edgeReflection, 'Water and partial-disc reflections must render');

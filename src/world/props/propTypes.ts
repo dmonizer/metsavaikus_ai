@@ -312,12 +312,10 @@ export interface VirtualPointLight {
   isLit: () => boolean;
 }
 
-export interface StructureNode {
+export type StructureNode = {
   obj: THREE.Object3D;
-  x: number;
-  z: number;
   maxDistSq: number;
-}
+} & ({ x: number; z: number } | { bounds: THREE.Box3 });
 
 export type RegisterInteractiveFn = (
   mesh: THREE.Object3D,

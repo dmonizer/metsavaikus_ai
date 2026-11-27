@@ -493,10 +493,18 @@ export function buildArchitectureAndProps(
       const fogCapSq = (maxRenderDist + 16) * (maxRenderDist + 16);
       for (let i = 0; i < structureNodes.length; i++) {
         const s = structureNodes[i];
+        const capSq = Math.min(s.maxDistSq, fogCapSq);
+        if ('bounds' in s) {
+          const { min, max } = s.bounds;
+          const dx = Math.max(min.x - camX, 0, camX - max.x);
+          const dz = Math.max(min.z - camZ, 0, camZ - max.z);
+          s.obj.visible = dx * dx + dz * dz < capSq;
+          // Three.js frustum-culls the instance batch separately for each camera.
+          continue;
+        }
         const dx = s.x - camX;
         const dz = s.z - camZ;
         const dSq = dx * dx + dz * dz;
-        const capSq = s.maxDistSq < fogCapSq ? s.maxDistSq : fogCapSq;
         if (dSq >= capSq) {
           s.obj.visible = false;
         } else if (frustumPlanes && dSq > 26 * 26) {

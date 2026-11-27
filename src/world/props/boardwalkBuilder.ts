@@ -187,12 +187,13 @@ export function buildSignpostAndBoardwalk(
     plankInst.instanceMatrix.needsUpdate = true;
     sleeperInst.instanceMatrix.needsUpdate = true;
     ctx.resources.add(plankInst, sleeperInst);
-    ctx.structureNodes.push({
-      obj: plankInst,
-      x: bp.bogCenterX,
-      z: bp.bogCenterZ,
-      maxDistSq: 450 * 450,
-    });
+    // Instance transforms are world-space. Include the full trail in the fog-distance test.
+    plankInst.computeBoundingBox();
+    sleeperInst.computeBoundingBox();
+    const bounds = plankInst.boundingBox!.clone().union(sleeperInst.boundingBox!);
+    for (const obj of [plankInst, sleeperInst]) {
+      ctx.structureNodes.push({ obj, bounds, maxDistSq: 450 * 450 });
+    }
     ctx.resources.own(twinPlankGeo, sleeperGeo, plankMat, sleeperMat);
   } else {
     ctx.resources.own(plankMat, sleeperMat);
