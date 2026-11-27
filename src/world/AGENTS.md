@@ -40,3 +40,5 @@ Run relevant colocated tests for terrain, spatial physics, shelters, vegetation 
 For reflection comparisons, `waterSurface.ts` uses the sky fallback when the F8 Perf reflection pass is disabled. Its render method reports whether the pass ran. Read live grass counts without consuming streaming diagnostics when gathering focused perf samples.
 
 Shelter shaders use a 16 m grid of conservative footprint-row ranges. Rebuild it with the exact footprint texture on membership changes. The rotated footprint and roof equations still determine coverage, including outside the grid.
+
+Run `node --import tsx scripts/bench-world-streaming.mjs` for fixed seed-2026 road queries, detailed terrain generation, grass bakes and a geometry-output hash. Road broad-phase rejection uses trail-weighted segment bounds; winning candidates retain the full projection and distance calculation.

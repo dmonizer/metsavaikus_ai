@@ -94,13 +94,19 @@ export function distToRoadDetail(
   const segs = bp.roadSegments;
   for (let i = 0; i < segs.length; i++) {
     const s = segs[i];
+    // The nearest point on a segment lies inside its axis-aligned bounds.
+    // A single axis can rule it out while retaining the original distance and tie rules.
+    const weight = s.isTrail ? 2.6 / s.halfWidth : 1;
+    const outsideX = Math.max(Math.min(s.ax, s.bx) - x, x - Math.max(s.ax, s.bx));
+    const outsideZ = Math.max(Math.min(s.az, s.bz) - z, z - Math.max(s.az, s.bz));
+    if (Math.max(outsideX, outsideZ) * weight > minDist + 1e-10) continue;
     const abx = s.bx - s.ax;
     const abz = s.bz - s.az;
     const lenSq = abx * abx + abz * abz;
     if (lenSq < 0.001) continue;
     const t = clamp(((x - s.ax) * abx + (z - s.az) * abz) / lenSq, 0, 1);
     const d = Math.hypot(x - (s.ax + t * abx), z - (s.az + t * abz));
-    const effective = s.isTrail ? d * (2.6 / s.halfWidth) : d;
+    const effective = d * weight;
     if (effective < minDist) {
       minDist = effective;
       isTrail = s.isTrail;
