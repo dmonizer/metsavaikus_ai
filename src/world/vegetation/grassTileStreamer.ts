@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import {
   buildDeterministicShuffle,
+  createTileSampleBuffer,
   computeGrassClumpScale,
   computeMossCarpetScale,
   computeOpennessFactor,
@@ -8,7 +9,7 @@ import {
   computeRoadVergeFillerCoverage,
   computeShortGrassScale,
   computeTallUndergrowthScale,
-  generateR2TileSamples,
+  fillTileSamples,
   shouldKeepMossCarpet,
   shouldKeepTallUndergrowth,
 } from '../grassScatter';
@@ -42,6 +43,20 @@ const _tmpQuat = new THREE.Quaternion();
 const _yawQuat = new THREE.Quaternion();
 const _slopeNormal = new THREE.Vector3();
 
+// The baker runs synchronously. Only shuffled, independently owned slabs leave it.
+function createLayerScratch(count: number) {
+  return {
+    points: createTileSampleBuffer(count),
+    matrices: new Float32Array(count * 16),
+    colors: new Float32Array(count * 3),
+  };
+}
+
+const bladeScratch = createLayerScratch(GRASS_TILE_SAMPLES);
+const shortScratch = createLayerScratch(SHORT_GRASS_TILE_SAMPLES);
+const mossScratch = createLayerScratch(MOSS_TILE_SAMPLES);
+const tallScratch = createLayerScratch(TALL_TILE_SAMPLES);
+
 export function bakeGrassTile(
   tx: number,
   tz: number,
@@ -66,28 +81,32 @@ export function bakeGrassTile(
   });
 
   const randSeed = getActiveBlueprint().seed | 0;
-  const grassSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, GRASS_TILE_SAMPLES, 13);
-  const shortSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, SHORT_GRASS_TILE_SAMPLES, 41);
-  const mossSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, MOSS_TILE_SAMPLES, 73);
-  const tallSamples = generateR2TileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, TALL_TILE_SAMPLES, 97);
+  fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 13, bladeScratch.points);
+  fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 41, shortScratch.points);
+  fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 73, mossScratch.points);
+  fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 97, tallScratch.points);
 
-  const rawMat = new Float32Array(grassSamples.length * 16);
-  const rawCol = new Float32Array(grassSamples.length * 3);
+  const rawMat = bladeScratch.matrices;
+  const rawCol = bladeScratch.colors;
   let grassCount = 0;
   let minY = Infinity;
   let maxY = -Infinity;
 
-  for (let i = 0; i < grassSamples.length; i++) {
-    const s = grassSamples[i];
-    const px = minX + s.lx;
-    const pz = minZ + s.lz;
+  const grassSamples = bladeScratch.points;
+  for (let i = 0; i < grassSamples.lx.length; i++) {
+    const px = minX + grassSamples.lx[i];
+    const pz = minZ + grassSamples.lz[i];
+    const r1 = grassSamples.r1[i];
+    const r2 = grassSamples.r2[i];
+    const r3 = grassSamples.r3[i];
+    const r4 = grassSamples.r4[i];
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.2))) continue;
 
     const roadInfo = distToRoadDetail(px, pz);
     const vergeJitter =
       (smoothNoise(px * 0.42, pz * 0.42) * 0.65 + smoothNoise(px * 1.15, pz * 1.15) * 0.35) * 2 - 1;
-    const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4, false);
+    const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4, false);
     if (!verge.keep) continue;
 
     const py = getTerrainHeight(px, pz);
@@ -113,41 +132,45 @@ export function bakeGrassTile(
     const { sxz, sy } = computeGrassClumpScale(
       swamp,
       patchNoise,
-      s.r1,
-      s.r2,
-      s.r3,
+      r1,
+      r2,
+      r3,
       verge.heightScale,
       openness
     );
 
     _bakeDummy.position.set(px, py - 0.03, pz);
-    _bakeDummy.rotation.set((s.r4 - 0.5) * 0.24, s.r1 * Math.PI * 2, (s.r2 - 0.5) * 0.24);
+    _bakeDummy.rotation.set((r4 - 0.5) * 0.24, r1 * Math.PI * 2, (r2 - 0.5) * 0.24);
     _bakeDummy.scale.set(sxz, sy, sxz);
     _bakeDummy.updateMatrix();
     _bakeDummy.matrix.toArray(rawMat, grassCount * 16);
 
     const cOff = grassCount * 3;
-    const tone = 0.74 + s.r2 * 0.34;
+    const tone = 0.74 + r2 * 0.34;
     if (swamp > 0.35) {
-      rawCol[cOff] = tone * (0.98 + s.r4 * 0.12);
-      rawCol[cOff + 1] = tone * (0.84 + s.r3 * 0.1);
+      rawCol[cOff] = tone * (0.98 + r4 * 0.12);
+      rawCol[cOff + 1] = tone * (0.84 + r3 * 0.1);
       rawCol[cOff + 2] = tone * 0.5;
     } else {
-      rawCol[cOff] = tone * (0.78 + s.r1 * 0.2);
-      rawCol[cOff + 1] = tone * (0.9 + s.r3 * 0.18);
-      rawCol[cOff + 2] = tone * (0.58 + s.r4 * 0.12);
+      rawCol[cOff] = tone * (0.78 + r1 * 0.2);
+      rawCol[cOff + 1] = tone * (0.9 + r3 * 0.18);
+      rawCol[cOff + 2] = tone * (0.58 + r4 * 0.12);
     }
     grassCount++;
   }
 
-  const rawShortMat = new Float32Array(shortSamples.length * 16);
-  const rawShortCol = new Float32Array(shortSamples.length * 3);
+  const rawShortMat = shortScratch.matrices;
+  const rawShortCol = shortScratch.colors;
   let shortCount = 0;
 
-  for (let i = 0; i < shortSamples.length; i++) {
-    const s = shortSamples[i];
-    const px = minX + s.lx;
-    const pz = minZ + s.lz;
+  const shortSamples = shortScratch.points;
+  for (let i = 0; i < shortSamples.lx.length; i++) {
+    const px = minX + shortSamples.lx[i];
+    const pz = minZ + shortSamples.lz[i];
+    const r1 = shortSamples.r1[i];
+    const r2 = shortSamples.r2[i];
+    const r3 = shortSamples.r3[i];
+    const r4 = shortSamples.r4[i];
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.1))) continue;
 
@@ -157,7 +180,7 @@ export function bakeGrassTile(
         smoothNoise(px * 1.25 - 1.7, pz * 1.25 + 4.2) * 0.35) *
         2 -
       1;
-    const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4);
+    const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4);
     if (!verge.keep) continue;
 
     const py = getTerrainHeight(px, pz);
@@ -183,41 +206,45 @@ export function bakeGrassTile(
     const { sxz, sy } = computeShortGrassScale(
       swamp,
       patchNoise,
-      s.r1,
-      s.r2,
-      s.r3,
+      r1,
+      r2,
+      r3,
       verge.heightScale,
       openness
     );
 
     _bakeDummy.position.set(px, py - 0.02, pz);
-    _bakeDummy.rotation.set((s.r4 - 0.5) * 0.22, s.r1 * Math.PI * 2, (s.r2 - 0.5) * 0.22);
+    _bakeDummy.rotation.set((r4 - 0.5) * 0.22, r1 * Math.PI * 2, (r2 - 0.5) * 0.22);
     _bakeDummy.scale.set(sxz, sy, sxz);
     _bakeDummy.updateMatrix();
     _bakeDummy.matrix.toArray(rawShortMat, shortCount * 16);
 
     const cOff = shortCount * 3;
-    const tone = 0.72 + s.r2 * 0.32;
+    const tone = 0.72 + r2 * 0.32;
     if (swamp > 0.35) {
-      rawShortCol[cOff] = tone * (0.94 + s.r4 * 0.12);
-      rawShortCol[cOff + 1] = tone * (0.86 + s.r3 * 0.1);
+      rawShortCol[cOff] = tone * (0.94 + r4 * 0.12);
+      rawShortCol[cOff + 1] = tone * (0.86 + r3 * 0.1);
       rawShortCol[cOff + 2] = tone * 0.52;
     } else {
-      rawShortCol[cOff] = tone * (0.76 + s.r1 * 0.18);
-      rawShortCol[cOff + 1] = tone * (0.92 + s.r3 * 0.16);
-      rawShortCol[cOff + 2] = tone * (0.56 + s.r4 * 0.12);
+      rawShortCol[cOff] = tone * (0.76 + r1 * 0.18);
+      rawShortCol[cOff + 1] = tone * (0.92 + r3 * 0.16);
+      rawShortCol[cOff + 2] = tone * (0.56 + r4 * 0.12);
     }
     shortCount++;
   }
 
-  const rawMossMat = new Float32Array(mossSamples.length * 16);
-  const rawMossCol = new Float32Array(mossSamples.length * 3);
+  const rawMossMat = mossScratch.matrices;
+  const rawMossCol = mossScratch.colors;
   let mossCount = 0;
 
-  for (let i = 0; i < mossSamples.length; i++) {
-    const s = mossSamples[i];
-    const px = minX + s.lx;
-    const pz = minZ + s.lz;
+  const mossSamples = mossScratch.points;
+  for (let i = 0; i < mossSamples.lx.length; i++) {
+    const px = minX + mossSamples.lx[i];
+    const pz = minZ + mossSamples.lz[i];
+    const r1 = mossSamples.r1[i];
+    const r2 = mossSamples.r2[i];
+    const r3 = mossSamples.r3[i];
+    const r4 = mossSamples.r4[i];
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.1))) continue;
 
@@ -227,7 +254,7 @@ export function bakeGrassTile(
         smoothNoise(px * 1.1 + 3.8, pz * 1.1 - 5.1) * 0.35) *
         2 -
       1;
-    const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4);
+    const verge = computeRoadVergeFillerCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4);
     if (!verge.keep) continue;
 
     const py = getTerrainHeight(px, pz);
@@ -250,7 +277,7 @@ export function bakeGrassTile(
     const mossNoise =
       smoothNoise(px * 0.13 + 11.4, pz * 0.13 - 8.2) * 0.64 +
       smoothNoise(px * 0.34 - 4.5, pz * 0.34 + 6.7) * 0.36;
-    if (!shouldKeepMossCarpet(openness, mossNoise, swamp, s.r1, s.r4)) continue;
+    if (!shouldKeepMossCarpet(openness, mossNoise, swamp, r1, r4)) continue;
 
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
@@ -258,9 +285,9 @@ export function bakeGrassTile(
     const { sxz, sy } = computeMossCarpetScale(
       swamp,
       mossNoise,
-      s.r1,
-      s.r2,
-      s.r3,
+      r1,
+      r2,
+      r3,
       verge.heightScale,
       openness
     );
@@ -270,43 +297,47 @@ export function bakeGrassTile(
       .set(Math.max(-0.48, Math.min(0.48, slopeX)), 1, Math.max(-0.48, Math.min(0.48, slopeZ)))
       .normalize();
     _tmpQuat.setFromUnitVectors(_upVec, _slopeNormal);
-    _yawQuat.setFromAxisAngle(_upVec, s.r1 * Math.PI * 2);
+    _yawQuat.setFromAxisAngle(_upVec, r1 * Math.PI * 2);
 
     _bakeDummy.position.set(px, py - 0.028, pz);
     _bakeDummy.quaternion.copy(_tmpQuat).multiply(_yawQuat);
-    _bakeDummy.scale.set(sxz, sy, sxz * (0.86 + s.r3 * 0.28));
+    _bakeDummy.scale.set(sxz, sy, sxz * (0.86 + r3 * 0.28));
     _bakeDummy.updateMatrix();
     _bakeDummy.matrix.toArray(rawMossMat, mossCount * 16);
 
     const cOff = mossCount * 3;
-    const tone = 0.78 + s.r2 * 0.3;
+    const tone = 0.78 + r2 * 0.3;
     if (swamp > 0.32) {
-      rawMossCol[cOff] = tone * (0.98 + s.r3 * 0.16);
-      rawMossCol[cOff + 1] = tone * (0.92 + s.r1 * 0.12);
-      rawMossCol[cOff + 2] = tone * (0.54 + s.r4 * 0.1);
+      rawMossCol[cOff] = tone * (0.98 + r3 * 0.16);
+      rawMossCol[cOff + 1] = tone * (0.92 + r1 * 0.12);
+      rawMossCol[cOff + 2] = tone * (0.54 + r4 * 0.1);
     } else {
-      rawMossCol[cOff] = tone * (0.78 + s.r3 * 0.22);
-      rawMossCol[cOff + 1] = tone * (0.96 + s.r1 * 0.16);
-      rawMossCol[cOff + 2] = tone * (0.54 + s.r4 * 0.14);
+      rawMossCol[cOff] = tone * (0.78 + r3 * 0.22);
+      rawMossCol[cOff + 1] = tone * (0.96 + r1 * 0.16);
+      rawMossCol[cOff + 2] = tone * (0.54 + r4 * 0.14);
     }
     mossCount++;
   }
 
-  const rawTallMat = new Float32Array(tallSamples.length * 16);
-  const rawTallCol = new Float32Array(tallSamples.length * 3);
+  const rawTallMat = tallScratch.matrices;
+  const rawTallCol = tallScratch.colors;
   let tallCount = 0;
 
-  for (let i = 0; i < tallSamples.length; i++) {
-    const s = tallSamples[i];
-    const px = minX + s.lx;
-    const pz = minZ + s.lz;
+  const tallSamples = tallScratch.points;
+  for (let i = 0; i < tallSamples.lx.length; i++) {
+    const px = minX + tallSamples.lx[i];
+    const pz = minZ + tallSamples.lz[i];
+    const r1 = tallSamples.r1[i];
+    const r2 = tallSamples.r2[i];
+    const r3 = tallSamples.r3[i];
+    const r4 = tallSamples.r4[i];
     if (px < minWorld || px > maxWorld || pz < minWorld || pz > maxWorld) continue;
     if (localBuildings.some((area) => containsFootprint(area, px, pz, 1.35))) continue;
 
     const roadInfo = distToRoadDetail(px, pz);
     const vergeJitter =
       (smoothNoise(px * 0.38, pz * 0.38) * 0.65 + smoothNoise(px * 1.05, pz * 1.05) * 0.35) * 2 - 1;
-    const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, s.r4, true);
+    const verge = computeRoadVergeCoverage(roadInfo.dist, roadInfo.isTrail, vergeJitter, r4, true);
     if (!verge.keep) continue;
 
     const py = getTerrainHeight(px, pz);
@@ -331,32 +362,32 @@ export function bakeGrassTile(
     const driftNoise =
       smoothNoise(px * 0.095 + 7.2, pz * 0.095 - 4.1) * 0.62 +
       smoothNoise(px * 0.25 - 2.5, pz * 0.25 + 9.4) * 0.38;
-    if (!shouldKeepTallUndergrowth(openness, driftNoise, s.r1, s.r4)) continue;
-    if (roadInfo.dist < 4.6 && s.r2 > 0.48) continue;
+    if (!shouldKeepTallUndergrowth(openness, driftNoise, r1, r4)) continue;
+    if (roadInfo.dist < 4.6 && r2 > 0.48) continue;
 
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
 
     const { sxz, sy } = computeTallUndergrowthScale(
       driftNoise,
-      s.r1,
-      s.r2,
-      s.r3,
+      r1,
+      r2,
+      r3,
       verge.heightScale,
       openness
     );
     _bakeDummy.position.set(px, py - 0.035, pz);
-    _bakeDummy.rotation.set((s.r4 - 0.5) * 0.22, s.r2 * Math.PI * 2, (s.r3 - 0.5) * 0.22);
+    _bakeDummy.rotation.set((r4 - 0.5) * 0.22, r2 * Math.PI * 2, (r3 - 0.5) * 0.22);
     _bakeDummy.scale.set(sxz, sy, sxz);
     _bakeDummy.updateMatrix();
     _bakeDummy.matrix.toArray(rawTallMat, tallCount * 16);
 
     const cOff = tallCount * 3;
-    const tone = 0.76 + s.r3 * 0.32;
-    const goldenShift = s.r4 > 0.72 ? 0.12 : 0;
-    rawTallCol[cOff] = tone * (0.82 + s.r1 * 0.16 + goldenShift);
-    rawTallCol[cOff + 1] = tone * (0.92 + s.r2 * 0.14);
-    rawTallCol[cOff + 2] = tone * (0.56 + s.r4 * 0.1);
+    const tone = 0.76 + r3 * 0.32;
+    const goldenShift = r4 > 0.72 ? 0.12 : 0;
+    rawTallCol[cOff] = tone * (0.82 + r1 * 0.16 + goldenShift);
+    rawTallCol[cOff + 1] = tone * (0.92 + r2 * 0.14);
+    rawTallCol[cOff + 2] = tone * (0.56 + r4 * 0.1);
     tallCount++;
   }
 

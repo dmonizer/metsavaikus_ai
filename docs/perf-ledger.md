@@ -15,3 +15,9 @@ Chrome SwiftShader reproduced all eight baseline luminance sums exactly, includi
 The implementation rejects distant segment bounding boxes, then evaluates contenders with the original projection, trail weighting, distance and tie behavior. This also accommodates callers supplying their own blueprints. The squared-distance prototype in the findings was an earlier experiment.
 
 Run `node --import tsx scripts/bench-world-streaming.mjs` for 30 measured seed-2026 iterations following six warmups. Local before/after medians in milliseconds were 33.51 → 16.21 per 40,000 road queries, 17.89 → 11.95 per detailed terrain fill, and 7.97 → 5.12 per grass bake. The road checksum matched exactly. The combined SHA-256 of sampled terrain positions, normals, colors and grass matrices/colors matched at `11720fd75810c83007b39170f0935f2c8d864657a574eca22b68b50e7e8600e3`. Type check, build and all 199 tests passed.
+
+## 3. Grass tile allocation and sampling
+
+Each synchronous baker layer reuses double-precision sample coordinates, random values, Halton terms, and temporary matrix/color arrays. Cached tiles own their final shuffled buffers. This removes 2,060 sample-object allocations and 156,560 bytes of temporary matrix/color allocation per bake after initialization. The geometry hash matched entry 2 exactly.
+
+Isolated sample generation for 50 tiles (all four layers, 30 timed batches) fell from 19.64 to 11.21 ms median. Whole-tile results varied. Three paired 60-tile runs with an 8 MiB V8 semi-space reported 63–64 GC events before and 61–62 after, with overlapping total GC times. Default-heap experiments also varied with nursery sizing. A reduction in browser GC pauses remains unverified. Type check, production build and 199 tests passed.

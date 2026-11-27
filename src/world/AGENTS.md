@@ -42,3 +42,5 @@ For reflection comparisons, `waterSurface.ts` uses the sky fallback when the F8 
 Shelter shaders use a 16 m grid of conservative footprint-row ranges. Rebuild it with the exact footprint texture on membership changes. The rotated footprint and roof equations still determine coverage, including outside the grid.
 
 Run `node --import tsx scripts/bench-world-streaming.mjs` for fixed seed-2026 road queries, detailed terrain generation, grass bakes and a geometry-output hash. Road broad-phase rejection uses trail-weighted segment bounds; winning candidates retain the full projection and distance calculation.
+
+Grass tile baking uses per-layer reusable sample and packing buffers. Keep matrix/color slabs returned to the tile cache independently owned and preserve double precision until the original float-buffer writes.

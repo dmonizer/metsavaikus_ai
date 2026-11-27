@@ -37,6 +37,22 @@ function wrapCoord(v: number, tileSize: number): number {
   return out >= tileSize ? 0 : out;
 }
 
+/** Scratch owned by a synchronous sampler. All coordinates retain JS double precision. */
+export function createTileSampleBuffer(count: number) {
+  const haltonX = new Float64Array(count);
+  const haltonZ = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    haltonX[i] = halton(i + 1, 2);
+    haltonZ[i] = halton(i + 1, 3);
+  }
+  return {
+    lx: new Float64Array(count), lz: new Float64Array(count),
+    r1: new Float64Array(count), r2: new Float64Array(count),
+    r3: new Float64Array(count), r4: new Float64Array(count),
+    haltonX, haltonZ,
+  };
+}
+
 /**
  * Generates organic, isotropic, line-free 2D coordinates inside [0, tileSize)^2.
  * Uses a Cranley-Patterson shifted Halton(2, 3) sequence (eliminating rank-1 lattice
@@ -44,17 +60,16 @@ function wrapCoord(v: number, tileSize: number): number {
  * disk jitter and smooth periodic 2D curl-like domain warping.
  * Returned random values (r1..r4) use independent hash streams uncorrelated with jitter.
  */
-export function generateR2TileSamples(
+export function fillTileSamples(
   tileX: number,
   tileZ: number,
   worldSeed: number,
   tileSize: number,
-  sampleCount: number,
-  salt = 0
-): TileSamplePoint[] {
-  const out: TileSamplePoint[] = [];
-  if (sampleCount <= 0 || tileSize <= 0) return out;
-
+  salt: number,
+  buffer: ReturnType<typeof createTileSampleBuffer>,
+  sampleCount = buffer.haltonX.length
+): void {
+  const { haltonX, haltonZ } = buffer;
   const baseSeed = hashUint(
     Math.imul(tileX, 73856093) ^
       Math.imul(tileZ, 19349663) ^
@@ -88,8 +103,8 @@ export function generateR2TileSamples(
     const r3 = (hB & 0xffff) / 65535;
     const r4 = ((hB >>> 16) & 0xffff) / 65535;
 
-    const u = (startOffsetX + halton(i + 1, 2)) % 1;
-    const v = (startOffsetZ + halton(i + 1, 3)) % 1;
+    const u = (startOffsetX + haltonX[i]) % 1;
+    const v = (startOffsetZ + haltonZ[i]) % 1;
 
     // Gentle divergence-free periodic warp breaks any residual linear alignment
     const warpX = Math.sin(v * tau + phaseX) * warpAmp;
@@ -98,9 +113,25 @@ export function generateR2TileSamples(
     const lx = wrapCoord(u * tileSize + Math.cos(jAng) * jRad + warpX, tileSize);
     const lz = wrapCoord(v * tileSize + Math.sin(jAng) * jRad + warpZ, tileSize);
 
-    out.push({ lx, lz, r1, r2, r3, r4 });
+    buffer.lx[i] = lx;
+    buffer.lz[i] = lz;
+    buffer.r1[i] = r1;
+    buffer.r2[i] = r2;
+    buffer.r3[i] = r3;
+    buffer.r4[i] = r4;
   }
-  return out;
+}
+
+export function generateR2TileSamples(
+  tileX: number, tileZ: number, worldSeed: number, tileSize: number, sampleCount: number, salt = 0
+): TileSamplePoint[] {
+  if (sampleCount <= 0 || tileSize <= 0) return [];
+  const buffer = createTileSampleBuffer(Math.ceil(sampleCount));
+  fillTileSamples(tileX, tileZ, worldSeed, tileSize, salt, buffer, sampleCount);
+  return Array.from({ length: buffer.lx.length }, (_, i) => ({
+    lx: buffer.lx[i], lz: buffer.lz[i], r1: buffer.r1[i],
+    r2: buffer.r2[i], r3: buffer.r3[i], r4: buffer.r4[i],
+  }));
 }
 
 /**
