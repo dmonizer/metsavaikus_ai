@@ -22,18 +22,14 @@ const DEPTH_ENCODE_MIN = -0.65;
 const DEPTH_ENCODE_RANGE = 2.55; // [-0.65m .. +1.90m] -> 1.0cm precision with glitch-free linear filtering
 
 /**
- * Builds a uniformly subdivided circular disc mesh using elliptical disc mapping
- * and bakes per-vertex terrain depth (SWAMP_WATER_Y - groundY) for shoreline fallback.
+ * Builds the flat water disc. The smoothed depth texture determines the shoreline.
  */
 function buildBogWaterDiscGeometry(
-  centerX: number,
-  centerZ: number,
   radius: number,
   segments: number
 ): THREE.BufferGeometry {
   const geo = new THREE.PlaneGeometry(2, 2, segments, segments);
   const pos = geo.attributes.position as THREE.BufferAttribute;
-  const depths = new Float32Array(pos.count);
 
   for (let i = 0; i < pos.count; i++) {
     const u = pos.getX(i); // [-1, 1]
@@ -44,12 +40,8 @@ function buildBogWaterDiscGeometry(
     const lx = dx * radius;
     const lz = -dz * radius;
     pos.setXYZ(i, lx, 0, lz);
-
-    const groundY = getTerrainHeight(centerX + lx, centerZ + lz);
-    depths[i] = SWAMP_WATER_Y - groundY;
   }
 
-  geo.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
   geo.computeVertexNormals();
   geo.computeBoundingSphere();
   return geo;
@@ -184,7 +176,7 @@ export function createReflectiveBogWater(
   isLowPowerGpu: boolean
 ): ReflectiveWaterController {
   const gridSegs = isSoftwareGl ? 72 : isLowPowerGpu ? 96 : 120;
-  const waterGeo = buildBogWaterDiscGeometry(centerX, centerZ, waterRadius, gridSegs);
+  const waterGeo = buildBogWaterDiscGeometry(waterRadius, gridSegs);
   const depthTexSize = isSoftwareGl ? 320 : 512;
   const smoothDepthTex = buildSmoothBogDepthTexture(centerX, centerZ, waterRadius, depthTexSize);
 
@@ -220,20 +212,17 @@ export function createReflectiveBogWater(
       uCenter: { value: new THREE.Vector2(centerX, centerZ) },
     },
     vertexShader: /* glsl */ `
-      attribute float aDepth;
       uniform float uWaterY;
       uniform mat4 uTextureMatrix;
 
       varying vec3 vWorldPos;
       varying vec4 vReflClip;
-      varying float vDepth;
 
       void main() {
         vec4 wp = modelMatrix * vec4(position, 1.0);
         // Water surface is strictly level at uWaterY everywhere (never concave or bowed)
         wp.y = uWaterY;
         vWorldPos = wp.xyz;
-        vDepth = aDepth;
 
         // Project strictly level water plane point through reflection camera for exact mirror alignment
         vReflClip = uTextureMatrix * wp;
@@ -259,7 +248,6 @@ export function createReflectiveBogWater(
 
       varying vec3 vWorldPos;
       varying vec4 vReflClip;
-      varying float vDepth;
 
       float hash21(vec2 p) {
         p = fract(p * vec2(123.34, 456.21));

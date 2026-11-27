@@ -37,3 +37,11 @@ Extended the Chrome rendering fixture with fixed lake, sky and shoreline cameras
 ## 6. Terrain shoreline shading
 
 The color and roughness paths share one depth sample and the computed swash and draining-film masks. Wet color and wet roughness retain their separate response thresholds. A repeatable Chrome fixture renders actual seeded terrain with a fixed depth gradient, oblique light, two wind strengths and two wave phases. Full 128 × 128 RGBA hashes from SwiftShader matched before and after at 51735210 and 4235587217 respectively. Shader compilation, rendering checks, type check, build and 199 tests passed. The driver-dependent speedup remains unmeasured.
+
+## 7. Water disc initialization
+
+Removed the per-vertex depth attribute and its terrain sampling. The fragment shader consumed only the smoothed depth texture. At high detail this removes 14,641 height evaluations and 58,564 bytes of attribute storage per world creation. The disc indices, positions, normals, depth map, and reflection sampling are preserved. This improves setup cost. It has no expected steady-state FPS benefit. Both water luminance sums and both terrain image hashes matched entry 6. Type check, build, rendering checks and 199 tests passed.
+
+## Outstanding measurements
+
+The target GPU was unavailable locally. The CPU harness and SwiftShader image fixtures establish output parity on the sampled inputs. Hardware frame-time percentiles, per-pass GPU time, upload bandwidth and shader first-use stalls still need a repeatable hardware capture. Whole-chunk worker/WASM generation, partial instance uploads, shader prewarming and narrower shadow invalidation remain open experiments.
