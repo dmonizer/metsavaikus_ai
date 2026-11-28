@@ -139,8 +139,9 @@ async function verify() {
   water.visible = true;
   const { centerX, centerZ, radius } = props.getBogShoreDepthInfo();
   const waterCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 350);
-  waterCamera.position.set(centerX, 8, centerZ);
-  waterCamera.lookAt(centerX + 1, -3, centerZ);
+  const pool = getActiveBlueprint().bogPools[0];
+  waterCamera.position.set(pool.x, 8, pool.z);
+  waterCamera.lookAt(pool.x + 1, -3, pool.z);
   const downReflection = props.renderWaterReflection(renderer, waterScene, waterCamera, true);
   const waterDown = luminance(waterScene, waterCamera);
   const waterPixels = pixels.slice();
@@ -148,7 +149,7 @@ async function verify() {
   luminance(waterScene, waterCamera);
   const waterDrawn = waterPixels.some((value, i) => value !== pixels[i]);
   water.visible = true;
-  waterCamera.lookAt(centerX + 1, 30, centerZ);
+  waterCamera.lookAt(pool.x, 30, pool.z);
   props.renderWaterReflection(renderer, waterScene, waterCamera, false);
   const skyReflection = props.renderWaterReflection(renderer, waterScene, waterCamera, true);
   const waterSky = luminance(waterScene, waterCamera);
