@@ -241,8 +241,19 @@ export class InteractionController {
             : t('prompt.fallenLogBreak'),
       };
     } else if (this.canRefillBogWater && inventory.bottles.length > 0) {
+      const bp = getActiveBlueprint();
+      const nearestStream = bp.streams.find((st) =>
+        st.points.some((pt) => Math.hypot(pt.x - player.pos.x, pt.z - player.pos.z) < 6.5)
+      );
+      const nearestLake = !nearestStream
+        ? bp.lakes.find((lk) => Math.hypot(lk.x - player.pos.x, lk.z - player.pos.z) < Math.max(lk.rx, lk.rz) * 1.35 + 8)
+        : undefined;
       nextPrompt = {
-        title: t('prompt.bogWaterTitle'),
+        title: nearestStream
+          ? `${nearestStream.name} (Forest Stream)`
+          : nearestLake
+            ? `${nearestLake.name} (Forest Lake)`
+            : t('prompt.bogWaterTitle'),
         actionsText: t('prompt.bogWaterAction'),
       };
     }

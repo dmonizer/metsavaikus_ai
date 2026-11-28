@@ -600,16 +600,17 @@ export class ComputeEngine {
             b = lerp(b, sandB, wetMix * 0.85);
           }
 
-          // Damp stone/silt bank & channel bed for downhill forest streams
+          // Damp mossy-loam edge & dark wet silt bed for narrow downhill forest streams
           const streamAt = getStreamSampleAt(x, z);
-          if (streamAt && streamAt.dist < streamAt.halfWidth + 2.2) {
-            const stMix = clamp((streamAt.halfWidth + 2.2 - streamAt.dist) / 2.2, 0, 1);
-            const bedR = lerp(0.068, 0.042, nCol);
-            const bedG = lerp(0.066, 0.045, nCol);
-            const bedB = lerp(0.052, 0.036, nCol);
-            r = lerp(r, bedR, stMix * 0.82);
-            g = lerp(g, bedG, stMix * 0.82);
-            b = lerp(b, bedB, stMix * 0.82);
+          if (streamAt && streamAt.dist < streamAt.halfWidth + 1.25) {
+            const stMix = clamp((streamAt.halfWidth + 1.25 - streamAt.dist) / 1.25, 0, 1);
+            const innerMix = clamp((streamAt.halfWidth + 0.25 - streamAt.dist) / 0.5, 0, 1);
+            const bankR = lerp(0.044, 0.058, nCol);
+            const bankG = lerp(0.088, 0.064, innerMix);
+            const bankB = lerp(0.028, 0.036, innerMix);
+            r = lerp(r, bankR, stMix * 0.72);
+            g = lerp(g, bankG, stMix * 0.72);
+            b = lerp(b, bankB, stMix * 0.72);
           }
         }
 

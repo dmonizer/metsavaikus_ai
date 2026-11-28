@@ -147,12 +147,15 @@ export interface LakeBlueprint {
   maxZ: number;
 }
 
+export type StreamRegime = 'cascade' | 'woodland' | 'flat';
+
 export interface StreamPointBlueprint {
   x: number;
   z: number;
   waterY: number;
   halfWidth: number;
   depth: number;
+  slope: number;
   flowX: number;
   flowZ: number;
 }
@@ -160,6 +163,7 @@ export interface StreamPointBlueprint {
 export interface StreamBlueprint {
   id: string;
   name: string;
+  regime: StreamRegime;
   targetKind: 'lake' | 'bog';
   targetId: string | null;
   points: StreamPointBlueprint[];
@@ -482,6 +486,34 @@ function estimateLocalSlope(
   const hD = sampleBaseDryTerrain(x, z - 4, hills, bogLobes, bogBounds);
   const hU = sampleBaseDryTerrain(x, z + 4, hills, bogLobes, bogBounds);
   return Math.hypot((hR - hL) / 8, (hU - hD) / 8);
+}
+
+function evaluateLakeNormDist(lk: LakeBlueprint, x: number, z: number): number {
+  const dx = x - lk.x;
+  const dz = z - lk.z;
+  const lx = dx * lk.cosRot + dz * lk.sinRot;
+  const lz = -dx * lk.sinRot + dz * lk.cosRot;
+  const nx = lx / lk.rx;
+  const nz = lz / lk.rz;
+  const r = Math.hypot(nx, nz);
+  const ang = Math.atan2(nz, nx);
+  const wobble =
+    1 +
+    Math.sin(ang * 2 + lk.wobblePhase1) * lk.wobbleAmp +
+    Math.cos(ang * 3 + lk.wobblePhase2) * (lk.wobbleAmp * 0.6);
+  return r / wobble;
+}
+
+function findLakeShoreRadiusAlongRay(lk: LakeBlueprint, dirX: number, dirZ: number): number {
+  let lo = 4;
+  let hi = Math.max(lk.rx, lk.rz) * (1.25 + lk.wobbleAmp * 1.6);
+  for (let i = 0; i < 14; i++) {
+    const mid = (lo + hi) * 0.5;
+    const nd = evaluateLakeNormDist(lk, lk.x + dirX * mid, lk.z + dirZ * mid);
+    if (nd < 1.0) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) * 0.5;
 }
 
 function isInsideAnyLake(x: number, z: number, lakes: readonly LakeBlueprint[], pad = 0): boolean {
@@ -1075,7 +1107,8 @@ function generateFreshwaterLakes(
 }
 
 /**
- * Generates 1-3 downhill streams flowing from higher hill flanks into freshwater lakes or the peat bog.
+ * Generates 2-3 narrow, shallow Estonian woodland brooks (<= ~1m wide) draining from higher
+ * slopes or gentle forest flats into freshwater lakes or the peat bog.
  */
 function generateDownhillStreams(
   seed: number,
@@ -1092,28 +1125,27 @@ function generateDownhillStreams(
   const targets: Array<{
     kind: 'lake' | 'bog';
     id: string | null;
+    lake: LakeBlueprint | null;
     x: number;
     z: number;
     waterY: number;
-    entryRadius: number;
   }> = [];
 
   for (const lk of lakes) {
     targets.push({
       kind: 'lake',
       id: lk.id,
+      lake: lk,
       x: lk.x,
       z: lk.z,
       waterY: lk.waterY,
-      entryRadius: Math.min(lk.rx, lk.rz) * 0.65,
     });
   }
 
-  // Add a bog-margin outlet target nearest to dry hills
+  // Add bog-margin outlet targets nearest to dry hills
   const sortedHills = [...hills].sort((a, b) => b.height - a.height);
   for (let hIdx = 0; hIdx < Math.min(4, sortedHills.length); hIdx++) {
     const hill = sortedHills[hIdx];
-    // March toward bog centroid to find bog shoreline
     const dx = (bogBounds.minX + bogBounds.maxX) * 0.5 - hill.x;
     const dz = (bogBounds.minZ + bogBounds.maxZ) * 0.5 - hill.z;
     const dist = Math.hypot(dx, dz);
@@ -1123,14 +1155,14 @@ function generateDownhillStreams(
     for (let step = 40; step < Math.min(dist, 340); step += 12) {
       const px = hill.x + ux * step;
       const pz = hill.z + uz * step;
-      if (evaluateRawBogMask(px, pz, bogLobes, bogBounds) >= 0.55) {
+      if (evaluateRawBogMask(px, pz, bogLobes, bogBounds) >= 0.52) {
         targets.push({
           kind: 'bog',
           id: null,
-          x: px + ux * 16,
-          z: pz + uz * 16,
-          waterY: SWAMP_WATER_Y + 0.08,
-          entryRadius: 0,
+          lake: null,
+          x: px + ux * 10,
+          z: pz + uz * 10,
+          waterY: SWAMP_WATER_Y + 0.02,
         });
         break;
       }
@@ -1139,12 +1171,16 @@ function generateDownhillStreams(
 
   for (let tIdx = 0; tIdx < targets.length && streams.length < targetStreamCount; tIdx++) {
     const target = targets[tIdx];
-    let bestStart: { x: number; z: number; h: number; score: number } | null = null;
+    // Vary desired stream character across the map:
+    // Stream 0 prefers a steeper rocky cascade; Stream 1 prefers a gentle/moderate forest brook;
+    // Stream 2 takes a varied woodland slope.
+    const wantGentle = streams.length === 1;
+    let bestStart: { x: number; z: number; h: number; drop: number; score: number } | null = null;
 
-    // Search for a higher hillside spring 110..270m away from the target
-    for (let attempt = 0; attempt < 90; attempt++) {
+    // Search for a hillside or forest-flat spring 95..255m away from the target
+    for (let attempt = 0; attempt < 110; attempt++) {
       const ang = randRange(rng, 0, Math.PI * 2);
-      const dist = randRange(rng, 115, 265);
+      const dist = randRange(rng, 98, 250);
       const sx = target.x + Math.cos(ang) * dist;
       const sz = target.z + Math.sin(ang) * dist;
       if (Math.abs(sx) > WORLD_HALF - 85 || Math.abs(sz) > WORLD_HALF - 85) continue;
@@ -1154,12 +1190,12 @@ function generateDownhillStreams(
 
       const sh = sampleBaseDryTerrain(sx, sz, hills, bogLobes, bogBounds);
       const drop = sh - target.waterY;
-      if (drop < 6.5) continue;
+      if (drop < 1.6) continue;
 
-      // Ensure midpoint isn't crossing another lake or deep bog prematurely
+      // Ensure midpoint and quarter points don't cross another lake, deep bog, or drop into a premature saddle
       const mx = (sx + target.x) * 0.5;
       const mz = (sz + target.z) * 0.5;
-      if (target.kind === 'lake' && evaluateRawBogMask(mx, mz, bogLobes, bogBounds) > 0.15) continue;
+      if (target.kind === 'lake' && evaluateRawBogMask(mx, mz, bogLobes, bogBounds) > 0.12) continue;
       if (
         lakes.some(
           (lk) => lk.id !== target.id && isInsideAnyLake(mx, mz, [lk], 18)
@@ -1169,15 +1205,29 @@ function generateDownhillStreams(
       }
       if (minDistToStreams(sx, sz, streams) < 55) continue;
 
-      const score = drop - Math.abs(dist - 180) * 0.03;
+      // Check intermediate heights along the ray so stream flows down a real hillside without hitting a deep valley below lake level
+      const q1H = sampleBaseDryTerrain(sx * 0.72 + target.x * 0.28, sz * 0.72 + target.z * 0.28, hills, bogLobes, bogBounds);
+      const midH = sampleBaseDryTerrain(mx, mz, hills, bogLobes, bogBounds);
+      const q3H = sampleBaseDryTerrain(sx * 0.28 + target.x * 0.72, sz * 0.28 + target.z * 0.72, hills, bogLobes, bogBounds);
+      if (q1H < target.waterY + 0.65 || midH < target.waterY + 0.45 || q3H < target.waterY + 0.22) continue;
+      // Reject paths that must climb sharply over a tall ridge between spring and target
+      if (q1H > sh + 3.5 || midH > sh + 2.5) continue;
+
+      // Score according to desired character: steep cascade for first stream, gentler flat/woodland for second
+      let score: number;
+      if (wantGentle) {
+        score = 12 - Math.abs(drop - 3.2) * 1.4 - Math.abs(dist - 150) * 0.025;
+      } else {
+        score = Math.min(drop, 26) - Math.abs(dist - 155) * 0.035;
+      }
       if (!bestStart || score > bestStart.score) {
-        bestStart = { x: sx, z: sz, h: sh, score };
+        bestStart = { x: sx, z: sz, h: sh, drop, score };
       }
     }
 
     if (!bestStart) continue;
 
-    // Build meandering downhill polyline from spring to target mouth
+    // Build meandering downhill polyline from spring to exact lake/bog mouth
     const dirX = target.x - bestStart.x;
     const dirZ = target.z - bestStart.z;
     const totalLen = Math.hypot(dirX, dirZ);
@@ -1186,16 +1236,25 @@ function generateDownhillStreams(
     const perpX = -uz;
     const perpZ = ux;
 
-    const mouthDist = Math.max(60, totalLen - target.entryRadius * 0.55);
-    const numPts = Math.max(14, Math.min(26, Math.round(mouthDist / 11)));
-    const meanderFreq = randRange(rng, 1.3, 2.3);
+    // Exact directional shoreline crossing so stream enters lake ~5.5m inside shoreline cleanly
+    let mouthDist = totalLen;
+    if (target.lake) {
+      const shoreR = findLakeShoreRadiusAlongRay(target.lake, -ux, -uz);
+      mouthDist = Math.max(55, totalLen - Math.max(4, shoreR - 5.5));
+    }
+
+    // Denser control vertices (~7m apart) for crisp meandering & localized rocky steps
+    const numPts = Math.max(16, Math.min(34, Math.round(mouthDist / 7.5)));
+    const meanderFreq = randRange(rng, 1.4, 2.5);
     const meanderPhase = randRange(rng, 0, Math.PI * 2);
-    const meanderAmp = randRange(rng, 10, 22);
+    const meanderAmp = randRange(rng, 6, 13);
 
     const rawPts: Array<{ x: number; z: number; sampledH: number }> = [];
     for (let i = 0; i < numPts; i++) {
       const t = i / (numPts - 1);
-      const env = Math.sin(t * Math.PI); // 0 at spring & mouth, widest meander in middle
+      // Taper meander smoothly to 0 well before the lake shoreline so mouth enters cleanly perpendicular
+      const mouthStraight = t > 0.82 ? 1 - smoothstep(0.82, 0.98, t) : 1;
+      const env = Math.sin(t * Math.PI) * mouthStraight;
       const lateral = Math.sin(t * Math.PI * meanderFreq + meanderPhase) * meanderAmp * env;
       const px = clampWorld(bestStart.x + ux * (mouthDist * t) + perpX * lateral, 55);
       const pz = clampWorld(bestStart.z + uz * (mouthDist * t) + perpZ * lateral, 55);
@@ -1203,33 +1262,70 @@ function generateDownhillStreams(
       rawPts.push({ x: px, z: pz, sampledH: sh });
     }
 
-    // Compute strictly monotonically decreasing water surface profile from spring to mouth
-    const springY = Math.max(target.waterY + 4.5, rawPts[0].sampledH - 0.35);
+    // Compute strictly non-increasing water surface profile that NEVER floats above natural ground
     const mouthY = target.waterY;
+    const springY = Math.max(mouthY + 1.35, rawPts[0].sampledH - 0.16);
+    const totalDrop = springY - mouthY;
+    const meanGrade = totalDrop / Math.max(40, mouthDist);
+    const regime: StreamRegime =
+      meanGrade >= 0.052 ? 'cascade' : meanGrade >= 0.022 ? 'woodland' : 'flat';
+
     const waterYs = new Float64Array(numPts);
+    const maxGroundY = new Float64Array(numPts);
+    for (let i = 0; i < numPts; i++) {
+      // Reserve at least 0.14m below natural terrain so stream always sits IN the earth, never like an aqueduct
+      maxGroundY[i] = Math.max(mouthY, rawPts[i].sampledH - 0.14);
+    }
+
     waterYs[0] = springY;
     waterYs[numPts - 1] = mouthY;
 
+    // Reserve the final ~10% of the stream to level asymptotically into the lake surface
+    const levelStartIdx = Math.max(2, numPts - 3);
+    const minStepDrop = regime === 'flat' ? 0.010 : 0.020;
+
+    // Forward pass: follow natural hillside ground downwards (never rising above terrain or previous vertex!)
     for (let i = 1; i < numPts - 1; i++) {
       const t = i / (numPts - 1);
       const linearY = springY + (mouthY - springY) * t;
-      // Blend local valley ground gently with linear grade, clamped inside [mouthY, springY]
-      const guided = rawPts[i].sampledH - 0.38;
-      waterYs[i] = Math.max(mouthY + 0.05, Math.min(springY - 0.05, linearY * 0.62 + guided * 0.38));
+      // Follow local terrain closely while staying strictly at or below ground
+      let targetY = Math.min(maxGroundY[i], linearY * 0.45 + maxGroundY[i] * 0.55);
+      if (i >= levelStartIdx) {
+        const lt = (i - levelStartIdx + 1) / (numPts - levelStartIdx);
+        targetY = Math.min(targetY, mouthY + Math.max(0.015, (targetY - mouthY) * (1 - lt * 0.85)));
+      }
+      const maxAllowed = waterYs[i - 1] - (i >= levelStartIdx ? 0.004 : minStepDrop);
+      waterYs[i] = Math.max(mouthY + 0.006, Math.min(maxAllowed, targetY));
     }
-    // Enforce strict downhill monotonicity (spring -> mouth)
-    for (let i = 1; i < numPts - 1; i++) {
-      const maxAllowed = waterYs[i - 1] - 0.08;
-      if (waterYs[i] > maxAllowed) waterYs[i] = maxAllowed;
-    }
+
+    // Backward pass: ensure smooth descent all the way to mouthY (no flat trapped pools above sudden cliffs)
     for (let i = numPts - 2; i >= 1; i--) {
-      const minAllowed = waterYs[i + 1] + 0.06;
-      if (waterYs[i] < minAllowed) waterYs[i] = minAllowed;
+      const minAllowed = waterYs[i + 1] + (i >= levelStartIdx ? 0.003 : minStepDrop * 0.5);
+      if (waterYs[i] < minAllowed) {
+        waterYs[i] = Math.min(waterYs[i - 1] - 0.002, minAllowed);
+      }
     }
-    // Smooth gently once while preserving strict monotonicity
-    for (let i = 1; i < numPts - 1; i++) {
+
+    // One gentle smoothing pass that strictly preserves monotonicity AND stays <= maxGroundY
+    for (let i = 1; i < numPts - 2; i++) {
       const sm = (waterYs[i - 1] + waterYs[i] * 2 + waterYs[i + 1]) * 0.25;
-      waterYs[i] = Math.min(waterYs[i - 1] - 0.04, Math.max(waterYs[i + 1] + 0.04, sm));
+      const hi = Math.min(waterYs[i - 1] - 0.004, maxGroundY[i]);
+      const lo = waterYs[i + 1] + 0.004;
+      if (hi >= lo) {
+        waterYs[i] = Math.max(lo, Math.min(hi, sm));
+      }
+    }
+
+    // Pin the final vertex inside the lake exactly to mouthY and penultimate right at shoreline nearly flush
+    waterYs[numPts - 1] = mouthY;
+    if (waterYs[numPts - 2] > mouthY + 0.08) {
+      waterYs[numPts - 2] = mouthY + 0.035;
+    }
+    if (waterYs[numPts - 3] > waterYs[numPts - 2] + 0.35 && waterYs[numPts - 4] > waterYs[numPts - 2] + 0.1) {
+      waterYs[numPts - 3] = Math.min(
+        maxGroundY[numPts - 3],
+        waterYs[numPts - 2] + Math.min(0.28, (waterYs[numPts - 4] - waterYs[numPts - 2]) * 0.45)
+      );
     }
 
     const points: StreamPointBlueprint[] = [];
@@ -1245,9 +1341,33 @@ function generateDownhillStreams(
       const fx = next.x - prev.x;
       const fz = next.z - prev.z;
       const fl = Math.hypot(fx, fz) || 1;
-      const halfWidth = 1.25 + t * 1.45;
-      const depth = 0.42 + t * 0.34;
-      const bankPad = halfWidth + 9.5;
+
+      const prevY = waterYs[Math.max(0, i - 1)];
+      const nextY = waterYs[Math.min(numPts - 1, i + 1)];
+      const segLen = Math.max(1.0, Math.hypot(next.x - prev.x, next.z - prev.z));
+      const slope = Math.max(0, (prevY - nextY) / segLen);
+
+      // Realistic narrow woodland brook: ~0.58m..1.00m wide (halfWidth 0.29..0.50m)
+      // Gentle estuarine flare ONLY over final 10% where it enters the lake/bog
+      const mouthFlare = t > 0.90 ? smoothstep(0.90, 1.0, t) * 0.38 : 0;
+      const baseHalfW =
+        regime === 'flat'
+          ? 0.32 + t * 0.18
+          : regime === 'cascade'
+            ? 0.28 + t * 0.20
+            : 0.30 + t * 0.19;
+      const halfWidth = baseHalfW + mouthFlare;
+
+      // Very shallow water: 9-20cm along brook so rocks/cobbles protrude; dips cleanly to ~30cm at lake mouth
+      const baseDepth =
+        regime === 'flat'
+          ? 0.09 + t * 0.08
+          : regime === 'cascade'
+            ? 0.10 + t * 0.11
+            : 0.11 + t * 0.10;
+      const mouthDepthBoost = t > 0.88 ? smoothstep(0.88, 1.0, t) * 0.16 : 0;
+      const depth = baseDepth + mouthDepthBoost;
+      const bankPad = halfWidth + 4.2;
 
       const x = rawPts[i].x;
       const z = rawPts[i].z;
@@ -1262,6 +1382,7 @@ function generateDownhillStreams(
         waterY: waterYs[i],
         halfWidth,
         depth,
+        slope,
         flowX: fx / fl,
         flowZ: fz / fl,
       });
@@ -1270,6 +1391,7 @@ function generateDownhillStreams(
     streams.push({
       id: `stream_${streams.length}`,
       name: STREAM_NAMES[streams.length % STREAM_NAMES.length],
+      regime,
       targetKind: target.kind,
       targetId: target.id,
       points,

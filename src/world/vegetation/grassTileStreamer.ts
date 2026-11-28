@@ -20,6 +20,7 @@ import {
   distToRoadDetail,
   getActiveBlueprint,
   getDistanceToNearestVillage,
+  getStreamSampleAt,
   getTerrainHeight,
   getWaterSurfaceAt,
   sampleTerrainSurface,
@@ -82,9 +83,12 @@ export function bakeGrassTile(
 
   const bp = getActiveBlueprint();
   const randSeed = bp.seed | 0;
+  const tileOverlapsStreams = bp.streams.some(
+    (st) => maxX >= st.minX && minX <= st.maxX && maxZ >= st.minZ && minZ <= st.maxZ
+  );
   const tileOverlapsFreshwater =
-    bp.lakes.some((lk) => maxX >= lk.minX && minX <= lk.maxX && maxZ >= lk.minZ && minZ <= lk.maxZ) ||
-    bp.streams.some((st) => maxX >= st.minX && minX <= st.maxX && maxZ >= st.minZ && minZ <= st.maxZ);
+    tileOverlapsStreams ||
+    bp.lakes.some((lk) => maxX >= lk.minX && minX <= lk.maxX && maxZ >= lk.minZ && minZ <= lk.maxZ);
   const tileCenterVillage = getDistanceToNearestVillage(tileCx, tileCz, bp);
   const tileNearVillage = tileCenterVillage.dist < tileCenterVillage.clearingRadius + 36;
   fillTileSamples(tx, tz, randSeed, GRASS_TILE_SIZE, 13, bladeScratch.points);
@@ -119,6 +123,10 @@ export function bakeGrassTile(
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.12) continue;
     if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    if (tileOverlapsStreams) {
+      const st = getStreamSampleAt(px, pz, bp);
+      if (st && st.dist < st.halfWidth + 0.30) continue;
+    }
 
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
@@ -195,6 +203,10 @@ export function bakeGrassTile(
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.1) continue;
     if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    if (tileOverlapsStreams) {
+      const st = getStreamSampleAt(px, pz, bp);
+      if (st && st.dist < st.halfWidth + 0.18) continue;
+    }
 
     if (py < minY) minY = py;
     if (py > maxY) maxY = py;
@@ -271,6 +283,10 @@ export function bakeGrassTile(
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.08) continue;
     if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    if (tileOverlapsStreams) {
+      const st = getStreamSampleAt(px, pz, bp);
+      if (st && st.dist < st.halfWidth + 0.65) continue;
+    }
 
     const islandMask = surf.islandMask;
     const swamp = islandMask > 0.35 ? 0 : surf.swamp;
@@ -356,6 +372,10 @@ export function bakeGrassTile(
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.16) continue;
     if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    if (tileOverlapsStreams) {
+      const st = getStreamSampleAt(px, pz, bp);
+      if (st && st.dist < st.halfWidth + 0.45) continue;
+    }
 
     const islandMask = surf.islandMask;
     const swamp = islandMask > 0.35 ? 0 : surf.swamp;

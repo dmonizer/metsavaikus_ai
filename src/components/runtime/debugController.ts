@@ -85,6 +85,7 @@ export interface MetsavaikusDebugApi {
     exploredPercent: number;
     fogVersion: number;
   };
+  lookAtForTest: (tx: number, ty: number, tz: number) => void;
   openPrimaryCampfire: () => void;
   openCampfireById: (id: string) => void;
   kickNearestStump: () => { broken: boolean; woodPiecesNear: number };
@@ -548,16 +549,38 @@ export class DebugController {
       });
     });
     bp.streams.forEach((st, idx) => {
-      const mid = st.points[Math.floor(st.points.length * 0.45)];
-      if (mid) {
-        locs.push({
-          id: `stream_${idx}`,
-          label: `${st.name} (Stream)`,
-          kind: 'stream',
-          x: mid.x + 3.5,
-          z: mid.z,
-        });
+      if (st.points.length < 4) return;
+      // Pick steepest interior vertex for cascade streams, or mid-run for gentler brooks
+      let pickIdx = Math.floor(st.points.length * 0.45);
+      if (st.regime === 'cascade') {
+        let maxSlope = -1;
+        for (let i = 2; i < st.points.length - 4; i++) {
+          if (st.points[i].slope > maxSlope) {
+            maxSlope = st.points[i].slope;
+            pickIdx = i;
+          }
+        }
       }
+      const pt = st.points[pickIdx];
+      const perpX = -pt.flowZ;
+      const perpZ = pt.flowX;
+      locs.push({
+        id: `stream_${idx}`,
+        label: `${st.name} (${st.regime})`,
+        kind: 'stream',
+        x: pt.x + perpX * (pt.halfWidth + 1.35),
+        z: pt.z + perpZ * (pt.halfWidth + 1.35),
+      });
+      const mouthAnchor = st.points[Math.max(0, st.points.length - 3)];
+      const mPerpX = -mouthAnchor.flowZ;
+      const mPerpZ = mouthAnchor.flowX;
+      locs.push({
+        id: `stream_mouth_${idx}`,
+        label: `${st.name} Mouth (${st.targetKind})`,
+        kind: 'stream',
+        x: mouthAnchor.x + mPerpX * (mouthAnchor.halfWidth + 2.4),
+        z: mouthAnchor.z + mPerpZ * (mouthAnchor.halfWidth + 2.4),
+      });
     });
     if (bp.hillMassifs.length > 0) {
       const highestHill = bp.hillMassifs.reduce((best, cur) =>
@@ -1042,6 +1065,17 @@ export class DebugController {
           exploredPercent: fogOfWar.getExploredPercent(),
           fogVersion: fogOfWar.version,
         };
+      },
+      lookAtForTest: (tx: number, ty: number, tz: number) => {
+        const { player, camera } = this.deps;
+        const dx = tx - player.pos.x;
+        const dz = tz - player.pos.z;
+        const dy = ty - (player.pos.y + player.currentEye);
+        player.yaw = Math.atan2(-dx, -dz);
+        player.pitch = Math.max(-1.45, Math.min(1.45, Math.atan2(dy, Math.hypot(dx, dz))));
+        camera.position.set(player.pos.x, player.pos.y + player.currentEye, player.pos.z);
+        camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+        camera.updateMatrixWorld();
       },
       openPrimaryCampfire: () => {
         const info = this.deps.getPropsCtx()?.getCampfireInfo('fire_v0');

@@ -269,6 +269,7 @@ export interface StreamSample {
   waterY: number;
   halfWidth: number;
   depth: number;
+  slope: number;
   flowX: number;
   flowZ: number;
   /** Parameter t in [0, 1] along the stream from spring (0) to mouth (1). */
@@ -300,10 +301,11 @@ export function getStreamSampleAt(
       const dist = Math.hypot(x - cx, z - cz);
       const halfWidth = a.halfWidth + (b.halfWidth - a.halfWidth) * t;
       const margin = dist - halfWidth;
-      if (margin < 9.5 && margin < bestMargin) {
+      if (margin < 4.5 && margin < bestMargin) {
         bestMargin = margin;
         const depth = a.depth + (b.depth - a.depth) * t;
         const waterY = a.waterY + (b.waterY - a.waterY) * t;
+        const slope = a.slope + (b.slope - a.slope) * t;
         let fx = a.flowX + (b.flowX - a.flowX) * t;
         let fz = a.flowZ + (b.flowZ - a.flowZ) * t;
         const fl = Math.hypot(fx, fz) || 1;
@@ -315,6 +317,7 @@ export function getStreamSampleAt(
           waterY,
           halfWidth,
           depth,
+          slope,
           flowX: fx,
           flowZ: fz,
           progress: (i + t) / Math.max(1, segCount),
@@ -328,6 +331,7 @@ export function getStreamSampleAt(
 /**
  * Authoritative rule: stones and boulders NEVER appear in the peat bog (including bog islands & margins)
  * or underwater inside lakes and streams — stones belong exclusively to forest / dry land.
+ * (Dedicated mossy stream rocks & pebbles are placed separately along stream channels.)
  */
 export function canPlaceStoneAt(
   x: number,
@@ -338,7 +342,7 @@ export function canPlaceStoneAt(
   const lk = getLakeSampleAt(x, z, bp);
   if (lk && lk.normDist < 1.08) return false;
   const st = getStreamSampleAt(x, z, bp);
-  if (st && st.dist < st.halfWidth + 1.2) return false;
+  if (st && st.dist < st.halfWidth + 0.95) return false;
   return true;
 }
 
@@ -520,10 +524,11 @@ export function evaluateTerrainFromNoise(
   }
 
   // 3. Non-bog freshwater lakes (natural valley bowls with rim containment so water never spills)
+  let lakeSampleAtPos: { lake: LakeBlueprint; normDist: number } | null = null;
   if (rawBog < 0.08 && bp.lakes.length > 0) {
-    const lakeSample = getLakeSampleAt(x, z, bp);
-    if (lakeSample) {
-      const { lake, normDist } = lakeSample;
+    lakeSampleAtPos = getLakeSampleAt(x, z, bp);
+    if (lakeSampleAtPos) {
+      const { lake, normDist } = lakeSampleAtPos;
       if (normDist < 1.0) {
         // Organic sloped lake shore -> deep clear basin
         const depthProfile = Math.pow(1 - normDist * normDist, 0.82);
@@ -542,30 +547,44 @@ export function evaluateTerrainFromNoise(
     }
   }
 
-  // 4. Downhill streams (shallow carved channel + smooth natural bank valley)
+  // 4. Narrow, shallow downhill streams (gentle natural swale that cuts cleanly into lake/bog mouths)
   if (bp.streams.length > 0) {
     const st = getStreamSampleAt(x, z, bp);
     if (st) {
-      const bankOuter = st.halfWidth + 7.5;
+      const bankSpan = 3.8;
+      const bankOuter = st.halfWidth + bankSpan;
       if (st.dist < bankOuter) {
-        // Fade carving cleanly at the very mouth where stream enters lake or bog water
-        const mouthFade = st.progress > 0.94 ? 1 - smoothstep(0.94, 1.0, st.progress) * 0.5 : 1;
-        if (st.dist <= st.halfWidth) {
-          const u = st.dist / Math.max(0.2, st.halfWidth);
-          const channelBed = st.waterY - st.depth * (1 - u * u);
-          h = h * (1 - mouthFade) + Math.min(h, channelBed) * mouthFade;
+        const nearTargetLake =
+          lakeSampleAtPos !== null && lakeSampleAtPos.normDist < 1.22 && st.progress > 0.82;
+        const mouthT = st.progress > 0.88 ? smoothstep(0.88, 1.0, st.progress) : 0;
+        // Underlying coarse-terrain trough (>=1.05m half-width) ensures ~2.5m terrain triangles always dip
+        // smoothly beneath the narrow <=1m 3D streambed ribbon even on steep ravines (zero terrain overhang!).
+        const channelCarveW = Math.max(st.halfWidth * 1.65, 1.05);
+        if (st.dist <= channelCarveW) {
+          const u = st.dist / Math.max(0.18, channelCarveW);
+          const bedDip = st.depth + 0.14 + mouthT * 0.16;
+          const channelBed = st.waterY - bedDip * (1 - u * u * 0.72);
+          // Always cut cleanly through lake rim so there is NEVER a dry earth dam across the mouth
           if (h > channelBed) {
-            h = h + (channelBed - h) * mouthFade;
+            h = channelBed;
+          } else if (!nearTargetLake && st.progress < 0.88 && rawBog < 0.18) {
+            h = h * 0.25 + channelBed * 0.75;
           }
         } else {
-          const bankT = (st.dist - st.halfWidth) / 7.5;
+          const bankT = (st.dist - channelCarveW) / Math.max(0.5, bankOuter - channelCarveW);
           const smoothBank = bankT * bankT * (3 - 2 * bankT);
-          const bankFloor = st.waterY + 0.14 + smoothBank * 1.45;
-          const blend = (1 - smoothBank) * 0.88 * mouthFade;
-          h = h * (1 - blend) + Math.min(h, bankFloor + Math.max(0, h - bankFloor) * smoothBank) * blend;
-          const minBankY = st.waterY + 0.18 + smoothBank * 0.35;
-          if (h < minBankY && st.progress < 0.92 && rawBog < 0.18) {
-            h = h + (minBankY - h) * (1 - smoothBank) * 0.85;
+          // Flat-ground brooks stay almost flush with forest floor; steeper runs get a smooth mossy swale
+          const slopeFactor = smoothstep(0.018, 0.08, st.slope);
+          const bankRise = 0.04 + slopeFactor * 0.14 + smoothBank * (0.48 + slopeFactor * 0.52);
+          const bankTarget = st.waterY + bankRise;
+          const blend = (1 - smoothBank) * (nearTargetLake ? 0.65 : 0.88);
+          if (h > bankTarget) {
+            h = h + (bankTarget - h) * blend;
+          }
+          // Keep dry banks slightly above waterY outside the lake mouth / bog so water stays confined
+          const minBankY = st.waterY + 0.07 + smoothBank * 0.18;
+          if (!nearTargetLake && st.progress < 0.86 && rawBog < 0.16 && h < minBankY) {
+            h = h + (minBankY - h) * (1 - smoothBank) * 0.82;
           }
         }
       }
@@ -779,9 +798,9 @@ export function isDryLandForPlanting(
   const lk = getLakeSampleAt(x, z, bp);
   if (lk && lk.normDist < 1.07) return false;
 
-  // Reject inside or immediately on the wet bank of any downhill stream
+  // Reject inside or immediately on the wet edge of any downhill stream so big trunks sit neatly on mossy banks
   const st = getStreamSampleAt(x, z, bp);
-  if (st && st.dist < st.halfWidth + 1.35) return false;
+  if (st && st.dist < st.halfWidth + 1.55) return false;
 
   // Check if center or surrounding ring dips into bog water
   const rawBog = evaluateRawBogMask(x, z, bp.bogLobes, bp.bogBounds);

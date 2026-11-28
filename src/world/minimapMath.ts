@@ -407,7 +407,7 @@ export function createMinimapRenderer(
   for (const stream of bp.streams) {
     if (stream.points.length < 2) continue;
     bCtx.strokeStyle = 'rgba(66, 152, 184, 0.88)';
-    bCtx.lineWidth = Math.max(2.2, (stream.points[Math.floor(stream.points.length * 0.5)].halfWidth * 2 / WORLD_SIZE) * BASE_MAP_PX + 1.2);
+    bCtx.lineWidth = 1.9;
     bCtx.beginPath();
     for (let i = 0; i < stream.points.length; i++) {
       const pt = worldToBaseMapPixel(stream.points[i].x, stream.points[i].z, BASE_MAP_PX);

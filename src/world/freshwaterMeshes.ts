@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { getTerrainHeight } from './terrainMath';
+import { getStreamSampleAt, getTerrainHeight } from './terrainMath';
 import { LakeBlueprint, StreamBlueprint } from './worldBlueprint';
 import { SkyFrameState } from './weatherAndSky';
+import { buildAllStreamVisuals, StreamShaderUniforms } from './streamBuilder';
 
 export interface FreshwaterSystem {
   group: THREE.Group;
@@ -75,7 +76,7 @@ void main() {
   float spec = pow(max(dot(N, H), 0.0), 110.0) * max(L.y, 0.0) * 1.15;
   vec3 sunSpec = uSunColor * spec;
 
-  float shoreFoam = smoothstep(0.28, 0.02, vDepth) * smoothstep(-0.04, 0.04, vDepth) * 0.16;
+  float shoreFoam = smoothstep(0.28, 0.02, vDepth) * smoothstep(-0.04, 0.04, vDepth) * 0.14;
   vec3 col = mix(waterBody, skyRefl, fresnel * 0.78) + sunSpec + vec3(0.22, 0.25, 0.24) * shoreFoam;
 
   // Match scene FogExp2 seamlessly
@@ -88,85 +89,9 @@ void main() {
 }
 `;
 
-const STREAM_VERTEX = /* glsl */ `
-attribute float aSlope;
-varying vec3 vWorldPos;
-varying vec2 vUv;
-varying float vSlope;
-varying float vFogDepth;
-
-void main() {
-  vUv = uv;
-  vSlope = aSlope;
-  vec4 wp = modelMatrix * vec4(position, 1.0);
-  vWorldPos = wp.xyz;
-  vec4 mvPos = viewMatrix * wp;
-  vFogDepth = -mvPos.z;
-  gl_Position = projectionMatrix * mvPos;
-}
-`;
-
-const STREAM_FRAGMENT = /* glsl */ `
-uniform float uTime;
-uniform float uWindStrength;
-uniform vec3 uSunDir;
-uniform vec3 uSunColor;
-uniform vec3 uSkyTop;
-uniform vec3 uSkyHorizon;
-uniform vec3 uFogColor;
-uniform float uFogDensity;
-
-varying vec3 vWorldPos;
-varying vec2 vUv;
-varying float vSlope;
-varying float vFogDepth;
-
-void main() {
-  // vUv.x = across stream [0..1], vUv.y = downstream distance in meters
-  float edgeDist = min(vUv.x, 1.0 - vUv.x);
-  float edgeMask = smoothstep(0.0, 0.18, edgeDist);
-
-  float flowSpeed = 1.35 + clamp(vSlope * 9.0, 0.0, 2.2);
-  float distFlow = vUv.y - uTime * flowSpeed;
-
-  float streak1 = sin(distFlow * 2.4 + sin(vUv.x * 9.0 + distFlow * 0.7) * 1.4);
-  float streak2 = cos(distFlow * 4.3 - vUv.x * 13.0 + uTime * 1.2);
-  float riffle = 0.5 + 0.5 * (streak1 * 0.62 + streak2 * 0.38);
-
-  vec3 N = normalize(vec3(
-    (streak1 * 0.045 + streak2 * 0.03),
-    1.0,
-    (streak2 * 0.045 - streak1 * 0.025)
-  ));
-  vec3 V = normalize(cameraPosition - vWorldPos);
-  float NoV = max(dot(N, V), 0.03);
-  float fresnel = clamp(0.05 + 0.95 * pow(1.0 - NoV, 3.8), 0.0, 0.88);
-
-  vec3 baseCol = mix(vec3(0.048, 0.092, 0.078), vec3(0.088, 0.135, 0.115), riffle * 0.55);
-  vec3 R = reflect(-V, N);
-  vec3 skyRefl = mix(uSkyHorizon, uSkyTop, smoothstep(-0.04, 0.5, max(R.y, 0.0))) * 0.86;
-
-  vec3 L = normalize(uSunDir);
-  vec3 H = normalize(L + V);
-  float spec = pow(max(dot(N, H), 0.0), 85.0) * max(L.y, 0.0) * 1.1;
-
-  // Whitewater foam streaks appear naturally where stream flows faster over steeper grades
-  float slopeBoost = clamp(vSlope * 6.5, 0.08, 0.72);
-  float foam = smoothstep(0.68, 0.96, riffle) * slopeBoost * (0.45 + 0.55 * edgeMask);
-  float bankFoam = smoothstep(0.24, 0.05, edgeDist) * smoothstep(0.0, 0.06, edgeDist) * 0.22;
-
-  vec3 col = mix(baseCol, skyRefl, fresnel * 0.68) + uSunColor * spec + vec3(0.42, 0.45, 0.44) * (foam + bankFoam);
-
-  float fogFactor = 1.0 - exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
-  col = mix(col, uFogColor, clamp(fogFactor, 0.0, 1.0));
-
-  float alpha = edgeMask * (0.78 + fresnel * 0.16 + foam * 0.12);
-  gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.94));
-}
-`;
-
 function buildLakeGeometry(lake: LakeBlueprint): THREE.BufferGeometry {
-  const segs = 28;
+  // Higher shoreline grid density (56x56, ~1 draw call) so narrow stream mouths resolve seamlessly
+  const segs = 56;
   const maxExtent = Math.max(lake.rx, lake.rz) * (1.22 + lake.wobbleAmp * 1.65);
   const geo = new THREE.PlaneGeometry(2, 2, segs, segs);
   const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -184,101 +109,19 @@ function buildLakeGeometry(lake: LakeBlueprint): THREE.BufferGeometry {
     const wx = lake.x + lx;
     const wz = lake.z + lz;
     const groundY = getTerrainHeight(wx, wz);
-    depths[i] = lake.waterY - groundY;
+    let depth = lake.waterY - groundY;
+
+    // Ensure lake water meets any incoming stream mouth continuously with zero clipped shoreline gap
+    const st = getStreamSampleAt(wx, wz);
+    if (st && st.progress > 0.86 && st.dist < st.halfWidth + 1.4 && Math.abs(st.waterY - lake.waterY) < 0.22) {
+      const mouthBlend = 1 - Math.min(1, st.dist / (st.halfWidth + 1.4));
+      depth = Math.max(depth, st.depth * mouthBlend);
+    }
+
+    depths[i] = depth;
   }
 
   geo.setAttribute('aDepth', new THREE.BufferAttribute(depths, 1));
-  geo.computeVertexNormals();
-  geo.computeBoundingSphere();
-  return geo;
-}
-
-function buildStreamRibbonGeometry(stream: StreamBlueprint): THREE.BufferGeometry {
-  // Subdivide polyline 2x for smooth vertical & horizontal curves
-  const src = stream.points;
-  const dense: Array<{
-    x: number;
-    z: number;
-    waterY: number;
-    halfWidth: number;
-    flowX: number;
-    flowZ: number;
-  }> = [];
-
-  for (let i = 0; i < src.length - 1; i++) {
-    const a = src[i];
-    const b = src[i + 1];
-    dense.push(a);
-    let fx = a.flowX + b.flowX;
-    let fz = a.flowZ + b.flowZ;
-    const fl = Math.hypot(fx, fz) || 1;
-    dense.push({
-      x: (a.x + b.x) * 0.5,
-      z: (a.z + b.z) * 0.5,
-      waterY: (a.waterY + b.waterY) * 0.5,
-      halfWidth: (a.halfWidth + b.halfWidth) * 0.5,
-      flowX: fx / fl,
-      flowZ: fz / fl,
-    });
-  }
-  dense.push(src[src.length - 1]);
-
-  const count = dense.length;
-  const positions = new Float32Array(count * 2 * 3);
-  const uvs = new Float32Array(count * 2 * 2);
-  const slopes = new Float32Array(count * 2);
-  const indices: number[] = [];
-
-  let accumDist = 0;
-  for (let i = 0; i < count; i++) {
-    const cur = dense[i];
-    if (i > 0) {
-      accumDist += Math.hypot(cur.x - dense[i - 1].x, cur.z - dense[i - 1].z);
-    }
-
-    const prev = dense[Math.max(0, i - 1)];
-    const next = dense[Math.min(count - 1, i + 1)];
-    const segLen = Math.max(0.5, Math.hypot(next.x - prev.x, next.z - prev.z));
-    const localSlope = Math.max(0, (prev.waterY - next.waterY) / segLen);
-
-    // Tuck ribbon edges ~16% wider than carved channel so water meets banks cleanly with zero gaps
-    const perpX = -cur.flowZ;
-    const perpZ = cur.flowX;
-    const w = cur.halfWidth * 1.18;
-
-    const leftIdx = i * 2;
-    const rightIdx = i * 2 + 1;
-
-    positions[leftIdx * 3] = cur.x - perpX * w;
-    positions[leftIdx * 3 + 1] = cur.waterY;
-    positions[leftIdx * 3 + 2] = cur.z - perpZ * w;
-
-    positions[rightIdx * 3] = cur.x + perpX * w;
-    positions[rightIdx * 3 + 1] = cur.waterY;
-    positions[rightIdx * 3 + 2] = cur.z + perpZ * w;
-
-    uvs[leftIdx * 2] = 0;
-    uvs[leftIdx * 2 + 1] = accumDist;
-    uvs[rightIdx * 2] = 1;
-    uvs[rightIdx * 2 + 1] = accumDist;
-
-    slopes[leftIdx] = localSlope;
-    slopes[rightIdx] = localSlope;
-
-    if (i < count - 1) {
-      const a = i * 2;
-      const b = a + 1;
-      const c = a + 2;
-      const d = a + 3;
-      indices.push(a, c, b, b, c, d);
-    }
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  geo.setAttribute('aSlope', new THREE.BufferAttribute(slopes, 1));
-  geo.setIndex(indices);
   geo.computeVertexNormals();
   geo.computeBoundingSphere();
   return geo;
@@ -291,7 +134,7 @@ export function createFreshwaterSystem(
   const group = new THREE.Group();
   group.name = 'freshwater_system';
 
-  const sharedUniforms = {
+  const sharedUniforms: StreamShaderUniforms = {
     uTime: { value: 0 },
     uWindStrength: { value: 0.3 },
     uSunDir: { value: new THREE.Vector3(0.4, 0.7, 0.3).normalize() },
@@ -311,16 +154,9 @@ export function createFreshwaterSystem(
     side: THREE.DoubleSide,
   });
 
-  const streamMat = new THREE.ShaderMaterial({
-    vertexShader: STREAM_VERTEX,
-    fragmentShader: STREAM_FRAGMENT,
-    uniforms: sharedUniforms,
-    transparent: true,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-
   const geometries: THREE.BufferGeometry[] = [];
+  const materials: THREE.Material[] = [lakeMat];
+  const textures: THREE.Texture[] = [];
   const meshes: THREE.Mesh[] = [];
 
   for (const lake of lakes) {
@@ -339,20 +175,13 @@ export function createFreshwaterSystem(
     meshes.push(mesh);
   }
 
-  for (const stream of streams) {
-    if (stream.points.length < 2) continue;
-    const geo = buildStreamRibbonGeometry(stream);
-    geometries.push(geo);
-    const mesh = new THREE.Mesh(geo, streamMat);
-    mesh.renderOrder = 2;
-    mesh.name = stream.name;
-    mesh.userData = {
-      debugLayer: 'water',
-      debugName: `${stream.name} (Stream)`,
-      debugMeta: { kind: 'stream', targetKind: stream.targetKind },
-    };
-    group.add(mesh);
-    meshes.push(mesh);
+  const streamVisuals = buildAllStreamVisuals(streams, sharedUniforms);
+  geometries.push(...streamVisuals.geometries);
+  materials.push(...streamVisuals.materials);
+  textures.push(...streamVisuals.textures);
+  for (const m of streamVisuals.meshes) {
+    group.add(m);
+    meshes.push(m);
   }
 
   return {
@@ -372,8 +201,8 @@ export function createFreshwaterSystem(
     },
     dispose: () => {
       for (const geo of geometries) geo.dispose();
-      lakeMat.dispose();
-      streamMat.dispose();
+      for (const mat of materials) mat.dispose();
+      for (const tex of textures) tex.dispose();
     },
   };
 }

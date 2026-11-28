@@ -681,13 +681,52 @@ test('Multi-seed map generation invariants: >=1/3 bog, varied roads & 3-6 villag
         st.points[0].waterY > st.points[st.points.length - 1].waterY + 1.0,
         `Seed ${seed}: stream ${st.name} must descend significantly from source to mouth`
       );
-      for (let i = 1; i < st.points.length; i++) {
-        assert.ok(
-          st.points[i].waterY <= st.points[i - 1].waterY + 0.001,
-          `Seed ${seed}: stream ${st.name} flowed uphill at vertex ${i}`
-        );
+      for (let i = 0; i < st.points.length; i++) {
+        const pt = st.points[i];
+        const t = i / (st.points.length - 1);
+        if (t <= 0.88) {
+          // Small forest streams must remain narrow (<= ~1.05m total width) and shallow (<= 0.25m)
+          assert.ok(
+            pt.halfWidth * 2 <= 1.08,
+            `Seed ${seed}: stream ${st.name} width ${(pt.halfWidth * 2).toFixed(2)}m too wide at t=${t.toFixed(2)}`
+          );
+          assert.ok(
+            pt.depth <= 0.25,
+            `Seed ${seed}: stream ${st.name} depth ${pt.depth.toFixed(2)}m too deep at t=${t.toFixed(2)}`
+          );
+        }
+        if (i > 0) {
+          assert.ok(
+            pt.waterY <= st.points[i - 1].waterY + 0.001,
+            `Seed ${seed}: stream ${st.name} flowed uphill at vertex ${i}`
+          );
+        }
       }
       assert.ok(st.targetKind === 'lake' || st.targetKind === 'bog');
+
+      // Verify seamless stream-to-lake mouth: flush waterY and zero dry dam blocking the channel
+      if (st.targetKind === 'lake' && st.targetId) {
+        const targetLake = bp.lakes.find((lk) => lk.id === st.targetId);
+        assert.ok(targetLake, `Seed ${seed}: stream ${st.name} references missing lake ${st.targetId}`);
+        const lastPt = st.points[st.points.length - 1];
+        const prevPt = st.points[st.points.length - 2];
+        assert.ok(
+          Math.abs(lastPt.waterY - targetLake.waterY) < 0.01,
+          `Seed ${seed}: stream ${st.name} mouth waterY ${lastPt.waterY.toFixed(3)} != lake ${targetLake.waterY.toFixed(3)}`
+        );
+        // Sample along the final 2 segments approaching & entering the lake — terrain bed must stay below water surface
+        for (let k = 0; k <= 4; k++) {
+          const frac = k / 4;
+          const sx = prevPt.x + (lastPt.x - prevPt.x) * frac;
+          const sz = prevPt.z + (lastPt.z - prevPt.z) * frac;
+          const expectedWaterY = prevPt.waterY + (lastPt.waterY - prevPt.waterY) * frac;
+          const bedH = getTerrainHeight(sx, sz, bp);
+          assert.ok(
+            bedH < expectedWaterY - 0.04,
+            `Seed ${seed}: dry dam detected at ${st.name} lake mouth (bedH=${bedH.toFixed(2)}, waterY=${expectedWaterY.toFixed(2)})`
+          );
+        }
+      }
     }
 
     // 5. 4-6 abandoned decrepit forest huts with NO trails leading to them
