@@ -1807,6 +1807,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           if (tDiag) {
             perfSample.terrainCacheSize = tDiag.cacheSize;
             perfSample.terrainBuilds += tDiag.geoBuilds;
+            perfSample.terrainWorkerBuilds += tDiag.workerBuilds;
             perfSample.terrainEvictions += tDiag.geoEvictions;
             perfSample.terrainRecenters += tDiag.recenters;
           }
@@ -1845,6 +1846,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           const emitted = perfLogger.observe(perfSample, document.hidden);
           if (emitted) {
             perfSample.terrainBuilds = 0;
+            perfSample.terrainWorkerBuilds = 0;
             perfSample.terrainEvictions = 0;
             perfSample.terrainRecenters = 0;
             perfSample.foliageBakes = 0;
@@ -1868,6 +1870,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
             perfSample.colliderCells = vd.colliderCells;
           }
           perfSample.terrainBuilds = 0;
+          perfSample.terrainWorkerBuilds = 0;
           perfSample.terrainEvictions = 0;
           perfSample.terrainRecenters = 0;
           perfSample.foliageBakes = 0;
@@ -2111,7 +2114,10 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
           bogShoreDepth.centerZ,
           bogShoreDepth.radius
         );
-        terrainMgr.prewarmAround(player.pos.x, player.pos.z);
+        const distances = qualityCtrl.smoothedQuality;
+        await terrainMgr.prewarmAround(player.pos.x, player.pos.z, distances.maxRenderDist,
+          distances.terrainLod0Dist, distances.terrainLod1Dist);
+        if (disposed || cleanedUp) return;
         scene.add(terrainMgr.group);
         renderer.shadowMap.needsUpdate = true;
 

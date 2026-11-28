@@ -23,6 +23,10 @@ The 269 ms worst frame contained just 8 ms of timed tick work. The timer stops a
 
 Node 22, seed 2026, six warmups then 30 calls. One detailed shoreline chunk took 27.2 ms median with WASM (51.7 ms p95), and 26.4 ms with the JS fallback (41.6 ms p95). These time fillTerrainChunk with preallocated output buffers. Uncached grass tile baking with empty shelters took 10.8 ms median (19.3 ms p95). These timings describe individual CPU operations. Hardware gameplay FPS requires a browser replay.
 
+## Terrain streaming in the game
+
+The corrected village-road harness on the earlier map measured a 132.56 ms worst frame on the main thread and 33.28 ms with the same builder in a worker. The Rust worker reduced p95 chunk latency from 29 ms to 22 ms. Both workers recorded 17.16 ms p95 frame intervals and delivered all 39 chunks on time. This comparison motivated moving the existing builder. The production implementation uses the terrain rules from revision `60962a4`, including freshwater shorelines and stream culverts. Production verification is recorded in the ledger.
+
 ## Acceptance
 
 Use identical seed, camera path, weather, hour, quality and resolution. Compare a cold traversal for hitches and warm repeats for steady FPS. Collect p50/p95/p99 frame intervals, full-callback time, per-pass draw counts and asynchronous GPU timings when supported. Keep visual comparisons at fixed simulation time. Implementation results are in [the performance ledger](perf-ledger.md).

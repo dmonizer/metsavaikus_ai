@@ -197,6 +197,7 @@ function makePerfSample(overrides: Partial<FramePerfSample> = {}): FramePerfSamp
     foliageRendered: 9800,
     terrainCacheSize: 210,
     terrainBuilds: 0,
+    terrainWorkerBuilds: 0,
     terrainEvictions: 0,
     terrainRecenters: 0,
     foliageCacheSize: 180,

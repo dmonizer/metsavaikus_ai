@@ -44,8 +44,16 @@ Removed the per-vertex depth attribute and its terrain sampling. The fragment sh
 
 ## Outstanding measurements
 
-The target GPU was unavailable locally. The CPU harness and SwiftShader image fixtures establish output parity on the sampled inputs. Hardware frame-time percentiles, per-pass GPU time, upload bandwidth and shader first-use stalls still need a repeatable hardware capture. Whole-chunk worker/WASM generation, partial instance uploads, shader prewarming and narrower shadow invalidation remain open experiments.
+The target GPU was unavailable locally. The CPU harness and SwiftShader image fixtures establish output parity on the sampled inputs. Hardware frame-time percentiles, per-pass GPU time, upload bandwidth and shader first-use stalls still need a repeatable hardware capture. The production terrain worker is recorded below. Partial instance uploads, shader prewarming and narrower shadow invalidation remain open experiments.
 
 ## Boardwalk visibility correction
 
 The long deck batch used an 18 m structure sphere at the bog center, while sleepers used native instance culling. A fixed camera on the southeast leg of seed 2026 reproduced the missing deck when facing SE. Both batches now use the trail's full bounds for fog distance and native per-camera instance culling. The Chrome rendering fixture checks deck pixels in both directions from the same spot.
+
+## 8. Terrain chunk worker
+
+The terrain manager prewarms the spawn area on one module worker, then predicts nearby requests across all viewing directions. Adjacent detail bands overlap by 24 m. Replanning replaces queued work as the camera or quality distances move. The worker uses the live seeded terrain builder, including freshwater shaping, shoreline stitching, four normal samples per vertex, colors, UVs and splats. Index buffers and the bounded geometry cache stay with the renderer. A visible cache miss builds the exact requested mesh immediately. Worker startup or runtime failure falls back to the same builder locally. Startup now pays for the surrounding warm cache before enabling entry.
+
+Across two seeds, the before/after SHA-256 of 24 meshes (all five attributes, indices and bounding spheres) matched `cf66a75f5aa5ff2c4ce3faefd5751cb2bb9b7fe65b378febd8cd8b76ec008fa7`. Chrome independently compared 18 real worker responses with uncached game builds byte for byte, including stream and bog-pool geometry at all three LODs. The browser check also covered camera turns after prewarming, zero synchronous mesh builds across those views, and disposal with work in flight. Performance reports expose the worker subtotal as `tWorkerBuild` within `tBuild`.
+
+A production-game walk on seed 7013 used Chrome on a GTX 1650 Max-Q, fixed quality tier 2, clear weather and a 96 m route over 16 seconds. The worker delivered 46 additional meshes during the walk. Across 555 animation-frame intervals, p95 was 50.0 ms and the maximum was 83.5 ms. This is a single full-game hardware capture. A separate headless run forced worker creation to fail and verified the same route completed in fallback mode.

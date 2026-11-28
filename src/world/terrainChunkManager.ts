@@ -3,22 +3,19 @@ import {
   ACTIVE_GRID,
   CHUNK_COUNT,
   CHUNK_SIZE,
-  clamp,
-  distToRoadDetail,
   getActiveBlueprint,
-  getDistanceToNearestVillage,
-  getNearestSwampIsland,
-  getSwampFactor,
   getTerrainHeight,
-  SWAMP_WATER_Y,
   WORLD_HALF,
   worldToVirtualChunk,
 } from './terrainMath';
 import { ComputeEngine } from './wasmCompute';
+import {
+  buildTerrainChunk, LOD_SEGS, SHORE_LOD0_SEGS, type TerrainLod, type TerrainChunkData,
+} from './terrainChunkGeometry';
+import { TerrainChunkPrefetch, type PrefetchJob } from './terrainChunkPrefetch';
 
-const LOD_SEGS = [24, 12, 6] as const;
-const SHORE_LOD0_SEGS = 48;
 const MAX_GEO_CACHE = 420;
+const TERRAIN_LODS = [0, 1, 2] as const;
 
 function buildGridIndices(segs: number): Uint16Array {
   const dim = segs + 1;
@@ -82,9 +79,17 @@ export class TerrainChunkManager {
   private readonly terrainFadeStartUniform = { value: 196.0 };
   private readonly terrainFadeEndUniform = { value: 236.0 };
 
+  private prefetch: TerrainChunkPrefetch | null = null;
+  private plannedX = Infinity;
+  private plannedZ = Infinity;
+  private plannedRange = Infinity;
+  private plannedLod0 = Infinity;
+  private plannedLod1 = Infinity;
+
   private centerVcx = 99999;
   private centerVcz = 99999;
   private diagGeoBuilds = 0;
+  private diagWorkerBuilds = 0;
   private diagGeoEvictions = 0;
   private diagRecenters = 0;
 
@@ -336,107 +341,19 @@ export class TerrainChunkManager {
       return existing;
     }
 
-    const minX = vcx * CHUNK_SIZE;
-    const minZ = vcz * CHUNK_SIZE;
-    const bp = getActiveBlueprint();
-    const maxX = minX + CHUNK_SIZE;
-    const maxZ = minZ + CHUNK_SIZE;
-    let isShoreDetailLod0 = false;
-    if (lod === 0) {
-      for (let i = 0; i < bp.bogPools.length && !isShoreDetailLod0; i++) {
-        const p = bp.bogPools[i];
-        if (maxX >= p.minX - 6 && minX <= p.maxX + 6 && maxZ >= p.minZ - 6 && minZ <= p.maxZ + 6) {
-          isShoreDetailLod0 = true;
-        }
-      }
-      for (let i = 0; i < bp.lakes.length && !isShoreDetailLod0; i++) {
-        const lk = bp.lakes[i];
-        if (maxX >= lk.minX && minX <= lk.maxX && maxZ >= lk.minZ && minZ <= lk.maxZ) {
-          isShoreDetailLod0 = true;
-        }
-      }
-      for (let i = 0; i < bp.streams.length && !isShoreDetailLod0; i++) {
-        const st = bp.streams[i];
-        if (maxX >= st.minX && minX <= st.maxX && maxZ >= st.minZ && minZ <= st.maxZ) {
-          isShoreDetailLod0 = true;
-        }
-      }
-    }
-    const isBogShoreLod0 = isShoreDetailLod0;
-    const segs = isBogShoreLod0 ? SHORE_LOD0_SEGS : LOD_SEGS[lod];
-    const vertCount = (segs + 1) * (segs + 1);
-    const positions = new Float32Array(vertCount * 3);
-    const normals = new Float32Array(vertCount * 3);
-    const colors = new Float32Array(vertCount * 3);
+    // A cold teleport or a missed prefetch deadline still requires the exact visible mesh.
+    return this.cacheGeometry(key, lod, buildTerrainChunk(this.compute, { vcx, vcz, lod }));
+  }
 
-    this.compute.fillTerrainChunk(minX, minZ, CHUNK_SIZE, segs, positions, normals, colors);
-
-    const uvs = new Float32Array(vertCount * 2);
-    const splats = new Float32Array(vertCount * 4);
-    const dim = segs + 1;
-    for (let iz = 0; iz < dim; iz++) {
-      const wz = minZ + (iz / segs) * CHUNK_SIZE;
-      for (let ix = 0; ix < dim; ix++) {
-        const wx = minX + (ix / segs) * CHUNK_SIZE;
-        const vIdx = iz * dim + ix;
-        uvs[vIdx * 2] = wx * 0.24;
-        uvs[vIdx * 2 + 1] = wz * 0.24;
-
-        // Compute 4-biome splat weights: [road, meadow, forest, bog]
-        const roadInfo = distToRoadDetail(wx, wz);
-        const roadW = clamp(1 - (roadInfo.dist - 1.35) / 2.25, 0, 1);
-
-        const isl = getNearestSwampIsland(wx, wz);
-        const rawSwamp = getSwampFactor(wx, wz);
-        const bogW = isl.islandMask > 0.45 ? 0 : clamp((rawSwamp - 0.14) / 0.52, 0, 1);
-
-        const nearV = getDistanceToNearestVillage(wx, wz);
-        const clearR = nearV.clearingRadius || 18;
-        const villageClearing =
-          nearV.village !== null
-            ? clamp(1 - (nearV.dist - clearR * 0.55) / (clearR * 0.65), 0, 1)
-            : 0;
-        const meadowW = clamp(Math.max(villageClearing, (1 - bogW) * 0.18), 0, 1);
-        const forestW = clamp(1 - Math.max(villageClearing * 0.85, bogW), 0, 1);
-
-        splats[vIdx * 4] = roadW;
-        splats[vIdx * 4 + 1] = meadowW;
-        splats[vIdx * 4 + 2] = forestW;
-        splats[vIdx * 4 + 3] = bogW;
-      }
-    }
-
-    // Stitch odd perimeter vertices on 48-seg bog shoreline chunks to even neighbor midpoints (zero T-junction cracks!)
-    if (isBogShoreLod0) {
-      const stitchMid = (dst: number, a: number, b: number) => {
-        positions[dst * 3 + 1] = 0.5 * (positions[a * 3 + 1] + positions[b * 3 + 1]);
-        normals[dst * 3] = 0.5 * (normals[a * 3] + normals[b * 3]);
-        normals[dst * 3 + 1] = 0.5 * (normals[a * 3 + 1] + normals[b * 3 + 1]);
-        normals[dst * 3 + 2] = 0.5 * (normals[a * 3 + 2] + normals[b * 3 + 2]);
-        colors[dst * 3] = 0.5 * (colors[a * 3] + colors[b * 3]);
-        colors[dst * 3 + 1] = 0.5 * (colors[a * 3 + 1] + colors[b * 3 + 1]);
-        colors[dst * 3 + 2] = 0.5 * (colors[a * 3 + 2] + colors[b * 3 + 2]);
-      };
-      for (let ix = 1; ix < segs; ix += 2) {
-        stitchMid(ix, ix - 1, ix + 1);
-        const bot = segs * dim + ix;
-        stitchMid(bot, bot - 1, bot + 1);
-      }
-      for (let iz = 1; iz < segs; iz += 2) {
-        const left = iz * dim;
-        stitchMid(left, left - dim, left + dim);
-        const right = iz * dim + segs;
-        stitchMid(right, right - dim, right + dim);
-      }
-    }
-
+  private cacheGeometry(key: string, lod: TerrainLod, data: TerrainChunkData): THREE.BufferGeometry {
+    const { positions, normals, colors, uvs, splats, segs } = data;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geo.setAttribute('aSplat', new THREE.BufferAttribute(splats, 4));
-    geo.setIndex(isBogShoreLod0 ? this.shoreIndices : this.sharedIndices[lod]);
+    geo.setIndex(segs === SHORE_LOD0_SEGS ? this.shoreIndices : this.sharedIndices[lod]);
     geo.computeBoundingSphere();
 
     this.geoCache.set(key, geo);
@@ -517,7 +434,61 @@ export class TerrainChunkManager {
     }
   }
 
-  prewarmAround(x: number, z: number): void {
+  // Refresh before the camera can exhaust the lead distance in any direction.
+  private planTerrain(x: number, z: number, range: number, lod0: number, lod1: number): void {
+    if (!this.prefetch?.available) return;
+    if (Math.hypot(x - this.plannedX, z - this.plannedZ) < 8 &&
+        Math.abs(range - this.plannedRange) < 8 && Math.abs(lod0 - this.plannedLod0) < 4 &&
+        Math.abs(lod1 - this.plannedLod1) < 4) return;
+    this.plannedX = x;
+    this.plannedZ = z;
+    this.plannedRange = range;
+    this.plannedLod0 = lod0;
+    this.plannedLod1 = lod1;
+
+    // Overlap adjacent detail bands so a turn or LOD transition is already cached.
+    const lead = CHUNK_SIZE / 2;
+    const radius = range + lead;
+    const jobs: PrefetchJob[] = [];
+    const minChunk = worldToVirtualChunk(x - radius, z - radius);
+    const maxChunk = worldToVirtualChunk(x + radius, z + radius);
+    for (let vcz = minChunk.vcz; vcz <= maxChunk.vcz; vcz++) {
+      for (let vcx = minChunk.vcx; vcx <= maxChunk.vcx; vcx++) {
+        const cx = (vcx + 0.5) * CHUNK_SIZE;
+        const cz = (vcz + 0.5) * CHUNK_SIZE;
+        if (Math.max(Math.abs(cx), Math.abs(cz)) > WORLD_HALF + CHUNK_SIZE) continue;
+        const distance = Math.hypot(cx - x, cz - z);
+        if (distance > radius) continue;
+        const nearestLod = distance < lod0 ? 0 : distance < lod1 ? 1 : 2;
+        for (const lod of TERRAIN_LODS) {
+          if (lod === 0 && distance > lod0 + lead) continue;
+          if (lod === 1 && (distance < lod0 - lead || distance > lod1 + lead)) continue;
+          if (lod === 2 && distance < lod1 - lead) continue;
+          const key = `${vcx}_${vcz}_${lod}`;
+          if (!this.geoCache.has(key)) {
+            jobs.push({ vcx, vcz, lod, key, priority: distance + (lod === nearestLod ? 0 : lead) });
+          }
+        }
+      }
+    }
+    this.prefetch.schedule(jobs);
+  }
+
+  async prewarmAround(x: number, z: number, range = 225, lod0 = 58, lod1 = 118): Promise<void> {
+    this.prefetch ??= new TerrainChunkPrefetch(
+      getActiveBlueprint().seed, this.compute.isWasmActive,
+      key => this.geoCache.has(key),
+      (job, data) => {
+        this.cacheGeometry(job.key, job.lod, data);
+        this.diagWorkerBuilds++;
+      }
+    );
+    if (this.prefetch.available) {
+      this.planTerrain(x, z, range, lod0, lod1);
+      await this.prefetch.whenIdle();
+      if (!this.prefetch || this.prefetch.available) return;
+    }
+    // Worker unavailable: retain the original synchronous startup coverage.
     const { vcx, vcz } = worldToVirtualChunk(x, z);
     this.recenterWindow(vcx, vcz);
     for (let i = 0; i < CHUNK_COUNT; i++) {
@@ -576,6 +547,7 @@ export class TerrainChunkManager {
     }
 
     const clampedMax = Math.max(72, Math.min(264, maxRenderDist));
+    this.planTerrain(camera.position.x, camera.position.z, clampedMax, lod0Dist, lod1Dist);
     const effectiveFadeMax = Math.min(clampedMax, 238);
     this.terrainFadeEndUniform.value = effectiveFadeMax - 2;
     this.terrainFadeStartUniform.value = Math.max(40, effectiveFadeMax - 38);
@@ -650,6 +622,7 @@ export class TerrainChunkManager {
   consumeDiagnostics(): {
     cacheSize: number;
     geoBuilds: number;
+    workerBuilds: number;
     geoEvictions: number;
     recenters: number;
     centerVcx: number;
@@ -658,18 +631,22 @@ export class TerrainChunkManager {
     const out = {
       cacheSize: this.geoCache.size,
       geoBuilds: this.diagGeoBuilds,
+      workerBuilds: this.diagWorkerBuilds,
       geoEvictions: this.diagGeoEvictions,
       recenters: this.diagRecenters,
       centerVcx: this.centerVcx,
       centerVcz: this.centerVcz,
     };
     this.diagGeoBuilds = 0;
+    this.diagWorkerBuilds = 0;
     this.diagGeoEvictions = 0;
     this.diagRecenters = 0;
     return out;
   }
 
   dispose(): void {
+    this.prefetch?.dispose();
+    this.prefetch = null;
     this.fallbackShoreDepthTex.dispose();
     this.material.dispose();
     for (const g of this.geoCache.values()) {

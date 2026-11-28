@@ -231,6 +231,7 @@ export function createInitialPerfSample(
     foliageRendered: 0,
     terrainCacheSize: 0,
     terrainBuilds: 0,
+    terrainWorkerBuilds: 0,
     terrainEvictions: 0,
     terrainRecenters: 0,
     foliageCacheSize: 0,

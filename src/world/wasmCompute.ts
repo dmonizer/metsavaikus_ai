@@ -372,7 +372,8 @@ export class ComputeEngine {
     this.isWasmActive = exports !== null;
   }
 
-  static async create(): Promise<ComputeEngine> {
+  static async create(useWasm = true): Promise<ComputeEngine> {
+    if (!useWasm) return new ComputeEngine(null);
     try {
       const bytes = buildWasmBinary();
       const module = await WebAssembly.compile(bytes.buffer as ArrayBuffer);

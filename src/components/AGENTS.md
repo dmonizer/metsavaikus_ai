@@ -14,6 +14,7 @@ Read this guide for `src/App.tsx` and `src/components/`. For world objects or ph
   - `worldActionsBuilder.ts`: React-facing command bridge implementing `WorldActions`.
 - `worldRuntimeContracts.ts` holds type-only contracts (`GamePhase`, `WorldHudRefs`, `WorldSurvivalSnapshot`, `WorldCallbacks`, `WorldActions`) shared between `App.tsx`, HUD components, and the Three.js runtime (re-exported from `MetsavaikusWorld.tsx` for compatibility). Keep `App.tsx` importing only `worldRuntimeContracts.ts` types so Three.js remains isolated in the lazy world chunk.
 - Frequent vital/HUD updates write through `WorldHudRefs` with cached values. Snapshots update React less frequently. Keep frame-frequency data out of React state unless required by a UI interaction.
+- Initial world readiness includes the spawn-area terrain worker prewarm. Unmount terminates its worker before releasing the terrain cache.
 - The world effect rebuilds on seed or ref-object identity changes. Its callbacks and mutable preference refs let ordinary UI updates reach the existing world.
 - App startup uses the URL seed when valid. An unseeded load and the new-map action each draw a random seed in the range 1000–89999.
 

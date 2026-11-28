@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { verifyTerrainWorker } from './terrain-worker';
 import { ShelterGeometry, excludeShelterVegetation } from '../src/world/shelterGeometry';
 import { extractFrustumPlanes } from '../src/world/forestFrustumCuller';
 import { ComputeEngine } from '../src/world/wasmCompute';
@@ -223,8 +224,9 @@ async function verify() {
   weather.dispose();
   shelters.dispose();
   renderer.dispose();
+  const workerTerrainMeshes = await verifyTerrainWorker();
   const result = {
-    deckNW, deckSE, shoreCalm, shoreWind, waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
+    workerTerrainMeshes, deckNW, deckSE, shoreCalm, shoreWind, waterDown, waterSky, waterDrawn, downReflection, skyReflection, edgeReflection,
     grassBefore,
     grassPitched,
     grassPacked,

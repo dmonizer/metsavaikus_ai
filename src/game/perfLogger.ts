@@ -37,6 +37,7 @@ export interface FramePerfSample {
   foliageRendered: number;
   terrainCacheSize: number;
   terrainBuilds: number;
+  terrainWorkerBuilds: number;
   terrainEvictions: number;
   terrainRecenters: number;
   foliageCacheSize: number;
@@ -126,6 +127,7 @@ export interface PerfReportEntry {
     overlays: string;
     tCache: number;
     tBuild: number;
+    tWorkerBuild: number;
     tEvict: number;
     tRecenter: number;
     fCache: number;
@@ -422,6 +424,7 @@ export class FpsDropLogger {
         overlays: s.overlays || 'none',
         tCache: s.terrainCacheSize,
         tBuild: s.terrainBuilds,
+        tWorkerBuild: s.terrainWorkerBuilds,
         tEvict: s.terrainEvictions,
         tRecenter: s.terrainRecenters,
         fCache: s.foliageCacheSize,
