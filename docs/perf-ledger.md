@@ -74,3 +74,9 @@ The first validated protocol-v3 run used Chrome 156.0.8078.79 and an NVIDIA GTX 
 | Bog shore, rain | 1,336 | 53.5 | 27.0 ms | 1,336 | 1,333 | 3.06 ms |
 
 The run directory is `perf-runs/2026-11-28T09-08-25.863Z-FxReAG`. Each scene has 29 independently readable sections. For this baseline, use `reflection-gpu bog-shore-rain` as the last two arguments to `perf:compare` to inspect mirror GPU timings. Pending GPU queries at the end of a leg are excluded.
+
+## 10. Rust terrain noise grid
+
+The first Rust slice replaces the lattice hash, smooth noise and batched fBm grid. Seeded terrain shaping, normal samples and mesh density keep their existing implementations. On Node 22, alternating against the handwritten kernel from `95e7220`, p50 noise-grid time in microseconds changed from 7.54 to 5.79 (7×7), 26.44 to 19.48 (13×13), 94.41 to 69.78 (25×25), and 367.77 to 282.91 (49×49). Each result is the median of 30 warm batches. These are isolated grid timings.
+
+All 128 grid outputs and 512 culling results in the kernel benchmark matched the original bytes. A separate comparison of 24 entire meshes across seeds 2026 and 7013, four locations per seed and all three LODs matched every position, normal, color, UV and splat byte. Combined attribute SHA-256 was `4992797c434d7630001b97582bfb821e8b382b0956e84c9dd3b87f3af2abe8cb`.

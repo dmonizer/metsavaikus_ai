@@ -1,3 +1,4 @@
+import { terrainWasmBase64 } from './generated/terrainWasm';
 import {
   distToRoadDetail,
   evaluateTerrainFromNoise,
@@ -12,10 +13,6 @@ import {
   smoothNoise,
   SWAMP_WATER_Y,
 } from './terrainMath';
-
-// ============================================================================
-// Compact Zero-Dependency WebAssembly Binary Builder & Kernel
-// ============================================================================
 
 const VAL_I32 = 0x7f;
 const VAL_F32 = 0x7d;
@@ -50,12 +47,6 @@ function sleb(n: number): number[] {
   return out;
 }
 
-function f32Bytes(v: number): number[] {
-  const buf = new ArrayBuffer(4);
-  new DataView(buf).setFloat32(0, v, true);
-  return Array.from(new Uint8Array(buf));
-}
-
 function strBytes(s: string): number[] {
   const bytes = Array.from(new TextEncoder().encode(s));
   return [...uleb(bytes.length), ...bytes];
@@ -82,98 +73,32 @@ const OP = {
   end: 0x0b,
   br: 0x0c,
   br_if: 0x0d,
-  call: 0x10,
   localGet: 0x20,
   localSet: 0x21,
   localTee: 0x22,
   f32Load: 0x2a,
   i32Store: 0x36,
-  f32Store: 0x38,
   i32Const: 0x41,
-  f32Const: 0x43,
   i32GeS: 0x4e,
   f32Lt: 0x5d,
   f32Gt: 0x5e,
   i32Add: 0x6a,
-  i32Mul: 0x6c,
-  i32Xor: 0x73,
   i32Shl: 0x74,
-  i32ShrU: 0x76,
   f32Neg: 0x8c,
-  f32Floor: 0x8e,
   f32Add: 0x92,
   f32Sub: 0x93,
   f32Mul: 0x94,
-  i32TruncF32S: 0xa8,
-  f32ConvertI32S: 0xb2,
-  f32ConvertI32U: 0xb3,
 } as const;
 
-function buildWasmBinary(): Uint8Array {
+function buildCullBinary(): Uint8Array {
   const typeSection = section(1, [
-    ...uleb(4),
-    0x60, ...uleb(2), VAL_I32, VAL_I32, ...uleb(1), VAL_F32,
-    0x60, ...uleb(2), VAL_F32, VAL_F32, ...uleb(1), VAL_F32,
-    0x60, ...uleb(10),
+    ...uleb(1), 0x60, ...uleb(10),
     VAL_I32, VAL_I32, VAL_I32, VAL_F32, VAL_F32, VAL_F32, VAL_F32, VAL_F32, VAL_F32, VAL_I32,
     ...uleb(1), VAL_I32,
-    0x60, ...uleb(5), VAL_I32, VAL_F32, VAL_F32, VAL_F32, VAL_I32, ...uleb(0),
   ]);
-
-  const funcSection = section(3, [...uleb(4), 0, 1, 2, 3]);
-  const memorySection = section(5, [...uleb(1), 0x00, ...uleb(16)]);
-
-  const exportSection = section(7, [
-    ...uleb(5),
-    ...strBytes('memory'), 0x02, ...uleb(0),
-    ...strBytes('hash2i'), 0x00, ...uleb(0),
-    ...strBytes('smoothNoise'), 0x00, ...uleb(1),
-    ...strBytes('cullChunks'), 0x00, ...uleb(2),
-    ...strBytes('fillNoiseGrid'), 0x00, ...uleb(3),
-  ]);
-
-  const hash2iBody = funcBody(
-    [[1, VAL_I32]],
-    [
-      OP.localGet, 0, OP.i32Const, ...sleb(374761393), OP.i32Mul,
-      OP.localGet, 1, OP.i32Const, ...sleb(668265263), OP.i32Mul,
-      OP.i32Xor,
-      OP.i32Const, ...sleb(0x5bd1e995 | 0), OP.i32Xor,
-      OP.localTee, 2,
-      OP.localGet, 2, OP.i32Const, ...sleb(13), OP.i32ShrU, OP.i32Xor,
-      OP.i32Const, ...sleb(1274126177), OP.i32Mul,
-      OP.localTee, 2,
-      OP.localGet, 2, OP.i32Const, ...sleb(16), OP.i32ShrU, OP.i32Xor,
-      OP.f32ConvertI32U,
-      OP.f32Const, ...f32Bytes(2.3283064365386963e-10),
-      OP.f32Mul,
-    ]
-  );
-
-  const smoothNoiseBody = funcBody(
-    [[2, VAL_I32], [8, VAL_F32]],
-    [
-      OP.localGet, 0, OP.f32Floor, OP.localTee, 4, OP.i32TruncF32S, OP.localSet, 2,
-      OP.localGet, 1, OP.f32Floor, OP.localTee, 5, OP.i32TruncF32S, OP.localSet, 3,
-      OP.localGet, 0, OP.localGet, 4, OP.f32Sub, OP.localSet, 4,
-      OP.localGet, 1, OP.localGet, 5, OP.f32Sub, OP.localSet, 5,
-      OP.localGet, 4, OP.localGet, 4, OP.f32Mul,
-      OP.f32Const, ...f32Bytes(3), OP.f32Const, ...f32Bytes(2), OP.localGet, 4, OP.f32Mul, OP.f32Sub,
-      OP.f32Mul, OP.localSet, 6,
-      OP.localGet, 5, OP.localGet, 5, OP.f32Mul,
-      OP.f32Const, ...f32Bytes(3), OP.f32Const, ...f32Bytes(2), OP.localGet, 5, OP.f32Mul, OP.f32Sub,
-      OP.f32Mul, OP.localSet, 7,
-      OP.localGet, 2, OP.localGet, 3, OP.call, 0, OP.localSet, 8,
-      OP.localGet, 2, OP.i32Const, 1, OP.i32Add, OP.localGet, 3, OP.call, 0, OP.localSet, 9,
-      OP.localGet, 2, OP.localGet, 3, OP.i32Const, 1, OP.i32Add, OP.call, 0, OP.localSet, 10,
-      OP.localGet, 2, OP.i32Const, 1, OP.i32Add, OP.localGet, 3, OP.i32Const, 1, OP.i32Add, OP.call, 0, OP.localSet, 11,
-      OP.localGet, 8,
-      OP.localGet, 9, OP.localGet, 8, OP.f32Sub, OP.localGet, 6, OP.f32Mul, OP.f32Add,
-      OP.localGet, 10, OP.localGet, 8, OP.f32Sub, OP.localGet, 7, OP.f32Mul, OP.f32Add,
-      OP.localGet, 8, OP.localGet, 9, OP.f32Sub, OP.localGet, 10, OP.f32Sub, OP.localGet, 11, OP.f32Add,
-      OP.localGet, 6, OP.f32Mul, OP.localGet, 7, OP.f32Mul, OP.f32Add,
-    ]
-  );
+  const imports = section(2, [1, ...strBytes('env'), ...strBytes('memory'), 2, 0, 1]);
+  const funcSection = section(3, [1, 0]);
+  const exportSection = section(7, [1, ...strBytes('cullChunks'), 0, 0]);
 
   const cullChunksBody = funcBody(
     [[7, VAL_I32], [10, VAL_F32]],
@@ -242,99 +167,15 @@ function buildWasmBinary(): Uint8Array {
     ]
   );
 
-  const fillNoiseGridBody = funcBody(
-    [[4, VAL_I32], [5, VAL_F32]],
-    [
-      OP.localGet, 0, OP.localSet, 7,
-      OP.i32Const, 0, OP.localSet, 5,
-      OP.block, 0x40,
-      OP.loop, 0x40,
-        OP.localGet, 5, OP.localGet, 4, OP.i32GeS, OP.br_if, 1,
-        OP.localGet, 2, OP.localGet, 5, OP.f32ConvertI32S, OP.localGet, 3, OP.f32Mul, OP.f32Add,
-        OP.localSet, 10,
-        OP.i32Const, 0, OP.localSet, 6,
-        OP.block, 0x40,
-        OP.loop, 0x40,
-          OP.localGet, 6, OP.localGet, 4, OP.i32GeS, OP.br_if, 1,
-          OP.localGet, 1, OP.localGet, 6, OP.f32ConvertI32S, OP.localGet, 3, OP.f32Mul, OP.f32Add,
-          OP.localSet, 9,
-          OP.f32Const, ...f32Bytes(0), OP.localSet, 11,
-          OP.f32Const, ...f32Bytes(0.5), OP.localSet, 12,
-          OP.f32Const, ...f32Bytes(0.008), OP.localSet, 13,
-          OP.i32Const, 0, OP.localSet, 8,
-          OP.block, 0x40,
-          OP.loop, 0x40,
-            OP.localGet, 8, OP.i32Const, 4, OP.i32GeS, OP.br_if, 1,
-            OP.localGet, 11,
-            OP.localGet, 9, OP.localGet, 13, OP.f32Mul,
-            OP.localGet, 10, OP.localGet, 13, OP.f32Mul,
-            OP.call, 1,
-            OP.f32Const, ...f32Bytes(2), OP.f32Mul, OP.f32Const, ...f32Bytes(1), OP.f32Sub,
-            OP.localGet, 12, OP.f32Mul, OP.f32Add, OP.localSet, 11,
-            OP.localGet, 13, OP.f32Const, ...f32Bytes(2.02), OP.f32Mul, OP.localSet, 13,
-            OP.localGet, 12, OP.f32Const, ...f32Bytes(0.5), OP.f32Mul, OP.localSet, 12,
-            OP.localGet, 8, OP.i32Const, 1, OP.i32Add, OP.localSet, 8,
-            OP.br, 0,
-          OP.end,
-          OP.end,
-          OP.localGet, 7, OP.localGet, 11, OP.f32Store, 2, 0,
-          OP.f32Const, ...f32Bytes(0), OP.localSet, 11,
-          OP.f32Const, ...f32Bytes(0.5), OP.localSet, 12,
-          OP.f32Const, ...f32Bytes(0.03), OP.localSet, 13,
-          OP.i32Const, 0, OP.localSet, 8,
-          OP.block, 0x40,
-          OP.loop, 0x40,
-            OP.localGet, 8, OP.i32Const, 2, OP.i32GeS, OP.br_if, 1,
-            OP.localGet, 11,
-            OP.localGet, 9, OP.localGet, 13, OP.f32Mul,
-            OP.localGet, 10, OP.localGet, 13, OP.f32Mul,
-            OP.call, 1,
-            OP.f32Const, ...f32Bytes(2), OP.f32Mul, OP.f32Const, ...f32Bytes(1), OP.f32Sub,
-            OP.localGet, 12, OP.f32Mul, OP.f32Add, OP.localSet, 11,
-            OP.localGet, 13, OP.f32Const, ...f32Bytes(2.02), OP.f32Mul, OP.localSet, 13,
-            OP.localGet, 12, OP.f32Const, ...f32Bytes(0.5), OP.f32Mul, OP.localSet, 12,
-            OP.localGet, 8, OP.i32Const, 1, OP.i32Add, OP.localSet, 8,
-            OP.br, 0,
-          OP.end,
-          OP.end,
-          OP.localGet, 7, OP.localGet, 11, OP.f32Store, 2, 4,
-          OP.localGet, 7,
-          OP.localGet, 9, OP.f32Const, ...f32Bytes(0.09), OP.f32Mul,
-          OP.localGet, 10, OP.f32Const, ...f32Bytes(0.09), OP.f32Mul,
-          OP.call, 1,
-          OP.f32Store, 2, 8,
-          OP.localGet, 7, OP.i32Const, 12, OP.i32Add, OP.localSet, 7,
-          OP.localGet, 6, OP.i32Const, 1, OP.i32Add, OP.localSet, 6,
-          OP.br, 0,
-        OP.end,
-        OP.end,
-        OP.localGet, 5, OP.i32Const, 1, OP.i32Add, OP.localSet, 5,
-        OP.br, 0,
-      OP.end,
-      OP.end,
-    ]
-  );
-
-  const codeSection = section(10, [
-    ...uleb(4),
-    ...hash2iBody,
-    ...smoothNoiseBody,
-    ...cullChunksBody,
-    ...fillNoiseGridBody,
-  ]);
-
   return new Uint8Array([
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-    ...typeSection,
-    ...funcSection,
-    ...memorySection,
-    ...exportSection,
-    ...codeSection,
+    0, 97, 115, 109, 1, 0, 0, 0,
+    ...typeSection, ...imports, ...funcSection, ...exportSection, ...section(10, [1, ...cullChunksBody]),
   ]);
 }
 
 export interface WasmExports {
   memory: WebAssembly.Memory;
+  scratchBase: () => number;
   hash2i: (ix: number, iz: number) => number;
   smoothNoise: (x: number, z: number) => number;
   cullChunks: (
@@ -367,18 +208,22 @@ export class ComputeEngine {
   readonly isWasmActive: boolean;
   private exports: WasmExports | null;
 
+  private readonly scratch: number;
+
   private constructor(exports: WasmExports | null) {
     this.exports = exports;
+    this.scratch = exports?.scratchBase() ?? 0;
     this.isWasmActive = exports !== null;
   }
 
   static async create(useWasm = true): Promise<ComputeEngine> {
     if (!useWasm) return new ComputeEngine(null);
     try {
-      const bytes = buildWasmBinary();
-      const module = await WebAssembly.compile(bytes.buffer as ArrayBuffer);
-      const instance = await WebAssembly.instantiate(module);
-      const exports = instance.exports as unknown as WasmExports;
+      const bytes = Uint8Array.from(atob(terrainWasmBase64), c => c.charCodeAt(0));
+      const { instance } = await WebAssembly.instantiate(bytes);
+      const rust = instance.exports;
+      const legacy = await WebAssembly.instantiate(buildCullBinary().buffer as ArrayBuffer, { env: { memory: rust.memory } });
+      const exports = { ...rust, ...legacy.instance.exports } as unknown as WasmExports;
       return new ComputeEngine(exports);
     } catch {
       return new ComputeEngine(null);
@@ -399,21 +244,21 @@ export class ComputeEngine {
   ): number {
     if (this.exports) {
       const mem = this.exports.memory.buffer;
-      new Float32Array(mem, PTR_CHUNK_SPHERES, chunkSpheres.length).set(chunkSpheres);
-      new Float32Array(mem, PTR_PLANES, 24).set(frustumPlanes);
+      new Float32Array(mem, this.scratch + PTR_CHUNK_SPHERES, chunkSpheres.length).set(chunkSpheres);
+      new Float32Array(mem, this.scratch + PTR_PLANES, 24).set(frustumPlanes);
       const vis = this.exports.cullChunks(
-        PTR_CHUNK_SPHERES,
+        this.scratch + PTR_CHUNK_SPHERES,
         chunkCount,
-        PTR_PLANES,
+        this.scratch + PTR_PLANES,
         camX,
         camY,
         camZ,
         maxDistSq,
         lod0DistSq,
         lod1DistSq,
-        PTR_OUT_LODS
+        this.scratch + PTR_OUT_LODS
       );
-      outLods.set(new Int32Array(mem, PTR_OUT_LODS, chunkCount));
+      outLods.set(new Int32Array(mem, this.scratch + PTR_OUT_LODS, chunkCount));
       return vis;
     }
 
@@ -473,8 +318,11 @@ export class ComputeEngine {
 
     let noiseView: Float32Array | null = null;
     if (this.exports) {
-      this.exports.fillNoiseGrid(PTR_NOISE_GRID, minX, minZ, step, dim);
-      noiseView = new Float32Array(this.exports.memory.buffer, PTR_NOISE_GRID, dim * dim * 3);
+      if (dim * dim * 3 * Float32Array.BYTES_PER_ELEMENT > 1024 * 1024 - PTR_NOISE_GRID) {
+        throw new RangeError('Terrain grid exceeds the compute workspace');
+      }
+      this.exports.fillNoiseGrid(this.scratch + PTR_NOISE_GRID, minX, minZ, step, dim);
+      noiseView = new Float32Array(this.exports.memory.buffer, this.scratch + PTR_NOISE_GRID, dim * dim * 3);
     }
 
     const eps = 0.45;

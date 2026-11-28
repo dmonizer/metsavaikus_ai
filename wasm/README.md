@@ -1,0 +1,7 @@
+# Terrain WebAssembly
+
+The world and its terrain worker each instantiate their own copy of the compute module. Edit `terrain.rs`, then run `npm run build:wasm` with Rust and the `wasm32-unknown-unknown` target installed. The initial compiler was `rustc 1.96.0-nightly (9602bda1d 2026-04-05)`. The build has no crate dependencies. It compiles an optimized module, checks its import table, and embeds the binary as base64 in `src/world/generated/terrainWasm.ts`. Commit the source and generated file together. Normal Node tests, Vite builds, and offline browser startup use the committed artifact.
+
+The TypeScript adapter addresses aligned offsets relative to the module's exported scratch allocation. Keep noise interpolation and octave accumulation in the existing float32 operation order, including the unsigned hash conversion. JavaScript terrain shaping and the four double-precision normal taps still use the active world blueprint.
+
+To compare kernels, run `node --import tsx scripts/bench-terrain-wasm.mjs /path/to/reference/src/world/wasmCompute.ts` from the candidate checkout. Both checkouts need their usual dependencies. The benchmark verifies output bytes, warms both engines, alternates their order, and reports p50/p95 microseconds per call over 30 measured batches. Noise covers each production mesh density. The culling measurement includes copying the spheres, planes and LOD output through the game adapter. Use the [walking replay](../docs/perf-replay.md) for frame and full-chunk measurements on the target GPU.

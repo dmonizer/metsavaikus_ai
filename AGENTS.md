@@ -29,3 +29,5 @@ When replacing procedural sound assets with recordings, follow the asset ID and 
 Performance investigations and implementation measurements are tracked in [docs/perf_findings.md](docs/perf_findings.md) and [docs/perf-ledger.md](docs/perf-ledger.md).
 
 Run `npm run perf:run` for the [production walking replay](docs/perf-replay.md). Enter through the title and rucksack screens, then leave Chrome in the foreground. To measure an optimization, use `npm run --silent perf:compare -- BASE_DIR CANDIDATE_DIR SECTION SCENE`. The command reads only the requested summaries under `perf-runs/`. Record the run IDs and relevant deltas in the performance ledger.
+
+Terrain compute kernel changes use the [Rust build and benchmark guide](wasm/README.md).
