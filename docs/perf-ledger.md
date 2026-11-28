@@ -84,3 +84,20 @@ All 128 grid outputs and 512 culling results in the kernel benchmark matched the
 ## 11. Rust terrain chunk culling
 
 The culler now lives beside the noise kernel in the compiled Rust module. The hand-assembled module is gone. The culler retains the original float32 plane tests and squared LOD thresholds. Its 121-slot game adapter, including both input copies and the LOD output copy, measured 0.780 µs p50 and 0.836 µs p95 against 1.028 µs and 1.364 µs for the original implementation in alternating batches. The combined noise and culling digest stayed `a1944629caef3b9b51535b2eab13c5d873be1c7be68b6549725763137d63dc27`. Tangent spheres and exact LOD and maximum-range boundaries also have explicit regression coverage.
+
+### Production replay after both Rust ports
+
+All three runs used the same four routes, GTX 1650 Max-Q, Chrome 156, 1280 × 720 Ultra, loadout and local soundscape changes. WASM was active throughout. The original build was repeated after the Rust run because the candidate was slower than the saved baseline in all four scenes. The two original runs have identical production bundle fingerprints. All three runs recorded zero synchronous terrain builds and zero backward steps.
+
+| Scene | Original baseline FPS / frame p95 | Rust FPS / frame p95 | Original repeat FPS / frame p95 |
+| --- | ---: | ---: | ---: |
+| Village road, clear | 37.0 / 36.7 ms | 33.1 / 45.4 ms | 28.8 / 48.0 ms |
+| Forest, rain | 49.5 / 28.7 ms | 44.4 / 33.1 ms | 42.5 / 34.9 ms |
+| Bog shore, mist | 54.7 / 25.0 ms | 45.6 / 33.8 ms | 46.7 / 34.0 ms |
+| Bog shore, rain | 53.5 / 27.0 ms | 49.1 / 30.4 ms | 49.2 / 31.5 ms |
+
+Rust's frame p95 fell between the original runs in every scene. Its main-thread terrain update measured 0.2 ms p95 throughout. Worker build p95 against the fresh original control was 40.3 vs 55.0 ms on the road, 56.9 vs 50.8 ms in the forest, and 52.9 vs 60.4 ms at the misty bog. The warm rainy bog built no new chunks. The alternating kernel benchmark measured a speedup. Run-to-run variation leaves the whole-game FPS effect unresolved.
+
+Local run IDs in execution order are `2026-11-28T09-08-25.863Z-FxReAG` (original), `2026-11-28T09-26-07.697Z-VShG0z` (Rust, revision `78611c5`), and `2026-11-28T09-30-49.779Z-50uQ1Z` (original repeat, revision `95e7220`). All are under `perf-runs/`.
+
+An exploratory Node comparison of twelve seed-7013 whole chunks measured 107.63 ms original vs 121.04 ms Rust with two separate JavaScript adapter implementations and six warmup batches. Repeating with the same adapter for both WASM binaries and twelve warmup batches measured 29.77 vs 28.96 ms across 36 measured pairs. The whole-chunk result is sensitive to the host and warmup. Use the isolated kernel comparison for attribution.

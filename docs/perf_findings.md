@@ -32,3 +32,7 @@ The corrected village-road harness on the earlier map measured a 132.56 ms worst
 Use identical seed, camera path, weather, hour, quality and resolution. Compare a cold traversal for hitches and warm repeats for steady FPS. Collect p50/p95/p99 frame intervals, full-callback time, per-pass draw counts and asynchronous GPU timings when supported. Keep visual comparisons at fixed simulation time. Implementation results are in [the performance ledger](perf-ledger.md).
 
 The [production walking replay](perf-replay.md) covers the main road, forest and bog shore with fixed walking routes and weather. The bog has paired mist and rain passes with separate mirror GPU timing. It writes complete runtime frame diagnostics and separate subsystem summaries so later changes can be measured against the same workload.
+
+## Rust compute kernels
+
+The batched 49×49 noise grid took 283 µs median in Rust versus 368 µs in the handwritten WASM. Culling 121 terrain slots, including copying inputs and results, took 0.78 versus 1.03 µs. The two original-build Ultra replays bracketed Rust's frame p95 in every scene, so these kernel savings have no established FPS effect. The terrain update was 0.2 ms p95 on the main thread for all four Rust legs. Full meshes matched the previous bytes. [Benchmark results and run IDs](perf-ledger.md#production-replay-after-both-rust-ports)
