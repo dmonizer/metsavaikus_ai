@@ -122,10 +122,20 @@ export function bakeGrassTile(
     const surf = sampleTerrainSurface(px, pz, bp);
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.12) continue;
-    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    const water = tileOverlapsFreshwater ? getWaterSurfaceAt(px, pz, bp, py) : null;
+    if (water && water.hasWater && water.kind !== 'stream') continue;
     if (tileOverlapsStreams) {
       const st = getStreamSampleAt(px, pz, bp);
-      if (st && st.dist < st.halfWidth + 0.30) continue;
+      if (st) {
+        const isSlow = st.slope < 0.032 && st.progress < 0.9;
+        if (!isSlow) {
+          if (st.dist < st.halfWidth + 0.28) continue;
+        } else if (st.dist < st.halfWidth + 0.16) {
+          const sedgePatch = smoothNoise(px * 0.55 + 1.9, pz * 0.55 - 2.3);
+          const keepSlow = st.dist > st.halfWidth * 0.32 ? sedgePatch > 0.54 && r4 < 0.45 : sedgePatch > 0.72 && r4 < 0.22;
+          if (!keepSlow) continue;
+        }
+      }
     }
 
     if (py < minY) minY = py;
@@ -202,10 +212,19 @@ export function bakeGrassTile(
     const surf = sampleTerrainSurface(px, pz, bp);
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.1) continue;
-    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    const water = tileOverlapsFreshwater ? getWaterSurfaceAt(px, pz, bp, py) : null;
+    if (water && water.hasWater && water.kind !== 'stream') continue;
     if (tileOverlapsStreams) {
       const st = getStreamSampleAt(px, pz, bp);
-      if (st && st.dist < st.halfWidth + 0.18) continue;
+      if (st) {
+        const isSlow = st.slope < 0.032 && st.progress < 0.9;
+        if (!isSlow) {
+          if (st.dist < st.halfWidth + 0.18) continue;
+        } else if (st.dist < st.halfWidth + 0.08) {
+          const edgeClump = smoothNoise(px * 0.62 - 3.1, pz * 0.62 + 1.4);
+          if (!(st.dist > st.halfWidth * 0.45 && edgeClump > 0.56 && r4 < 0.42)) continue;
+        }
+      }
     }
 
     if (py < minY) minY = py;
@@ -285,7 +304,7 @@ export function bakeGrassTile(
     if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
     if (tileOverlapsStreams) {
       const st = getStreamSampleAt(px, pz, bp);
-      if (st && st.dist < st.halfWidth + 0.65) continue;
+      if (st && st.dist < st.halfWidth + 0.48) continue;
     }
 
     const islandMask = surf.islandMask;
@@ -371,10 +390,26 @@ export function bakeGrassTile(
     const surf = sampleTerrainSurface(px, pz, bp);
     const py = surf.y;
     if (py < SWAMP_WATER_Y + 0.16) continue;
-    if (tileOverlapsFreshwater && getWaterSurfaceAt(px, pz, bp, py).hasWater) continue;
+    const water = tileOverlapsFreshwater ? getWaterSurfaceAt(px, pz, bp, py) : null;
+    if (water && water.hasWater && water.kind !== 'stream') continue;
+    let inSlowBrookSedge = false;
     if (tileOverlapsStreams) {
       const st = getStreamSampleAt(px, pz, bp);
-      if (st && st.dist < st.halfWidth + 0.45) continue;
+      if (st) {
+        const isSlow = st.slope < 0.032 && st.progress < 0.9;
+        if (!isSlow) {
+          if (st.dist < st.halfWidth + 0.42) continue;
+        } else if (st.dist < st.halfWidth + 0.32) {
+          // Occasional tall grass / sedge tufts growing naturally in and along slower brooks
+          const sedgePatch = smoothNoise(px * 0.48 + 4.3, pz * 0.48 - 2.7);
+          const allowInBrook =
+            st.dist > st.halfWidth * 0.25
+              ? sedgePatch > 0.50 && r4 < 0.58
+              : sedgePatch > 0.64 && r4 < 0.34;
+          if (!allowInBrook) continue;
+          inSlowBrookSedge = true;
+        }
+      }
     }
 
     const islandMask = surf.islandMask;
@@ -396,7 +431,7 @@ export function bakeGrassTile(
     const driftNoise =
       smoothNoise(px * 0.095 + 7.2, pz * 0.095 - 4.1) * 0.62 +
       smoothNoise(px * 0.25 - 2.5, pz * 0.25 + 9.4) * 0.38;
-    if (!shouldKeepTallUndergrowth(openness, driftNoise, r1, r4)) continue;
+    if (!inSlowBrookSedge && !shouldKeepTallUndergrowth(openness, driftNoise, r1, r4)) continue;
     if (roadInfo.dist < 4.6 && r2 > 0.48) continue;
 
     if (py < minY) minY = py;

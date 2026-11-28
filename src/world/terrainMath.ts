@@ -547,44 +547,63 @@ export function evaluateTerrainFromNoise(
     }
   }
 
-  // 4. Narrow, shallow downhill streams (gentle natural swale that cuts cleanly into lake/bog mouths)
+  // 4. Narrow, shallow downhill streams (gentle natural swale that cuts cleanly into lake/bog mouths
+  //    and passes beneath roads/trails via culverts without carving across the road deck)
   if (bp.streams.length > 0) {
     const st = getStreamSampleAt(x, z, bp);
     if (st) {
       const bankSpan = 3.8;
       const bankOuter = st.halfWidth + bankSpan;
       if (st.dist < bankOuter) {
-        const nearTargetLake =
-          lakeSampleAtPos !== null && lakeSampleAtPos.normDist < 1.22 && st.progress > 0.82;
-        const mouthT = st.progress > 0.88 ? smoothstep(0.88, 1.0, st.progress) : 0;
-        // Underlying coarse-terrain trough (>=1.05m half-width) ensures ~2.5m terrain triangles always dip
-        // smoothly beneath the narrow <=1m 3D streambed ribbon even on steep ravines (zero terrain overhang!).
-        const channelCarveW = Math.max(st.halfWidth * 1.65, 1.05);
-        if (st.dist <= channelCarveW) {
-          const u = st.dist / Math.max(0.18, channelCarveW);
-          const bedDip = st.depth + 0.14 + mouthT * 0.16;
-          const channelBed = st.waterY - bedDip * (1 - u * u * 0.72);
-          // Always cut cleanly through lake rim so there is NEVER a dry earth dam across the mouth
-          if (h > channelBed) {
-            h = channelBed;
-          } else if (!nearTargetLake && st.progress < 0.88 && rawBog < 0.18) {
-            h = h * 0.25 + channelBed * 0.75;
+        // Protect road & trail decks whenever a stream crosses under them through a drainage pipe
+        const roadDeckHalf = roadIsTrail ? 2.15 : 3.55;
+        const roadShoulderOuter = roadDeckHalf + 1.95;
+        const culvertMask =
+          roadDist < roadShoulderOuter ? 1 - smoothstep(roadDeckHalf, roadShoulderOuter, roadDist) : 0;
+        const carveWeight = 1 - culvertMask;
+
+        if (carveWeight > 0.005) {
+          const nearTargetLake =
+            lakeSampleAtPos !== null && lakeSampleAtPos.normDist < 1.22 && st.progress > 0.82;
+          const mouthT = st.progress > 0.88 ? smoothstep(0.88, 1.0, st.progress) : 0;
+          // Underlying coarse-terrain trough (>=1.05m half-width) ensures ~2.5m terrain triangles always dip
+          // smoothly beneath the narrow <=1m 3D streambed ribbon even on steep ravines (zero terrain overhang!).
+          const channelCarveW = Math.max(st.halfWidth * 1.65, 1.05);
+          if (st.dist <= channelCarveW) {
+            const u = st.dist / Math.max(0.18, channelCarveW);
+            const bedDip = st.depth + 0.14 + mouthT * 0.16;
+            const channelBed = st.waterY - bedDip * (1 - u * u * 0.72);
+            // Always cut cleanly through lake rim so there is NEVER a dry earth dam across the mouth
+            if (h > channelBed) {
+              h = h + (channelBed - h) * carveWeight;
+            } else if (!nearTargetLake && st.progress < 0.88 && rawBog < 0.18) {
+              h = h + (channelBed - h) * (0.75 * carveWeight);
+            }
+          } else {
+            const bankT = (st.dist - channelCarveW) / Math.max(0.5, bankOuter - channelCarveW);
+            const smoothBank = bankT * bankT * (3 - 2 * bankT);
+            // Flat-ground brooks stay almost flush with forest floor; steeper runs get a smooth mossy swale
+            const slopeFactor = smoothstep(0.018, 0.08, st.slope);
+            const bankRise = 0.04 + slopeFactor * 0.14 + smoothBank * (0.48 + slopeFactor * 0.52);
+            const bankTarget = st.waterY + bankRise;
+            const blend = (1 - smoothBank) * (nearTargetLake ? 0.65 : 0.88) * carveWeight;
+            if (h > bankTarget) {
+              h = h + (bankTarget - h) * blend;
+            }
+            // Keep dry banks slightly above waterY outside the lake mouth / bog so water stays confined
+            const minBankY = st.waterY + 0.07 + smoothBank * 0.18;
+            if (!nearTargetLake && st.progress < 0.86 && rawBog < 0.16 && h < minBankY) {
+              h = h + (minBankY - h) * (1 - smoothBank) * 0.82 * carveWeight;
+            }
           }
-        } else {
-          const bankT = (st.dist - channelCarveW) / Math.max(0.5, bankOuter - channelCarveW);
-          const smoothBank = bankT * bankT * (3 - 2 * bankT);
-          // Flat-ground brooks stay almost flush with forest floor; steeper runs get a smooth mossy swale
-          const slopeFactor = smoothstep(0.018, 0.08, st.slope);
-          const bankRise = 0.04 + slopeFactor * 0.14 + smoothBank * (0.48 + slopeFactor * 0.52);
-          const bankTarget = st.waterY + bankRise;
-          const blend = (1 - smoothBank) * (nearTargetLake ? 0.65 : 0.88);
-          if (h > bankTarget) {
-            h = h + (bankTarget - h) * blend;
-          }
-          // Keep dry banks slightly above waterY outside the lake mouth / bog so water stays confined
-          const minBankY = st.waterY + 0.07 + smoothBank * 0.18;
-          if (!nearTargetLake && st.progress < 0.86 && rawBog < 0.16 && h < minBankY) {
-            h = h + (minBankY - h) * (1 - smoothBank) * 0.82;
+        }
+
+        // Maintain dry earth/gravel embankment cover above the drainage pipe across the road deck
+        if (culvertMask > 0.02 && st.dist < st.halfWidth + 2.4) {
+          const alongRoadCover = 1 - smoothstep(st.halfWidth + 0.4, st.halfWidth + 2.4, st.dist);
+          const minCoverY = st.waterY + (roadIsTrail ? 0.56 : 0.78);
+          if (h < minCoverY) {
+            h = h + (minCoverY - h) * culvertMask * alongRoadCover;
           }
         }
       }

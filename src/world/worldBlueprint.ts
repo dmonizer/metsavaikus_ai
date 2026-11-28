@@ -160,6 +160,19 @@ export interface StreamPointBlueprint {
   flowZ: number;
 }
 
+export interface StreamCulvertBlueprint {
+  x: number;
+  z: number;
+  /** Unit vector along stream centerline passing through the pipe. */
+  flowX: number;
+  flowZ: number;
+  waterY: number;
+  roadY: number;
+  pipeRadius: number;
+  pipeLength: number;
+  isTrail: boolean;
+}
+
 export interface StreamBlueprint {
   id: string;
   name: string;
@@ -167,6 +180,8 @@ export interface StreamBlueprint {
   targetKind: 'lake' | 'bog';
   targetId: string | null;
   points: StreamPointBlueprint[];
+  /** Drainage pipes (culverts) wherever the stream passes under a road or forest trail. */
+  culverts: StreamCulvertBlueprint[];
   /** Padded AABB covering stream channel + bank blend zone. */
   minX: number;
   maxX: number;
@@ -1106,9 +1121,136 @@ function generateFreshwaterLakes(
   return lakes;
 }
 
+function distToRoadSegments(
+  x: number,
+  z: number,
+  roadSegments: readonly RoadSegmentBlueprint[]
+): { dist: number; isTrail: boolean } {
+  let bestDist = Infinity;
+  let bestTrail = true;
+  for (let i = 0; i < roadSegments.length; i++) {
+    const s = roadSegments[i];
+    const pad = Math.min(bestDist, 14);
+    if (x < s.minX - pad || x > s.maxX + pad || z < s.minZ - pad || z > s.maxZ + pad) continue;
+    const d = distToSegment2D(x, z, s.ax, s.az, s.bx, s.bz);
+    if (d < bestDist) {
+      bestDist = d;
+      bestTrail = s.isTrail;
+    }
+  }
+  return { dist: bestDist, isTrail: bestTrail };
+}
+
 /**
- * Generates 2-3 narrow, shallow Estonian woodland brooks (<= ~1m wide) draining from higher
- * slopes or gentle forest flats into freshwater lakes or the peat bog.
+ * Detects any place where a stream crosses a road or forest trail and records a
+ * drainage pipe (culvert) specification so terrain, water, and 3D pipe geometry agree.
+ */
+function populateStreamCulverts(
+  streams: readonly StreamBlueprint[],
+  roadSegments: readonly RoadSegmentBlueprint[],
+  hills: readonly HillMassifBlueprint[],
+  bogLobes: readonly BogLobeBlueprint[],
+  bogBounds: WorldBounds2D
+): void {
+  if (roadSegments.length === 0) return;
+
+  for (let sIdx = 0; sIdx < streams.length; sIdx++) {
+    const st = streams[sIdx];
+    st.culverts.length = 0;
+    const pts = st.points;
+    if (pts.length < 2) continue;
+
+    // Sample stream centerline every ~1.2m and group contiguous road/trail crossing runs
+    interface CrossingHit {
+      x: number;
+      z: number;
+      waterY: number;
+      flowX: number;
+      flowZ: number;
+      roadDist: number;
+      isTrail: boolean;
+    }
+    let currentRun: CrossingHit[] = [];
+
+    const flushRun = (): void => {
+      if (currentRun.length === 0) return;
+      // Pick the sample closest to the exact road centerline inside this crossing run
+      let best = currentRun[0];
+      let hasMainRoad = !best.isTrail;
+      for (let i = 1; i < currentRun.length; i++) {
+        const c = currentRun[i];
+        if (!c.isTrail) hasMainRoad = true;
+        if (c.roadDist < best.roadDist) best = c;
+      }
+      const isTrail = !hasMainRoad;
+      const pipeRadius = isTrail ? 0.27 : 0.35;
+      const pipeLength = isTrail ? 5.2 : 8.4;
+      const baseGround = sampleBaseDryTerrain(best.x, best.z, hills, bogLobes, bogBounds);
+      const roadY = Math.max(baseGround, best.waterY + pipeRadius * 2 + (isTrail ? 0.16 : 0.28));
+
+      // Avoid duplicate culverts within 12m along the same stream
+      const tooClose = st.culverts.some((c) => Math.hypot(c.x - best.x, c.z - best.z) < 12);
+      if (!tooClose) {
+        st.culverts.push({
+          x: best.x,
+          z: best.z,
+          flowX: best.flowX,
+          flowZ: best.flowZ,
+          waterY: best.waterY,
+          roadY,
+          pipeRadius,
+          pipeLength,
+          isTrail,
+        });
+      }
+      currentRun = [];
+    };
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const segLen = Math.hypot(b.x - a.x, b.z - a.z);
+      const steps = Math.max(2, Math.ceil(segLen / 1.2));
+      for (let k = 0; k < steps; k++) {
+        const t = k / steps;
+        const progress = (i + t) / (pts.length - 1);
+        // Never build a road culvert inside the lake mouth itself
+        if (progress > 0.90) {
+          flushRun();
+          continue;
+        }
+        const px = a.x + (b.x - a.x) * t;
+        const pz = a.z + (b.z - a.z) * t;
+        const r = distToRoadSegments(px, pz, roadSegments);
+        const threshold = r.isTrail ? 2.45 : 4.05;
+        if (r.dist < threshold) {
+          let fx = a.flowX + (b.flowX - a.flowX) * t;
+          let fz = a.flowZ + (b.flowZ - a.flowZ) * t;
+          const fl = Math.hypot(fx, fz) || 1;
+          fx /= fl;
+          fz /= fl;
+          currentRun.push({
+            x: px,
+            z: pz,
+            waterY: a.waterY + (b.waterY - a.waterY) * t,
+            flowX: fx,
+            flowZ: fz,
+            roadDist: r.dist,
+            isTrail: r.isTrail,
+          });
+        } else {
+          flushRun();
+        }
+      }
+    }
+    flushRun();
+  }
+}
+
+/**
+ * Generates 2-3 narrow, shallow meandering Estonian woodland brooks (<= ~1m wide) draining from
+ * higher slopes or gentle forest flats into freshwater lakes or the peat bog, strongly avoiding
+ * main roads so road crossings are rare (and pass through culverts when they occur).
  */
 function generateDownhillStreams(
   seed: number,
@@ -1116,7 +1258,8 @@ function generateDownhillStreams(
   hills: readonly HillMassifBlueprint[],
   bogLobes: readonly BogLobeBlueprint[],
   bogBounds: WorldBounds2D,
-  lakes: readonly LakeBlueprint[]
+  lakes: readonly LakeBlueprint[],
+  roadSegments: readonly RoadSegmentBlueprint[]
 ): StreamBlueprint[] {
   const streams: StreamBlueprint[] = [];
   const targetStreamCount = Math.min(3, Math.max(2, lakes.length + 1));
@@ -1178,7 +1321,7 @@ function generateDownhillStreams(
     let bestStart: { x: number; z: number; h: number; drop: number; score: number } | null = null;
 
     // Search for a hillside or forest-flat spring 95..255m away from the target
-    for (let attempt = 0; attempt < 110; attempt++) {
+    for (let attempt = 0; attempt < 130; attempt++) {
       const ang = randRange(rng, 0, Math.PI * 2);
       const dist = randRange(rng, 98, 250);
       const sx = target.x + Math.cos(ang) * dist;
@@ -1213,12 +1356,28 @@ function generateDownhillStreams(
       // Reject paths that must climb sharply over a tall ridge between spring and target
       if (q1H > sh + 3.5 || midH > sh + 2.5) continue;
 
+      // Strongly penalize routes that cross or hug roads so road crossings are very rare
+      let roadPenalty = 0;
+      const checkSteps = 10;
+      for (let cs = 0; cs <= checkSteps; cs++) {
+        const f = cs / checkSteps;
+        const rx = sx + (target.x - sx) * f;
+        const rz = sz + (target.z - sz) * f;
+        const rd = distToRoadSegments(rx, rz, roadSegments);
+        if (!rd.isTrail) {
+          if (rd.dist < 8.5) roadPenalty += 32;
+          else if (rd.dist < 18) roadPenalty += 8;
+        } else if (rd.dist < 5.5) {
+          roadPenalty += 12;
+        }
+      }
+
       // Score according to desired character: steep cascade for first stream, gentler flat/woodland for second
       let score: number;
       if (wantGentle) {
-        score = 12 - Math.abs(drop - 3.2) * 1.4 - Math.abs(dist - 150) * 0.025;
+        score = 14 - Math.abs(drop - 3.2) * 1.4 - Math.abs(dist - 150) * 0.025 - roadPenalty;
       } else {
-        score = Math.min(drop, 26) - Math.abs(dist - 155) * 0.035;
+        score = Math.min(drop, 26) - Math.abs(dist - 155) * 0.035 - roadPenalty;
       }
       if (!bestStart || score > bestStart.score) {
         bestStart = { x: sx, z: sz, h: sh, drop, score };
@@ -1227,7 +1386,7 @@ function generateDownhillStreams(
 
     if (!bestStart) continue;
 
-    // Build meandering downhill polyline from spring to exact lake/bog mouth
+    // Build naturally meandering downhill polyline from spring to exact lake/bog mouth
     const dirX = target.x - bestStart.x;
     const dirZ = target.z - bestStart.z;
     const totalLen = Math.hypot(dirX, dirZ);
@@ -1243,19 +1402,36 @@ function generateDownhillStreams(
       mouthDist = Math.max(55, totalLen - Math.max(4, shoreR - 5.5));
     }
 
-    // Denser control vertices (~7m apart) for crisp meandering & localized rocky steps
-    const numPts = Math.max(16, Math.min(34, Math.round(mouthDist / 7.5)));
-    const meanderFreq = randRange(rng, 1.4, 2.5);
-    const meanderPhase = randRange(rng, 0, Math.PI * 2);
-    const meanderAmp = randRange(rng, 6, 13);
+    // Estimate rough slope to tune meander character (gentle brooks meander strongly; steeper runs curve tighter around rocks)
+    const approxGrade = bestStart.drop / Math.max(40, mouthDist);
+    const isGentleMeander = approxGrade < 0.045;
+
+    // Crisp control vertices (~5.2m apart) so organic S-bends and tight curves resolve smoothly
+    const numPts = Math.max(22, Math.min(46, Math.round(mouthDist / 5.2)));
+    const freq1 = isGentleMeander ? randRange(rng, 2.8, 4.4) : randRange(rng, 2.2, 3.6);
+    const phase1 = randRange(rng, 0, Math.PI * 2);
+    const amp1 = isGentleMeander ? randRange(rng, 10.5, 17.5) : randRange(rng, 6.0, 11.5);
+
+    const freq2 = isGentleMeander ? randRange(rng, 6.2, 9.4) : randRange(rng, 5.4, 8.6);
+    const phase2 = randRange(rng, 0, Math.PI * 2);
+    const amp2 = isGentleMeander ? randRange(rng, 3.2, 5.6) : randRange(rng, 2.4, 4.4);
+
+    const freq3 = randRange(rng, 11.0, 15.5);
+    const phase3 = randRange(rng, 0, Math.PI * 2);
+    const amp3 = randRange(rng, 1.1, 2.3);
 
     const rawPts: Array<{ x: number; z: number; sampledH: number }> = [];
     for (let i = 0; i < numPts; i++) {
       const t = i / (numPts - 1);
-      // Taper meander smoothly to 0 well before the lake shoreline so mouth enters cleanly perpendicular
-      const mouthStraight = t > 0.82 ? 1 - smoothstep(0.82, 0.98, t) : 1;
-      const env = Math.sin(t * Math.PI) * mouthStraight;
-      const lateral = Math.sin(t * Math.PI * meanderFreq + meanderPhase) * meanderAmp * env;
+      // Taper meander smoothly to 0 before the lake shoreline so mouth enters cleanly
+      const mouthStraight = t > 0.84 ? 1 - smoothstep(0.84, 0.98, t) : 1;
+      const startEnv = smoothstep(0.0, 0.08, t);
+      const env = startEnv * mouthStraight;
+      const lateral =
+        (Math.sin(t * Math.PI * freq1 + phase1) * amp1 +
+          Math.sin(t * Math.PI * freq2 + phase2) * amp2 +
+          Math.cos(t * Math.PI * freq3 + phase3) * amp3) *
+        env;
       const px = clampWorld(bestStart.x + ux * (mouthDist * t) + perpX * lateral, 55);
       const pz = clampWorld(bestStart.z + uz * (mouthDist * t) + perpZ * lateral, 55);
       const sh = sampleBaseDryTerrain(px, pz, hills, bogLobes, bogBounds);
@@ -1319,14 +1495,25 @@ function generateDownhillStreams(
     // Pin the final vertex inside the lake exactly to mouthY and penultimate right at shoreline nearly flush
     waterYs[numPts - 1] = mouthY;
     if (waterYs[numPts - 2] > mouthY + 0.08) {
-      waterYs[numPts - 2] = mouthY + 0.035;
+      waterYs[numPts - 2] = Math.min(waterYs[numPts - 3], mouthY + 0.035);
     }
     if (waterYs[numPts - 3] > waterYs[numPts - 2] + 0.35 && waterYs[numPts - 4] > waterYs[numPts - 2] + 0.1) {
-      waterYs[numPts - 3] = Math.min(
+      const targetPenult = Math.min(
         maxGroundY[numPts - 3],
         waterYs[numPts - 2] + Math.min(0.28, (waterYs[numPts - 4] - waterYs[numPts - 2]) * 0.45)
       );
+      waterYs[numPts - 3] = Math.max(waterYs[numPts - 2], Math.min(waterYs[numPts - 4], targetPenult));
     }
+    // Final strict monotonic downhill guard (never allow any vertex to flow uphill)
+    for (let i = 1; i < numPts; i++) {
+      if (waterYs[i] > waterYs[i - 1]) {
+        waterYs[i] = waterYs[i - 1];
+      }
+      if (waterYs[i] < mouthY) {
+        waterYs[i] = mouthY;
+      }
+    }
+    waterYs[numPts - 1] = mouthY;
 
     const points: StreamPointBlueprint[] = [];
     let minX = Infinity;
@@ -1395,6 +1582,7 @@ function generateDownhillStreams(
       targetKind: target.kind,
       targetId: target.id,
       points,
+      culverts: [],
       minX,
       maxX,
       minZ,
@@ -2183,10 +2371,7 @@ export function createWorldBlueprint(seed: number): WorldBlueprint {
   // 5. Non-bog freshwater lakes in dry-land valleys
   const lakes = generateFreshwaterLakes(seed, rng, hillMassifs, bogLobes, bogBounds);
 
-  // 6. Downhill streams from higher hills into lakes or the peat bog
-  const streams = generateDownhillStreams(seed, rng, hillMassifs, bogLobes, bogBounds, lakes);
-
-  // 7. Variable road network & dry spawn on the main gravel road
+  // 6. Variable road network & dry spawn on the main gravel road
   const {
     roadShape,
     roadSegments,
@@ -2201,6 +2386,18 @@ export function createWorldBlueprint(seed: number): WorldBlueprint {
     roadPhase2,
   } = generateRoadNetwork(seed, rng, sectorAngle, bogCenterX, bogCenterZ, bogLobes, bogBounds, lakes);
 
+  // 7. Meandering downhill streams from higher hills into lakes or bog (strongly avoiding roads)
+  const streamRng = createSeededRandom((Math.imul(seed | 0, 2654435761) + 1013904223) >>> 0);
+  const streams = generateDownhillStreams(
+    seed,
+    streamRng,
+    hillMassifs,
+    bogLobes,
+    bogBounds,
+    lakes,
+    roadSegments
+  );
+
   // 8. 3-6 villages with 1-5 houses each, separated by >= 100m, in varied decay states
   const villages = generateVillages(
     seed,
@@ -2214,6 +2411,9 @@ export function createWorldBlueprint(seed: number): WorldBlueprint {
     streams,
     roadSegments
   );
+
+  // Detect any rare stream-under-road / trail crossings (including village spurs) to place drainage pipes
+  populateStreamCulverts(streams, roadSegments, hillMassifs, bogLobes, bogBounds);
 
   // 9. Bog boardwalk links connecting trailhead -> bog islands
   const boardwalkLinks = generateBoardwalkLinks(
