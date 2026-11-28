@@ -257,7 +257,10 @@ export class FpsDropLogger {
       });
   }
 
+  onRecordedEvent?: (label: string, nowMs: number) => void;
+
   recordEvent(label: string, nowMs: number): void {
+    this.onRecordedEvent?.(label, nowMs);
     this.events.push({ atMs: nowMs, label });
     if (this.events.length > 8) {
       this.events.shift();

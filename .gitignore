@@ -8,3 +8,5 @@ coverage/
 !.env.example
 src/assets/sounds/RAW/
 /docs/perf_analysis.md
+
+/perf-runs/

@@ -49,3 +49,5 @@ Every world lifecycle addition needs ownership for cleanup: listeners, scheduled
 Use the translation helpers for user-visible strings; see [../i18n/AGENTS.md](../i18n/AGENTS.md). Check lint/build plus applicable domain tests. Browser checks cover specific fixtures; manually verify affected gameplay flows such as restart, modal opening, pointer lock, tent seating, and sleep when they change.
 
 The title entry button stays disabled through world initialization. The runtime reports localized stage identifiers and signals readiness after its first render. Retry and world replacement reset this state. Returning from packing reuses the loaded world.
+
+The production replay uses the instance debug API to hold forward movement and steer along a seeded route. Its input supplies bounded heading and speed changes in each player physics step. Locomotion and collisions own the position throughout each walk. Only measured legs install the draw, shader and asynchronous GPU probes in `runtime/replayProbe.ts`. The world tick attaches the complete live diagnostics to its pending frame before the logger resets its windows.

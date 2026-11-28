@@ -53,3 +53,5 @@ Terrain color and roughness share shoreline depth and swash masks; keep their di
 The boardwalk deck and sleepers share a world-space bounding box computed from all segment instances. Apply fog distance to the nearest point of that box and let each render camera frustum-cull the batches.
 
 World initialization awaits staged construction and routes async failures through the retry overlay. Check lifetime after yielding between construction stages.
+
+Terrain chunk results carry the builder's elapsed wall time from the thread that built the mesh. The replay records accepted chunks with their coordinate/LOD key, vertex count and main/worker source at cache insertion.

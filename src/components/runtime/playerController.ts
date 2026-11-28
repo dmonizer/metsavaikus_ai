@@ -77,7 +77,13 @@ export interface PlayerControllerDeps {
   onClearHoverPrompt: () => void;
 }
 
+export type ReplayWalkingInput = (dt: number, x: number, z: number, yaw: number) => {
+  yaw: number;
+  speedMps: number;
+};
+
 export class PlayerController {
+  replayWalkingInput?: ReplayWalkingInput;
   spawnZ = 6;
   spawnX = 0;
   spawnYaw = 0.05;
@@ -400,6 +406,8 @@ export class PlayerController {
     const wantRun =
       (keysHeld.has('ShiftLeft') || keysHeld.has('ShiftRight')) && !crouching && canSprint;
 
+    const replayInput = this.replayWalkingInput?.(dt, this.pos.x, this.pos.z, this.yaw);
+    if (replayInput) this.yaw = replayInput.yaw;
     _fwd.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
     _right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
     _move.set(0, 0, 0);
@@ -493,7 +501,7 @@ export class PlayerController {
 
     const prevX = this.pos.x;
     const prevZ = this.pos.z;
-    this.pos.addScaledVector(_move, speed * dt);
+    this.pos.addScaledVector(_move, (replayInput?.speedMps ?? speed) * dt);
     this.resolvePlayerCollisions(this.pos);
 
     const frameMovedM = Math.hypot(this.pos.x - prevX, this.pos.z - prevZ);

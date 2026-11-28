@@ -38,7 +38,8 @@ export interface PerfCaptureStatus {
   frames: number;
 }
 
-interface CapturedFrame {
+export interface CapturedFrame {
+  diagnostics?: Record<string, unknown>;
   elapsedMs: number;
   timingsMs: PerfCaptureTimings & { frame: number; outsideTick: number };
   reflected: boolean;
@@ -46,6 +47,7 @@ interface CapturedFrame {
 }
 
 interface PendingFrame {
+  diagnostics?: Record<string, unknown>;
   startMs: number;
   timings: PerfCaptureTimings;
   reflected: boolean;
@@ -103,6 +105,7 @@ export class PerfCapture {
       const frame = startMs - previous.startMs;
       this.elapsedMs += frame;
       this.frames.push({
+        diagnostics: previous.diagnostics,
         elapsedMs: this.elapsedMs,
         timingsMs: { ...previous.timings, frame, outsideTick: Math.max(0, frame - previous.timings.tick) },
         reflected: previous.reflected,
@@ -115,6 +118,18 @@ export class PerfCapture {
     }
 
     this.pending = { startMs, timings, reflected, context };
+  }
+
+  attachDiagnostics(snapshot: Record<string, unknown>): void {
+    if (this.pending) this.pending.diagnostics = snapshot;
+  }
+
+  takeFrames(): CapturedFrame[] {
+    this.stop();
+    const frames = this.frames;
+    this.frames = [];
+    this.elapsedMs = 0;
+    return frames;
   }
 
   dumpText(): string {

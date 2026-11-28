@@ -1660,11 +1660,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         soundscape.engine.stepAuditionVoices(dt);
       }
 
+      const probe = captureFrame ? debugCtrl.replayProbe : null;
+      probe?.beginRender(now);
       const tr0 = performance.now();
       const reflected = propsCtx?.renderWaterReflection(renderer, scene, camera, debugCtrl.perfReflectionsEnabled) ?? false;
-      const mainRenderStart = captureFrame ? performance.now() : 0;
+      const reflectionEnd = captureFrame ? performance.now() : 0;
+      probe?.beginMainRender(reflected);
+      const mainRenderStart = probe ? performance.now() : reflectionEnd;
       renderer.render(scene, camera);
       const tr1 = performance.now();
+      probe?.endRender();
       renderer.domElement.dataset.ready = 'true';
       renderer.domElement.dataset.drawCalls = String(renderer.info.render.calls);
       renderer.domElement.dataset.triangles = String(renderer.info.render.triangles);
@@ -1677,7 +1682,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         perfCapture.record(now, {
           tick: tickCpuMs,
           mainRender: tr1 - mainRenderStart,
-          reflection: mainRenderStart - tr0,
+          reflection: reflectionEnd - tr0,
           terrain: terrainMs,
           vegetation: vegMs,
           soundscape: soundscapeMs,
@@ -1729,9 +1734,9 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
       if (curPhase === 'playing') {
         const fpsInstant = 1000 / rawDtMs;
         const isLowNow = fpsEma < 15 || fpsInstant < 15;
-        const mightReport = isLowNow || fpsEma >= 22 || !hasLivePerfSample;
+        const mightReport = !!probe || isLowNow || fpsEma >= 22 || !hasLivePerfSample;
         if (mightReport) {
-          const needDiag = isLowNow || !hasLivePerfSample;
+          const needDiag = !!probe || isLowNow || !hasLivePerfSample;
           const tDiag = needDiag && terrainMgr ? terrainMgr.consumeDiagnostics() : null;
           const vDiag = needDiag && vegetation ? vegetation.consumeDiagnostics() : null;
           const vc = worldToVirtualChunk(player.pos.x, player.pos.z);
@@ -1823,6 +1828,16 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
           const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
           perfSample.jsHeapMB = mem ? mem.usedJSHeapSize / (1024 * 1024) : null;
+          if (probe) {
+            // perfSample is reused and its log-window counters can reset after this tick.
+            // Keep both the live logger fields and the exact deltas since the preceding draw.
+            perfCapture.attachDiagnostics({
+              ...perfSample, pos: [...perfSample.pos], chunk: [...perfSample.chunk],
+              lodCounts: [...perfSample.lodCounts], backbufferPx: [...perfSample.backbufferPx!],
+              terrainDelta: tDiag, foliageDelta: vDiag, ...probe.drawStats(),
+              frameStartMs: now - probe.startMs,
+            });
+          }
           hasLivePerfSample = true;
 
           if (!debugCtrl.debugSimPaused) {
@@ -1845,6 +1860,7 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
 
           const emitted = perfLogger.observe(perfSample, document.hidden);
           if (emitted) {
+            probe?.reports.push(emitted);
             perfSample.terrainBuilds = 0;
             perfSample.terrainWorkerBuilds = 0;
             perfSample.terrainEvictions = 0;
@@ -1952,6 +1968,8 @@ export const MetsavaikusWorld: React.FC<MetsavaikusWorldProps> = ({
         saveSoundscapeSnapshotToStorage(worldSeed, soundscape.engine);
       }
       sound.dispose();
+      debugCtrl.replayProbe?.finish();
+      debugCtrl.replayProbe = null;
       renderer.dispose();
       void computeEngine;
       computeEngine = null;

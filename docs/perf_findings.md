@@ -30,3 +30,5 @@ The corrected village-road harness on the earlier map measured a 132.56 ms worst
 ## Acceptance
 
 Use identical seed, camera path, weather, hour, quality and resolution. Compare a cold traversal for hitches and warm repeats for steady FPS. Collect p50/p95/p99 frame intervals, full-callback time, per-pass draw counts and asynchronous GPU timings when supported. Keep visual comparisons at fixed simulation time. Implementation results are in [the performance ledger](perf-ledger.md).
+
+The [production walking replay](perf-replay.md) covers the main road, forest and bog shore with fixed walking routes and weather. The bog has paired mist and rain passes with separate mirror GPU timing. It writes complete runtime frame diagnostics and separate subsystem summaries so later changes can be measured against the same workload.

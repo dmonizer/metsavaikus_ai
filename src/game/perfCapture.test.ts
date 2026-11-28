@@ -81,3 +81,18 @@ test('capture stops after the duration limit and keeps the frame that crossed it
     recording: false, seconds: PERF_CAPTURE_SECONDS, frames: PERF_CAPTURE_SECONDS * 10,
   });
 });
+
+test('replay diagnostics belong to the tick being timed and draining releases the recording', () => {
+  const capture = new PerfCapture(123, 'test GPU');
+  capture.start();
+  capture.record(10, timings, true, context);
+  capture.attachDiagnostics({ terrainBuilds: 3 });
+  capture.record(25, timings, false, context);
+  capture.attachDiagnostics({ terrainBuilds: 8 });
+  const frames = capture.takeFrames();
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].timingsMs.frame, 15);
+  assert.deepEqual(frames[0].diagnostics, { terrainBuilds: 3 });
+  assert.equal(capture.getStatus().frames, 0);
+  assert.deepEqual(capture.takeFrames(), []);
+});

@@ -57,3 +57,20 @@ The terrain manager prewarms the spawn area on one module worker, then predicts 
 Across two seeds, the before/after SHA-256 of 24 meshes (all five attributes, indices and bounding spheres) matched `cf66a75f5aa5ff2c4ce3faefd5751cb2bb9b7fe65b378febd8cd8b76ec008fa7`. Chrome independently compared 18 real worker responses with uncached game builds byte for byte, including stream and bog-pool geometry at all three LODs. The browser check also covered camera turns after prewarming, zero synchronous mesh builds across those views, and disposal with work in flight. Performance reports expose the worker subtotal as `tWorkerBuild` within `tBuild`.
 
 A production-game walk on seed 7013 used Chrome on a GTX 1650 Max-Q, fixed quality tier 2, clear weather and a 96 m route over 16 seconds. The worker delivered 46 additional meshes during the walk. Across 555 animation-frame intervals, p95 was 50.0 ms and the maximum was 83.5 ms. This is a single full-game hardware capture. A separate headless run forced worker creation to fail and verified the same route completed in fallback mode.
+
+## 9. Four-leg production walking replay
+
+Run `npm run perf:run` for a manual-entry hardware capture at Ultra. The road and forest legs cover streaming, drawing, sound and simulation from different locations. The mist and rain legs traverse the same bog shore under the same wind and starting light. The replay records actual mirror passes, with separate asynchronous GPU measurements for the mirror and main view. The [replay guide](perf-replay.md) lists the scene-specific CSVs, summaries and comparison command.
+
+During verification the first runner wrote horizontal positions alongside normal locomotion. Recorded consecutive positions confirmed the reported forward/back motion, including a 0.79 m reverse step in the forest. The final controller supplies speed and bounded steering during physics substeps. Each leg checks the observed positions against its scheduled track and rejects a backward step over 10 cm. Earlier position-driven captures have a different protocol version.
+
+The first validated protocol-v3 run used Chrome 156.0.8078.79 and an NVIDIA GTX 1650 Max-Q at 1280 × 720, pixel ratio 1 and Ultra. The 100-second traversal recorded 4,864 frames. Every scene recorded zero backward displacement between successive frames. Maximum deviation from the scheduled track was 1.60 m in the forest. This is an instrumented baseline from a working tree that included separate soundscape changes.
+
+| Scene | Frames | Average FPS | Frame p95 | Reflection passes | Valid mirror GPU samples | Mirror GPU p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Village road, clear | 924 | 37.0 | 36.7 ms | 924 | 922 | 6.02 ms |
+| Forest, rain | 1,238 | 49.5 | 28.7 ms | 0 | 0 | — |
+| Bog shore, mist | 1,366 | 54.7 | 25.0 ms | 1,366 | 1,364 | 2.87 ms |
+| Bog shore, rain | 1,336 | 53.5 | 27.0 ms | 1,336 | 1,333 | 3.06 ms |
+
+The run directory is `perf-runs/2026-11-28T09-08-25.863Z-FxReAG`. Each scene has 29 independently readable sections. For this baseline, use `reflection-gpu bog-shore-rain` as the last two arguments to `perf:compare` to inspect mirror GPU timings. Pending GPU queries at the end of a leg are excluded.

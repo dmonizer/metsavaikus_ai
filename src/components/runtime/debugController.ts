@@ -23,7 +23,8 @@ import {
   removeStackItem,
 } from '../../game/itemCatalog';
 import { classifyBottleneck, FpsDropLogger, FramePerfSample } from '../../game/perfLogger';
-import { PerfCapture } from '../../game/perfCapture';
+import { ReplayProbe } from './replayProbe';
+import { type CapturedFrame, PerfCapture } from '../../game/perfCapture';
 import {
   classifyHypothermia,
   createPoisonEffect,
@@ -65,7 +66,7 @@ import type { WeatherAndSkySystem, WeatherId } from '../../world/weatherAndSky';
 import type { GamePhase, WorldActions, WorldCallbacks } from '../worldRuntimeContracts';
 import type { HudBridge } from './hudBridge';
 import { getEntryName, InteractionController } from './interactionController';
-import type { PlayerController } from './playerController';
+import type { PlayerController, ReplayWalkingInput } from './playerController';
 
 export interface MetsavaikusDebugApi {
   getState: () => {
@@ -79,6 +80,9 @@ export interface MetsavaikusDebugApi {
     seatedInTent: boolean;
     wearingRainJacket: boolean;
   };
+  setReplayView: (yaw: number, pitch: number) => void;
+  startReplayCapture: (input: ReplayWalkingInput) => void;
+  finishReplayCapture: () => ReturnType<ReplayProbe['finish']> & { frames: CapturedFrame[] };
   movePlayerForTest: (x: number, z: number) => {
     x: number;
     z: number;
@@ -275,6 +279,7 @@ export class DebugController {
   pickedHit: DebugTargetHit | null = null;
   readonly debugEvents: DebugEventEntry[] = [];
   readonly perfHistory: DebugPerfPoint[] = [];
+  replayProbe: ReplayProbe | null = null;
   readonly perfCapture: PerfCapture;
   perfReflectionsEnabled = true;
 
@@ -1042,6 +1047,32 @@ export class DebugController {
         seatedInTent: this.deps.player.seatedTent !== null,
         wearingRainJacket: isWearingRainJacket(this.deps.getInventory()),
       }),
+      setReplayView: (yaw, pitch) => {
+        const { player } = this.deps;
+        player.yaw = yaw;
+        player.pitch = pitch;
+      },
+      startReplayCapture: (input) => {
+        const terrain = this.deps.getTerrainMgr();
+        const vegetation = this.deps.getVegetation();
+        if (!terrain || !vegetation || this.perfCapture.active || this.replayProbe) {
+          throw new Error('The world must be ready and the recorder idle.');
+        }
+        terrain.consumeDiagnostics();
+        vegetation.consumeDiagnostics();
+        this.replayProbe = new ReplayProbe(this.deps.renderer, this.deps.camera, vegetation.group, terrain, this.deps.perfLogger);
+        this.deps.player.replayWalkingInput = input;
+        this.deps.keysHeld.add('KeyW');
+        this.perfCapture.start();
+      },
+      finishReplayCapture: () => {
+        this.deps.player.replayWalkingInput = undefined;
+        this.deps.keysHeld.delete('KeyW');
+        if (!this.replayProbe) throw new Error('No active replay.');
+        const result = this.replayProbe.finish();
+        this.replayProbe = null;
+        return { ...result, frames: this.perfCapture.takeFrames() };
+      },
       movePlayerForTest: (x: number, z: number) => {
         const { player, discovery, fogOfWar, hudBridge } = this.deps;
         const cx = THREE.MathUtils.clamp(x, -WORLD_HALF + 20, WORLD_HALF - 20);

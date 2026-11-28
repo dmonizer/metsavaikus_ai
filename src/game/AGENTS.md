@@ -15,3 +15,5 @@ This directory holds mostly renderer-independent domain rules. The caller in `co
 Shared geometry/collision belongs in [../world/AGENTS.md](../world/AGENTS.md), rather than being reimplemented in gameplay actions. Translate displayed results through [../i18n/AGENTS.md](../i18n/AGENTS.md).
 
 Keep sleep preview and actual sleep using `stepSleepSlice`. Preserve inventory accounting and one-time collection. For rule changes run the relevant colocated tests, then the full `npm test` and type check. Browser verification is needed for phase transitions and physical interactions that pure tests do not exercise.
+
+The walking replay drains completed `PerfCapture` frames after each leg. Diagnostics attached to a pending tick travel with its following start-to-start interval.

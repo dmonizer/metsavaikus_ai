@@ -15,6 +15,7 @@ export interface TerrainChunkRequest {
 }
 
 export function buildTerrainChunk(compute: ComputeEngine, { vcx, vcz, lod }: TerrainChunkRequest) {
+  const start = performance.now();
   const minX = vcx * CHUNK_SIZE;
   const minZ = vcz * CHUNK_SIZE;
   const bp = getActiveBlueprint();
@@ -108,7 +109,7 @@ export function buildTerrainChunk(compute: ComputeEngine, { vcx, vcz, lod }: Ter
     }
   }
 
-  return { positions, normals, colors, uvs, splats, segs };
+  return { positions, normals, colors, uvs, splats, segs, buildMs: performance.now() - start };
 }
 
 export type TerrainChunkData = ReturnType<typeof buildTerrainChunk>;

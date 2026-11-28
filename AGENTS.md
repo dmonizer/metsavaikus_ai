@@ -27,3 +27,5 @@ Keep the asset-copy behavior in `vite.config.ts`: root-relative source asset URL
 When replacing procedural sound assets with recordings, follow the asset ID and reference rules in [src/config/soundscape/AGENTS.md](src/config/soundscape/AGENTS.md).
 
 Performance investigations and implementation measurements are tracked in [docs/perf_findings.md](docs/perf_findings.md) and [docs/perf-ledger.md](docs/perf-ledger.md).
+
+Use the [production walking replay](docs/perf-replay.md) to compare revisions at fixed Ultra settings. Its per-scene, per-subsystem captures live under the ignored `perf-runs/` directory.

@@ -88,6 +88,7 @@ export class TerrainChunkManager {
 
   private centerVcx = 99999;
   private centerVcz = 99999;
+  onMeasuredBuild?: (key: string, source: 'main' | 'worker', buildMs: number, vertices: number) => void;
   private diagGeoBuilds = 0;
   private diagWorkerBuilds = 0;
   private diagGeoEvictions = 0;
@@ -342,10 +343,10 @@ export class TerrainChunkManager {
     }
 
     // A cold teleport or a missed prefetch deadline still requires the exact visible mesh.
-    return this.cacheGeometry(key, lod, buildTerrainChunk(this.compute, { vcx, vcz, lod }));
+    return this.cacheGeometry(key, lod, buildTerrainChunk(this.compute, { vcx, vcz, lod }), 'main');
   }
 
-  private cacheGeometry(key: string, lod: TerrainLod, data: TerrainChunkData): THREE.BufferGeometry {
+  private cacheGeometry(key: string, lod: TerrainLod, data: TerrainChunkData, source: 'main' | 'worker'): THREE.BufferGeometry {
     const { positions, normals, colors, uvs, splats, segs } = data;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -358,6 +359,7 @@ export class TerrainChunkManager {
 
     this.geoCache.set(key, geo);
     this.diagGeoBuilds++;
+    this.onMeasuredBuild?.(key, source, data.buildMs, positions.length / 3);
     if (this.geoCache.size > MAX_GEO_CACHE) {
       for (const [oldKey, oldGeo] of this.geoCache) {
         if (this.geoCache.size <= MAX_GEO_CACHE) break;
@@ -479,7 +481,7 @@ export class TerrainChunkManager {
       getActiveBlueprint().seed, this.compute.isWasmActive,
       key => this.geoCache.has(key),
       (job, data) => {
-        this.cacheGeometry(job.key, job.lod, data);
+        this.cacheGeometry(job.key, job.lod, data, 'worker');
         this.diagWorkerBuilds++;
       }
     );
