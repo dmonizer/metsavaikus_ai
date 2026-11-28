@@ -14,165 +14,6 @@ import {
   SWAMP_WATER_Y,
 } from './terrainMath';
 
-const VAL_I32 = 0x7f;
-const VAL_F32 = 0x7d;
-
-function uleb(n: number): number[] {
-  const out: number[] = [];
-  let v = n >>> 0;
-  do {
-    let b = v & 0x7f;
-    v >>>= 7;
-    if (v !== 0) b |= 0x80;
-    out.push(b);
-  } while (v !== 0);
-  return out;
-}
-
-function sleb(n: number): number[] {
-  const out: number[] = [];
-  let v = n | 0;
-  let more = true;
-  while (more) {
-    const b = v & 0x7f;
-    v >>= 7;
-    const signBit = (b & 0x40) !== 0;
-    if ((v === 0 && !signBit) || (v === -1 && signBit)) {
-      more = false;
-      out.push(b);
-    } else {
-      out.push(b | 0x80);
-    }
-  }
-  return out;
-}
-
-function strBytes(s: string): number[] {
-  const bytes = Array.from(new TextEncoder().encode(s));
-  return [...uleb(bytes.length), ...bytes];
-}
-
-function section(id: number, payload: number[]): number[] {
-  return [id, ...uleb(payload.length), ...payload];
-}
-
-function funcBody(locals: Array<[number, number]>, code: number[]): number[] {
-  const locBytes: number[] = [...uleb(locals.length)];
-  for (const [count, type] of locals) {
-    locBytes.push(...uleb(count), type);
-  }
-  const body = [...locBytes, ...code, 0x0b];
-  return [...uleb(body.length), ...body];
-}
-
-const OP = {
-  block: 0x02,
-  loop: 0x03,
-  if: 0x04,
-  else: 0x05,
-  end: 0x0b,
-  br: 0x0c,
-  br_if: 0x0d,
-  localGet: 0x20,
-  localSet: 0x21,
-  localTee: 0x22,
-  f32Load: 0x2a,
-  i32Store: 0x36,
-  i32Const: 0x41,
-  i32GeS: 0x4e,
-  f32Lt: 0x5d,
-  f32Gt: 0x5e,
-  i32Add: 0x6a,
-  i32Shl: 0x74,
-  f32Neg: 0x8c,
-  f32Add: 0x92,
-  f32Sub: 0x93,
-  f32Mul: 0x94,
-} as const;
-
-function buildCullBinary(): Uint8Array {
-  const typeSection = section(1, [
-    ...uleb(1), 0x60, ...uleb(10),
-    VAL_I32, VAL_I32, VAL_I32, VAL_F32, VAL_F32, VAL_F32, VAL_F32, VAL_F32, VAL_F32, VAL_I32,
-    ...uleb(1), VAL_I32,
-  ]);
-  const imports = section(2, [1, ...strBytes('env'), ...strBytes('memory'), 2, 0, 1]);
-  const funcSection = section(3, [1, 0]);
-  const exportSection = section(7, [1, ...strBytes('cullChunks'), 0, 0]);
-
-  const cullChunksBody = funcBody(
-    [[7, VAL_I32], [10, VAL_F32]],
-    [
-      OP.i32Const, 0, OP.localSet, 10,
-      OP.i32Const, 0, OP.localSet, 11,
-      OP.block, 0x40,
-      OP.loop, 0x40,
-      OP.localGet, 10, OP.localGet, 1, OP.i32GeS, OP.br_if, 1,
-      OP.localGet, 9, OP.localGet, 10, OP.i32Const, 2, OP.i32Shl, OP.i32Add, OP.localSet, 16,
-      OP.localGet, 0, OP.localGet, 10, OP.i32Const, 4, OP.i32Shl, OP.i32Add, OP.localSet, 12,
-      OP.localGet, 12, OP.f32Load, 2, 0, OP.localSet, 17,
-      OP.localGet, 12, OP.f32Load, 2, 4, OP.localSet, 18,
-      OP.localGet, 12, OP.f32Load, 2, 8, OP.localSet, 19,
-      OP.localGet, 12, OP.f32Load, 2, 12, OP.localTee, 20, OP.f32Neg, OP.localSet, 25,
-      OP.localGet, 17, OP.localGet, 3, OP.f32Sub, OP.localTee, 21, OP.localGet, 21, OP.f32Mul,
-      OP.localGet, 18, OP.localGet, 4, OP.f32Sub, OP.localTee, 22, OP.localGet, 22, OP.f32Mul, OP.f32Add,
-      OP.localGet, 19, OP.localGet, 5, OP.f32Sub, OP.localTee, 23, OP.localGet, 23, OP.f32Mul, OP.f32Add,
-      OP.localTee, 24,
-      OP.localGet, 6, OP.f32Gt,
-      OP.if, 0x40,
-        OP.localGet, 16, OP.i32Const, ...sleb(-1), OP.i32Store, 2, 0,
-      OP.else,
-        OP.i32Const, 0, OP.localSet, 15,
-        OP.i32Const, 0, OP.localSet, 13,
-        OP.block, 0x40,
-        OP.loop, 0x40,
-          OP.localGet, 13, OP.i32Const, 6, OP.i32GeS, OP.br_if, 1,
-          OP.localGet, 2, OP.localGet, 13, OP.i32Const, 4, OP.i32Shl, OP.i32Add, OP.localSet, 14,
-          OP.localGet, 14, OP.f32Load, 2, 0, OP.localGet, 17, OP.f32Mul,
-          OP.localGet, 14, OP.f32Load, 2, 4, OP.localGet, 18, OP.f32Mul, OP.f32Add,
-          OP.localGet, 14, OP.f32Load, 2, 8, OP.localGet, 19, OP.f32Mul, OP.f32Add,
-          OP.localGet, 14, OP.f32Load, 2, 12, OP.f32Add,
-          OP.localGet, 25, OP.f32Lt,
-          OP.if, 0x40,
-            OP.i32Const, 1, OP.localSet, 15,
-            OP.br, 2,
-          OP.end,
-          OP.localGet, 13, OP.i32Const, 1, OP.i32Add, OP.localSet, 13,
-          OP.br, 0,
-        OP.end,
-        OP.end,
-        OP.localGet, 15,
-        OP.if, 0x40,
-          OP.localGet, 16, OP.i32Const, ...sleb(-1), OP.i32Store, 2, 0,
-        OP.else,
-          OP.localGet, 11, OP.i32Const, 1, OP.i32Add, OP.localSet, 11,
-          OP.localGet, 24, OP.localGet, 7, OP.f32Lt,
-          OP.if, 0x40,
-            OP.localGet, 16, OP.i32Const, 0, OP.i32Store, 2, 0,
-          OP.else,
-            OP.localGet, 24, OP.localGet, 8, OP.f32Lt,
-            OP.if, 0x40,
-              OP.localGet, 16, OP.i32Const, 1, OP.i32Store, 2, 0,
-            OP.else,
-              OP.localGet, 16, OP.i32Const, 2, OP.i32Store, 2, 0,
-            OP.end,
-          OP.end,
-        OP.end,
-      OP.end,
-      OP.localGet, 10, OP.i32Const, 1, OP.i32Add, OP.localSet, 10,
-      OP.br, 0,
-      OP.end,
-      OP.end,
-      OP.localGet, 11,
-    ]
-  );
-
-  return new Uint8Array([
-    0, 97, 115, 109, 1, 0, 0, 0,
-    ...typeSection, ...imports, ...funcSection, ...exportSection, ...section(10, [1, ...cullChunksBody]),
-  ]);
-}
-
 export interface WasmExports {
   memory: WebAssembly.Memory;
   scratchBase: () => number;
@@ -221,9 +62,7 @@ export class ComputeEngine {
     try {
       const bytes = Uint8Array.from(atob(terrainWasmBase64), c => c.charCodeAt(0));
       const { instance } = await WebAssembly.instantiate(bytes);
-      const rust = instance.exports;
-      const legacy = await WebAssembly.instantiate(buildCullBinary().buffer as ArrayBuffer, { env: { memory: rust.memory } });
-      const exports = { ...rust, ...legacy.instance.exports } as unknown as WasmExports;
+      const exports = instance.exports as unknown as WasmExports;
       return new ComputeEngine(exports);
     } catch {
       return new ComputeEngine(null);
@@ -242,7 +81,7 @@ export class ComputeEngine {
     lod1DistSq: number,
     outLods: Int32Array
   ): number {
-    if (this.exports) {
+    if (this.exports && chunkCount <= 256 && chunkSpheres.length <= 256 * 4) {
       const mem = this.exports.memory.buffer;
       new Float32Array(mem, this.scratch + PTR_CHUNK_SPHERES, chunkSpheres.length).set(chunkSpheres);
       new Float32Array(mem, this.scratch + PTR_PLANES, 24).set(frustumPlanes);

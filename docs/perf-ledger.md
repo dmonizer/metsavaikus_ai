@@ -80,3 +80,7 @@ The run directory is `perf-runs/2026-11-28T09-08-25.863Z-FxReAG`. Each scene has
 The first Rust slice replaces the lattice hash, smooth noise and batched fBm grid. Seeded terrain shaping, normal samples and mesh density keep their existing implementations. On Node 22, alternating against the handwritten kernel from `95e7220`, p50 noise-grid time in microseconds changed from 7.54 to 5.79 (7×7), 26.44 to 19.48 (13×13), 94.41 to 69.78 (25×25), and 367.77 to 282.91 (49×49). Each result is the median of 30 warm batches. These are isolated grid timings.
 
 All 128 grid outputs and 512 culling results in the kernel benchmark matched the original bytes. A separate comparison of 24 entire meshes across seeds 2026 and 7013, four locations per seed and all three LODs matched every position, normal, color, UV and splat byte. Combined attribute SHA-256 was `4992797c434d7630001b97582bfb821e8b382b0956e84c9dd3b87f3af2abe8cb`.
+
+## 11. Rust terrain chunk culling
+
+The culler now lives beside the noise kernel in the compiled Rust module. The hand-assembled module is gone. The culler retains the original float32 plane tests and squared LOD thresholds. Its 121-slot game adapter, including both input copies and the LOD output copy, measured 0.780 µs p50 and 0.836 µs p95 against 1.028 µs and 1.364 µs for the original implementation in alternating batches. The combined noise and culling digest stayed `a1944629caef3b9b51535b2eab13c5d873be1c7be68b6549725763137d63dc27`. Tangent spheres and exact LOD and maximum-range boundaries also have explicit regression coverage.

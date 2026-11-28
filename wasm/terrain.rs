@@ -65,3 +65,47 @@ pub unsafe extern "C" fn fillNoiseGrid(
         }
     }
 }
+
+#[inline]
+fn behind_plane(plane: &[f32; 4], x: f32, y: f32, z: f32, radius: f32) -> bool {
+    plane[0] * x + plane[1] * y + plane[2] * z + plane[3] < -radius
+}
+
+// Spheres and output contain count elements. The six frustum planes, spheres,
+// and output occupy separate aligned regions of the instance workspace.
+#[no_mangle]
+pub unsafe extern "C" fn cullChunks(
+    spheres: *const [f32; 4],
+    count: i32,
+    planes: *const [[f32; 4]; 6],
+    camera_x: f32,
+    camera_y: f32,
+    camera_z: f32,
+    max_distance_sq: f32,
+    lod0_distance_sq: f32,
+    lod1_distance_sq: f32,
+    output: *mut i32,
+) -> i32 {
+    let mut visible = 0;
+    for index in 0..count {
+        let [x, y, z, radius] = *spheres.add(index as usize);
+        let (dx, dy, dz) = (x - camera_x, y - camera_y, z - camera_z);
+        let distance_sq = dx * dx + dy * dy + dz * dz;
+        let lod = if distance_sq > max_distance_sq
+            || (*planes).iter().any(|p| behind_plane(p, x, y, z, radius))
+        {
+            -1
+        } else {
+            visible += 1;
+            if distance_sq < lod0_distance_sq {
+                0
+            } else if distance_sq < lod1_distance_sq {
+                1
+            } else {
+                2
+            }
+        };
+        output.add(index as usize).write(lod);
+    }
+    visible
+}
